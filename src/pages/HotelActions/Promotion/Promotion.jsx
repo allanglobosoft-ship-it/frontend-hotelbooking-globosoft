@@ -24,10 +24,24 @@ import Swal from "sweetalert2";
 const Promotion = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-    const { pathname } = useLocation();
+    const location = useLocation();
+    const { pathname } = location;
     const isExtranet = pathname.startsWith("/extranet");
     const navBase = isExtranet ? "/extranet" : "/hotel-actions";
-    const backUrl = isExtranet ? "/extranetDashboard" : `/hotel-details/${id}`;
+    // When the operator navigated here from the /promotion deals
+    // showcase (PromotionHotelSearch.jsx passes { state: { from:
+    // "/promotion" } } on its "Manage Promotions" navigation), the
+    // Back button should return them to /promotion instead of the
+    // usual hotel-details / extranet dashboard fallback. The marker
+    // is scoped to this specific entry point, so every other flow
+    // that lands on this page (sidebar, hotel-details, extranet)
+    // keeps its existing Back destination.
+    const cameFromPromotionPage = location.state?.from === "/promotion";
+    const backUrl = cameFromPromotionPage
+      ? "/promotion"
+      : isExtranet
+        ? "/extranetDashboard"
+        : `/hotel-details/${id}`;
 
   const [promotions, setPromotions] = useState([]);
   const [loading, setLoading] = useState(false);
