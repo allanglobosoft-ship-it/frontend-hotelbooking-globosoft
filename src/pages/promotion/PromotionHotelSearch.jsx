@@ -137,6 +137,343 @@ const diffNights = (fromIso, toIso) => {
 
 const EMPTY_ROOM = () => ({ adults: 1, children: 0, childAges: [] });
 
+// ── Promotion rate display ──────────────────────────────────────────
+// /api/hotelPromotions/active-hotels returns, per promotion, a
+// `rateSummary` { offerLabel, baseRateFrom, promoRateFrom, savingAmount,
+// savingPercent, note, rooms[] } — that promotion's STAND-ALONE effect on
+// the contract rate (Special Rate replaces it, Discount = contract − % /
+// flat, Stay-Pay = contract × pay / stay). The hotel-level headline
+// `promoRateFrom` / `baseRateFrom` / `maxSavingPercent` is the FINAL rate
+// once the hotel's own live promotions are combined the way the room
+// search combines them (PromotionRateCalculator.forHotel): a Special Rate
+// competes with the contract rate as an alternative base (lower wins), a
+// Stay-Pay takes precedence over a Discount on the same room (they never
+// stack), and Discount / Stay-Pay are worked out on the contract rate.
+// `finalRate` explains that headline (applied / skipped promotions, room,
+// per-room breakdown) and each promotion row carries `appliedInFinalRate`
+// + `finalRateNote`. Every figure is per room, per night, before agent
+// markup; the page does no rate arithmetic of its own.
+const formatRate = (value) => {
+  if (value == null) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return n.toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+};
+
+const formatPercent = (value) => {
+  if (value == null) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return `${Number.isInteger(n) ? n : n.toFixed(1)}%`;
+};
+
+const savingPillStyle = {
+  backgroundColor: "rgba(25,135,84,0.12)",
+  color: "#198754",
+  border: "1px solid rgba(25,135,84,0.35)",
+  padding: "1px 7px",
+  borderRadius: "999px",
+  fontSize: "0.68rem",
+  fontWeight: 700,
+  whiteSpace: "nowrap",
+};
+
+// How many promotion rate lines a card shows before deferring the rest to
+// the View Details modal (which lists every promotion + room breakdown).
+const MAX_CARD_RATE_ROWS = 4;
+
+// rateSummary.status (backend PromotionRateCalculator) → what the operator
+// sees when there is no rate to show. NO_ROOM_VALUES means the promotion
+// was saved with an empty room grid (no special rate / % / nights typed
+// in), which is fixable from the promotion's edit page; NO_ROOM_SETUP
+// means the hotel itself has no room occupancy configured, so the
+// promotion grid has no cells at all (fix under Hotel Actions →
+// Occupancy first); NO_CONTRACT_RATE means the hotel has no live contract
+// rate inside the promotion window, so there is nothing to discount from.
+const RATE_STATUS_TEXT = {
+  NO_ROOM_VALUES: "No rates set",
+  NO_ROOM_SETUP: "Hotel room setup incomplete",
+  NO_CONTRACT_RATE: "No contract rate in window",
+};
+
+// Where the operator fixes a NO_ROOM_SETUP hotel (route in App.jsx).
+const hotelOccupancyPath = (hotelId) =>
+  hotelId ? `/hotel-actions/${hotelId}/occupancy-and-minimumlength` : null;
+
+const rateStatusText = (summary) =>
+  Object.prototype.hasOwnProperty.call(RATE_STATUS_TEXT, summary?.status)
+    ? RATE_STATUS_TEXT[summary.status]
+    : "Rate not available";
+
+// Deep link to the edit page of a promotion row from
+// /api/hotelPromotions/active-hotels — mirrors the routes in App.jsx
+// (`/hotel-actions/:id/promotion/<family>/edit/:editId`).
+const promotionEditPath = (hotelId, promo) => {
+  if (!hotelId || !promo?.id) return null;
+  const family = styleForPromotion(promo.promotionType).key;
+  const segment =
+    family === "special"
+      ? "special-rate"
+      : family === "discount"
+        ? "discount"
+        : family === "staypay"
+          ? "staypay"
+          : null;
+  return segment
+    ? `/hotel-actions/${hotelId}/promotion/${segment}/edit/${promo.id}`
+    : null;
+};
+
+// Headline copy for a card whose promotions produced no rate at all.
+const headlineFallbackText = (promoRows, finalRate) => {
+  const statuses = (promoRows || []).map((p) => p?.rateSummary?.status);
+  if (statuses.length > 0 && statuses.every((s) => s === "NO_ROOM_SETUP")) {
+    return "Hotel room setup incomplete";
+  }
+  if (
+    statuses.length > 0 &&
+    statuses.every((s) => s === "NO_ROOM_VALUES" || s === "NO_ROOM_SETUP")
+  ) {
+    return "No room rates configured yet";
+  }
+  // Promotions were priced but none beats the contract rate (dearer special
+  // rate, extra-bed only Stay-Pay, no market type) — the backend note says
+  // which; checked before the contract-rate hint so the two agree.
+  if (finalRate?.status === "NO_RATE" && statuses.some((s) => s === "OK")) {
+    return "No promotion lowers the room rate";
+  }
+  if (statuses.some((s) => s === "NO_CONTRACT_RATE")) {
+    return "No contract rate in promotion window";
+  }
+  return "Rate not available yet";
+};
+
+// "DFGHDFG55 Stay 2 Pay 1 · 1 night free" for a finalRate applied/skipped entry.
+const describePromotion = (p) =>
+  [p?.promotionCode, p?.effect].filter(Boolean).join(" ");
+
+const appliedPillStyle = {
+  ...savingPillStyle,
+  fontSize: "0.62rem",
+  padding: "0 6px",
+  fontWeight: 600,
+};
+
+const notAppliedPillStyle = {
+  ...appliedPillStyle,
+  backgroundColor: "#f1f3f5",
+  color: "#6c757d",
+  border: "1px solid #dee2e6",
+  cursor: "help",
+};
+
+/**
+ * One-line explanation under the card headline: which promotion(s) produce
+ * the final rate and which live promotion(s) were skipped and why (Stay-Pay
+ * over Discount, special rate vs promoted contract rate, …).
+ */
+function FinalRateCaption({ finalRate }) {
+  if (!finalRate || finalRate.status !== "OK") return null;
+  const applied = Array.isArray(finalRate.appliedPromotions)
+    ? finalRate.appliedPromotions
+    : [];
+  const skipped = Array.isArray(finalRate.skippedPromotions)
+    ? finalRate.skippedPromotions
+    : [];
+  if (applied.length === 0 && skipped.length === 0) return null;
+  const room = [finalRate.roomCategory, finalRate.roomType, finalRate.occupancy]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <div
+      className="d-flex flex-column"
+      style={{ fontSize: "0.7rem", lineHeight: 1.35, marginTop: 2 }}
+    >
+      {applied.length > 0 && (
+        <span className="text-muted" title={finalRate.detail || undefined}>
+          <span className="fw-semibold text-dark">Applied:</span>{" "}
+          {applied.map(describePromotion).join(" + ")}
+          {room && <> · {room}</>}
+        </span>
+      )}
+      {skipped.length > 0 && (
+        <span
+          className="text-muted"
+          title={skipped
+            .map((s) => `${describePromotion(s)} — ${s.reason || "not applied"}`)
+            .join("\n")}
+          style={{ cursor: "help" }}
+        >
+          <span className="fw-semibold">Not applied:</span>{" "}
+          {skipped.map(describePromotion).join(", ")}
+          {skipped[0]?.reason && <> — {skipped[0].reason}</>}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One line of the card's rate strip: promotion code + what the offer is,
+ * then the contract rate (struck through) → rate after the promotion and
+ * the saving pill. When nothing could be calculated it shows the short
+ * reason (see RATE_STATUS_TEXT) with the backend's full note as a
+ * tooltip, plus a "Set rates" link to the promotion's edit page when the
+ * fix is simply typing the values in.
+ */
+function PromotionRateLine({
+  promo,
+  currency,
+  onSetRates,
+  onConfigureRooms,
+  showApplied,
+}) {
+  const { bg, icon: Icon } = styleForPromotion(promo.promotionType);
+  const summary = promo.rateSummary || {};
+  const promoRate = formatRate(summary.promoRateFrom);
+  const baseRate = formatRate(summary.baseRateFrom);
+  const hasSaving =
+    summary.baseRateFrom != null &&
+    summary.promoRateFrom != null &&
+    Number(summary.baseRateFrom) > Number(summary.promoRateFrom);
+  const savingPct = hasSaving ? formatPercent(summary.savingPercent) : null;
+  // Whether this promotion actually feeds the hotel's final rate (backend
+  // appliedInFinalRate): FALSE = priced but superseded, e.g. a Discount
+  // while a Stay-Pay is live on the same room; null = not priced at all —
+  // or, when finalRateNote is set, deliberately outside the room rate
+  // (extra-bed Stay-Pay, no market type).
+  const applied = promo.appliedInFinalRate;
+  const outsideRoomRate = applied == null && !!promo.finalRateNote;
+  return (
+    <div
+      className="d-flex align-items-center justify-content-between gap-2"
+      style={{ fontSize: "0.8rem", lineHeight: 1.3 }}
+    >
+      <span
+        className="d-inline-flex align-items-center gap-2"
+        style={{ minWidth: 0 }}
+      >
+        <span
+          style={{
+            color: bg,
+            display: "inline-flex",
+            width: 16,
+            justifyContent: "center",
+            flexShrink: 0,
+          }}
+        >
+          <Icon style={{ fontSize: "0.72rem" }} />
+        </span>
+        <span
+          className="fw-semibold text-dark text-truncate"
+          style={{ maxWidth: 110 }}
+          title={promo.promotionCode || promo.promotionType}
+        >
+          {promo.promotionCode || promo.promotionType}
+        </span>
+        {summary.offerLabel && (
+          <span
+            className="text-muted text-truncate"
+            style={{ maxWidth: 130 }}
+            title={summary.offerLabel}
+          >
+            {summary.offerLabel}
+          </span>
+        )}
+      </span>
+      <span className="d-inline-flex align-items-center gap-2 flex-shrink-0">
+        {promoRate ? (
+          <>
+            {hasSaving && (
+              <span
+                className="text-muted text-decoration-line-through"
+                style={{ fontSize: "0.74rem" }}
+              >
+                {baseRate}
+              </span>
+            )}
+            <span
+              className="fw-bold"
+              style={{
+                color:
+                  applied === false || outsideRoomRate ? "#6c757d" : "#EC0B43",
+              }}
+              title={
+                applied === false || outsideRoomRate
+                  ? promo.finalRateNote || "Not part of the final rate"
+                  : undefined
+              }
+            >
+              {currency} {promoRate}
+            </span>
+            {savingPct && applied !== false && !outsideRoomRate && (
+              <span style={savingPillStyle}>−{savingPct}</span>
+            )}
+            {applied === false && (
+              <span
+                style={notAppliedPillStyle}
+                title={promo.finalRateNote || "Not part of the final rate"}
+              >
+                Not applied
+              </span>
+            )}
+            {outsideRoomRate && (
+              <span style={notAppliedPillStyle} title={promo.finalRateNote}>
+                Not in room rate
+              </span>
+            )}
+            {applied === true && showApplied && (
+              <span style={appliedPillStyle} title="Part of the final rate">
+                Applied
+              </span>
+            )}
+          </>
+        ) : (
+          <>
+            <span
+              className="text-muted d-inline-flex align-items-center gap-1"
+              title={
+                promo.finalRateNote ||
+                summary.note ||
+                "Rate could not be calculated"
+              }
+              style={{ cursor: "help", fontSize: "0.76rem" }}
+            >
+              <FaInfoCircle style={{ fontSize: "0.7rem" }} />
+              {rateStatusText(summary)}
+            </span>
+            {summary.status === "NO_ROOM_VALUES" && onSetRates && (
+              <button
+                type="button"
+                className="btn btn-link p-0 text-danger text-decoration-none fw-semibold"
+                style={{ fontSize: "0.76rem", lineHeight: 1 }}
+                onClick={onSetRates}
+                title="Open this promotion and fill in the room rates"
+              >
+                Set rates
+              </button>
+            )}
+            {summary.status === "NO_ROOM_SETUP" && onConfigureRooms && (
+              <button
+                type="button"
+                className="btn btn-link p-0 text-danger text-decoration-none fw-semibold"
+                style={{ fontSize: "0.76rem", lineHeight: 1 }}
+                onClick={onConfigureRooms}
+                title="This hotel has no room occupancy configured yet — set it up first"
+              >
+                Configure rooms
+              </button>
+            )}
+          </>
+        )}
+      </span>
+    </div>
+  );
+}
+
 export default function PromotionHotelSearch() {
   const navigate = useNavigate();
   const [results, setResults] = useState([]);
@@ -144,6 +481,9 @@ export default function PromotionHotelSearch() {
   const [month, setMonth] = useState("");
   // Modal state — the hotel whose promotion details are being shown.
   const [detailsHotel, setDetailsHotel] = useState(null);
+  // Which promotion row in the details modal has its per-room rate
+  // breakdown expanded (key = `${promotionType}-${id}`), or null.
+  const [expandedPromoKey, setExpandedPromoKey] = useState(null);
   // Filter-pill state: "all" | "special" | "discount" | "staypay"
   const [familyFilter, setFamilyFilter] = useState("all");
 
@@ -735,6 +1075,13 @@ export default function PromotionHotelSearch() {
   const detailsPromoRows = Array.isArray(detailsHotel?.promotions)
     ? detailsHotel.promotions
     : [];
+  const detailsCurrency = detailsHotel?.currencyCode || "AED";
+
+  // Collapse any open breakdown whenever a different hotel's modal opens
+  // (or it closes) so the next hotel starts clean.
+  useEffect(() => {
+    setExpandedPromoKey(null);
+  }, [detailsHotel]);
 
   // ── Inline style helpers ──────────────────────────────────────────
   // The whole page keeps the brand red `#EC0B43` (already in use across
@@ -1142,6 +1489,18 @@ export default function PromotionHotelSearch() {
                   ) || (h.promotionTypes || [])[0];
                 const dominantStyle = styleForPromotion(dominantFamily);
                 const DominantIcon = dominantStyle.icon;
+                const cardCurrency = h.currencyCode || "AED";
+                const headlineHasBase =
+                  h.baseRateFrom != null &&
+                  h.promoRateFrom != null &&
+                  Number(h.baseRateFrom) > Number(h.promoRateFrom);
+                const hiddenRateRows = Math.max(
+                  0,
+                  promoRows.length - MAX_CARD_RATE_ROWS,
+                );
+                // "Applied" markers only make sense once there is more than
+                // one promotion to tell apart.
+                const showApplied = promoRows.length > 1;
                 return (
                   <Col xl={4} md={6} xs={12} key={h.hotelId}>
                     <div
@@ -1352,6 +1711,136 @@ export default function PromotionHotelSearch() {
                           })}
                         </div>
 
+                        {/* Rate strip — headline "from" price for the hotel,
+                            then the rate after each promotion (contract
+                            rate struck through → promotional rate → saving).
+                            Figures come from rateSummary on each promotion;
+                            see the note above formatRate(). */}
+                        <div
+                          style={{
+                            backgroundColor: "#fff8fa",
+                            border: "1px solid #f8d7df",
+                            borderRadius: 10,
+                            padding: "10px 12px",
+                          }}
+                        >
+                          <div className="d-flex align-items-end justify-content-between gap-2">
+                            <div style={{ minWidth: 0 }}>
+                              <div
+                                className="text-muted"
+                                style={{
+                                  fontSize: "0.68rem",
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.4px",
+                                  fontWeight: 600,
+                                }}
+                              >
+                                From · per room / night
+                              </div>
+                              {h.promoRateFrom != null ? (
+                                <div className="d-flex align-items-baseline gap-2 flex-wrap">
+                                  {headlineHasBase && (
+                                    <span
+                                      className="text-muted text-decoration-line-through"
+                                      style={{ fontSize: "0.85rem" }}
+                                    >
+                                      {cardCurrency} {formatRate(h.baseRateFrom)}
+                                    </span>
+                                  )}
+                                  <span
+                                    className="fw-bold"
+                                    style={{
+                                      fontSize: "1.3rem",
+                                      color: "#EC0B43",
+                                      lineHeight: 1.1,
+                                    }}
+                                  >
+                                    {cardCurrency} {formatRate(h.promoRateFrom)}
+                                  </span>
+                                </div>
+                              ) : (
+                                <div
+                                  className="text-muted"
+                                  style={{
+                                    fontSize: "0.85rem",
+                                    cursor: h.finalRate?.note ? "help" : undefined,
+                                  }}
+                                  title={h.finalRate?.note || undefined}
+                                >
+                                  {headlineFallbackText(promoRows, h.finalRate)}
+                                </div>
+                              )}
+                              <FinalRateCaption finalRate={h.finalRate} />
+                            </div>
+                            {h.maxSavingPercent > 0 && (
+                              <span
+                                style={{
+                                  ...savingPillStyle,
+                                  fontSize: "0.72rem",
+                                  padding: "3px 10px",
+                                }}
+                              >
+                                Save up to {formatPercent(h.maxSavingPercent)}
+                              </span>
+                            )}
+                          </div>
+
+                          {promoRows.length > 0 && (
+                            <div
+                              className="d-flex flex-column gap-1 mt-2 pt-2"
+                              style={{ borderTop: "1px dashed #f1c7d2" }}
+                            >
+                              {promoRows
+                                .slice(0, MAX_CARD_RATE_ROWS)
+                                .map((p, i) => {
+                                  // Fix-it links open Hotel Actions admin pages —
+                                  // only offered to admin/staff logins.
+                                  const editPath = isAgentRole
+                                    ? null
+                                    : promotionEditPath(h.hotelId, p);
+                                  const occupancyPath = isAgentRole
+                                    ? null
+                                    : hotelOccupancyPath(h.hotelId);
+                                  return (
+                                    <PromotionRateLine
+                                      key={`${p.promotionType}-${p.id}-${i}`}
+                                      promo={p}
+                                      currency={cardCurrency}
+                                      showApplied={showApplied}
+                                      onSetRates={
+                                        editPath
+                                          ? () =>
+                                              navigate(editPath, {
+                                                state: { from: "/promotion" },
+                                              })
+                                          : null
+                                      }
+                                      onConfigureRooms={
+                                        occupancyPath
+                                          ? () =>
+                                              navigate(occupancyPath, {
+                                                state: { from: "/promotion" },
+                                              })
+                                          : null
+                                      }
+                                    />
+                                  );
+                                })}
+                              {hiddenRateRows > 0 && (
+                                <button
+                                  type="button"
+                                  className="btn btn-link p-0 text-danger text-decoration-none align-self-start"
+                                  style={{ fontSize: "0.78rem" }}
+                                  onClick={() => setDetailsHotel(h)}
+                                >
+                                  +{hiddenRateRows} more promotion
+                                  {hiddenRateRows === 1 ? "" : "s"} — view details
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+
                         {/* Footer actions */}
                         <div
                           className="d-flex align-items-center gap-2 mt-auto pt-3"
@@ -1505,6 +1994,144 @@ export default function PromotionHotelSearch() {
                     </Card.Body>
                   </Card>
 
+                  {/* Final rate: how the card headline is reached once every
+                      live promotion of this hotel is combined (room-search
+                      precedence). */}
+                  {detailsHotel.finalRate && (
+                    <Card
+                      className="shadow-sm border-0 mb-3"
+                      style={{
+                        borderRadius: 10,
+                        borderLeft: "4px solid #EC0B43",
+                      }}
+                    >
+                      <Card.Body className="py-3">
+                        <div className="d-flex flex-wrap align-items-start justify-content-between gap-3">
+                          <div style={{ minWidth: 0 }}>
+                            <div
+                              className="text-muted"
+                              style={{
+                                fontSize: "0.68rem",
+                                textTransform: "uppercase",
+                                letterSpacing: "0.4px",
+                                fontWeight: 600,
+                              }}
+                            >
+                              Final rate · per room / night ({detailsCurrency})
+                            </div>
+                            {detailsHotel.finalRate.status === "OK" ? (
+                              <>
+                                <div className="d-flex align-items-baseline gap-2 flex-wrap">
+                                  {detailsHotel.finalRate.baseRateFrom != null &&
+                                    Number(detailsHotel.finalRate.baseRateFrom) >
+                                      Number(detailsHotel.finalRate.rateFrom) && (
+                                      <span
+                                        className="text-muted text-decoration-line-through"
+                                        style={{ fontSize: "0.9rem" }}
+                                      >
+                                        {detailsCurrency}{" "}
+                                        {formatRate(detailsHotel.finalRate.baseRateFrom)}
+                                      </span>
+                                    )}
+                                  <span
+                                    className="fw-bold"
+                                    style={{
+                                      fontSize: "1.35rem",
+                                      color: "#EC0B43",
+                                      lineHeight: 1.1,
+                                    }}
+                                  >
+                                    {detailsCurrency}{" "}
+                                    {formatRate(detailsHotel.finalRate.rateFrom)}
+                                  </span>
+                                  {detailsHotel.finalRate.savingPercent > 0 && (
+                                    <span style={savingPillStyle}>
+                                      −{formatPercent(detailsHotel.finalRate.savingPercent)}
+                                    </span>
+                                  )}
+                                </div>
+                                <div
+                                  className="text-muted"
+                                  style={{ fontSize: "0.78rem" }}
+                                >
+                                  {[
+                                    detailsHotel.finalRate.roomCategory,
+                                    detailsHotel.finalRate.roomType,
+                                    detailsHotel.finalRate.occupancy,
+                                  ]
+                                    .filter(Boolean)
+                                    .join(" · ")}
+                                  {detailsHotel.finalRate.detail && (
+                                    <> — {detailsHotel.finalRate.detail}</>
+                                  )}
+                                </div>
+                              </>
+                            ) : (
+                              <div
+                                className="text-muted"
+                                style={{ fontSize: "0.85rem" }}
+                              >
+                                {detailsHotel.finalRate.note ||
+                                  "Rate not available yet"}
+                              </div>
+                            )}
+                          </div>
+                          {detailsHotel.finalRate.status === "OK" && (
+                            <div
+                              className="d-flex flex-column gap-1"
+                              style={{ fontSize: "0.78rem", maxWidth: 420 }}
+                            >
+                              {(detailsHotel.finalRate.appliedPromotions || []).length >
+                                0 && (
+                                <div className="d-flex flex-wrap align-items-center gap-1">
+                                  <span className="fw-semibold">Applied:</span>
+                                  {(detailsHotel.finalRate.appliedPromotions || []).map(
+                                    (a, i) => {
+                                      const { bg, icon: Icon } = styleForPromotion(
+                                        a.promotionType,
+                                      );
+                                      return (
+                                        <span
+                                          key={`${a.promotionType}-${a.id}-${i}`}
+                                          style={{
+                                            color: bg,
+                                            border: `1px solid ${bg}`,
+                                            padding: "1px 8px",
+                                            borderRadius: 999,
+                                            fontSize: "0.72rem",
+                                            fontWeight: 600,
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: 4,
+                                          }}
+                                        >
+                                          <Icon style={{ fontSize: "0.65rem" }} />
+                                          {describePromotion(a)}
+                                        </span>
+                                      );
+                                    },
+                                  )}
+                                </div>
+                              )}
+                              {(detailsHotel.finalRate.skippedPromotions || []).map(
+                                (s, i) => (
+                                  <div
+                                    key={`skip-${s.promotionType}-${s.id}-${i}`}
+                                    className="text-muted"
+                                  >
+                                    <span className="fw-semibold">Not applied:</span>{" "}
+                                    {describePromotion(s)}
+                                    {s.reason && <> — {s.reason}</>}
+                                  </div>
+                                ),
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </Card.Body>
+                    </Card>
+                  )}
+
                   <Card
                     className="shadow-sm border-0"
                     style={{ borderRadius: 10 }}
@@ -1531,13 +2158,16 @@ export default function PromotionHotelSearch() {
                               }}
                             >
                               <tr>
-                                <th style={{ width: 60 }} className="text-center">
+                                <th style={{ width: 50 }} className="text-center">
                                   #
                                 </th>
-                                <th style={{ width: "22%" }}>Type</th>
-                                <th style={{ width: "20%" }}>Code</th>
-                                <th style={{ width: "15%" }}>Day Type</th>
+                                <th style={{ width: "17%" }}>Type</th>
+                                <th style={{ width: "14%" }}>Code</th>
+                                <th style={{ width: "11%" }}>Day Type</th>
                                 <th>Validity</th>
+                                <th style={{ width: "26%" }}>
+                                  Rate / night ({detailsCurrency})
+                                </th>
                               </tr>
                             </thead>
                             <tbody>
@@ -1548,78 +2178,344 @@ export default function PromotionHotelSearch() {
                                 const validities = Array.isArray(p.validities)
                                   ? p.validities
                                   : [];
+                                const summary = p.rateSummary || {};
+                                const roomRows = Array.isArray(summary.rooms)
+                                  ? summary.rooms
+                                  : [];
+                                const rowKey = `${p.promotionType}-${p.id}`;
+                                const isExpanded = expandedPromoKey === rowKey;
+                                // Admin/staff only — agents cannot edit promotions.
+                                const editPath = isAgentRole
+                                  ? null
+                                  : promotionEditPath(detailsHotel?.hotelId, p);
+                                const occupancyPath = isAgentRole
+                                  ? null
+                                  : hotelOccupancyPath(detailsHotel?.hotelId);
+                                const promoRate = formatRate(summary.promoRateFrom);
+                                const baseRate = formatRate(summary.baseRateFrom);
+                                const hasSaving =
+                                  summary.baseRateFrom != null &&
+                                  summary.promoRateFrom != null &&
+                                  Number(summary.baseRateFrom) >
+                                    Number(summary.promoRateFrom);
+                                const savingPct = hasSaving
+                                  ? formatPercent(summary.savingPercent)
+                                  : null;
+                                // Same three states as PromotionRateLine on the card.
+                                const outsideRoomRate =
+                                  p.appliedInFinalRate == null && !!p.finalRateNote;
                                 return (
-                                  <tr key={`${p.promotionType}-${p.id}-${idx}`}>
-                                    <td className="text-center text-muted">
-                                      {idx + 1}
-                                    </td>
-                                    <td>
-                                      <span
-                                        style={{
-                                          backgroundColor: "#ffffff",
-                                          color: bg,
-                                          border: `1px solid ${bg}`,
-                                          padding: "3px 10px",
-                                          borderRadius: "12px",
-                                          fontSize: "0.72rem",
-                                          fontWeight: 600,
-                                          display: "inline-flex",
-                                          alignItems: "center",
-                                          gap: "5px",
-                                        }}
-                                      >
-                                        <Icon style={{ fontSize: "0.7rem" }} />
-                                        {p.promotionType}
-                                      </span>
-                                    </td>
-                                    <td>
-                                      <code
-                                        style={{
-                                          color: "#212529",
-                                          backgroundColor: "#f1f3f5",
-                                          padding: "3px 8px",
-                                          borderRadius: "4px",
-                                          fontSize: "0.82rem",
-                                        }}
-                                      >
-                                        {p.promotionCode || "—"}
-                                      </code>
-                                    </td>
-                                    <td>
-                                      <span className="fw-semibold text-dark">
-                                        {p.dayType || "—"}
-                                      </span>
-                                    </td>
-                                    <td>
-                                      {validities.length === 0 ? (
-                                        <span className="text-muted">—</span>
-                                      ) : (
+                                  <React.Fragment key={`${rowKey}-${idx}`}>
+                                    <tr>
+                                      <td className="text-center text-muted">
+                                        {idx + 1}
+                                      </td>
+                                      <td>
+                                        <span
+                                          style={{
+                                            backgroundColor: "#ffffff",
+                                            color: bg,
+                                            border: `1px solid ${bg}`,
+                                            padding: "3px 10px",
+                                            borderRadius: "12px",
+                                            fontSize: "0.72rem",
+                                            fontWeight: 600,
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: "5px",
+                                          }}
+                                        >
+                                          <Icon style={{ fontSize: "0.7rem" }} />
+                                          {p.promotionType}
+                                        </span>
+                                      </td>
+                                      <td>
+                                        <code
+                                          style={{
+                                            color: "#212529",
+                                            backgroundColor: "#f1f3f5",
+                                            padding: "3px 8px",
+                                            borderRadius: "4px",
+                                            fontSize: "0.82rem",
+                                          }}
+                                        >
+                                          {p.promotionCode || "—"}
+                                        </code>
+                                      </td>
+                                      <td>
+                                        <span className="fw-semibold text-dark">
+                                          {p.dayType || "—"}
+                                        </span>
+                                      </td>
+                                      <td>
+                                        {validities.length === 0 ? (
+                                          <span className="text-muted">—</span>
+                                        ) : (
+                                          <div className="d-flex flex-column gap-1">
+                                            {validities.map((v, i) => (
+                                              <span
+                                                key={i}
+                                                className="d-inline-flex align-items-center gap-2"
+                                                style={{ fontSize: "0.85rem" }}
+                                              >
+                                                <FaCalendarAlt
+                                                  className="text-danger"
+                                                  style={{ fontSize: "0.75rem" }}
+                                                />
+                                                <span className="fw-semibold">
+                                                  {v.validityFrom || "—"}
+                                                </span>
+                                                <span className="text-muted">
+                                                  →
+                                                </span>
+                                                <span className="fw-semibold">
+                                                  {v.validityTo || "—"}
+                                                </span>
+                                              </span>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </td>
+                                      {/* Rate after the promotion — headline for
+                                          the cheapest room; click to expand the
+                                          per-room breakdown underneath. */}
+                                      <td>
                                         <div className="d-flex flex-column gap-1">
-                                          {validities.map((v, i) => (
+                                          {summary.offerLabel && (
                                             <span
-                                              key={i}
-                                              className="d-inline-flex align-items-center gap-2"
-                                              style={{ fontSize: "0.85rem" }}
+                                              className="text-muted"
+                                              style={{ fontSize: "0.78rem" }}
                                             >
-                                              <FaCalendarAlt
-                                                className="text-danger"
-                                                style={{ fontSize: "0.75rem" }}
-                                              />
-                                              <span className="fw-semibold">
-                                                {v.validityFrom || "—"}
-                                              </span>
-                                              <span className="text-muted">
-                                                →
-                                              </span>
-                                              <span className="fw-semibold">
-                                                {v.validityTo || "—"}
-                                              </span>
+                                              {summary.offerLabel}
+                                              {summary.appliesTo &&
+                                                summary.appliesTo !== "Room" && (
+                                                  <> · {summary.appliesTo}</>
+                                                )}
                                             </span>
-                                          ))}
+                                          )}
+                                          {promoRate ? (
+                                            <span className="d-inline-flex align-items-center gap-2 flex-wrap">
+                                              {hasSaving && (
+                                                <span
+                                                  className="text-muted text-decoration-line-through"
+                                                  style={{ fontSize: "0.8rem" }}
+                                                >
+                                                  {baseRate}
+                                                </span>
+                                              )}
+                                              <span
+                                                className="fw-bold"
+                                                style={{
+                                                  color:
+                                                    p.appliedInFinalRate === false ||
+                                                    outsideRoomRate
+                                                      ? "#6c757d"
+                                                      : "#EC0B43",
+                                                }}
+                                              >
+                                                {promoRate}
+                                              </span>
+                                              {savingPct &&
+                                                p.appliedInFinalRate !== false &&
+                                                !outsideRoomRate && (
+                                                  <span style={savingPillStyle}>
+                                                    −{savingPct}
+                                                  </span>
+                                                )}
+                                              {outsideRoomRate && (
+                                                <span
+                                                  style={notAppliedPillStyle}
+                                                  title={p.finalRateNote}
+                                                >
+                                                  Not in room rate
+                                                </span>
+                                              )}
+                                              {p.appliedInFinalRate === true &&
+                                                detailsPromoRows.length > 1 && (
+                                                  <span
+                                                    style={appliedPillStyle}
+                                                    title="Part of the final rate"
+                                                  >
+                                                    Applied
+                                                  </span>
+                                                )}
+                                              {p.appliedInFinalRate === false && (
+                                                <span
+                                                  style={notAppliedPillStyle}
+                                                  title={
+                                                    p.finalRateNote ||
+                                                    "Not part of the final rate"
+                                                  }
+                                                >
+                                                  Not applied
+                                                </span>
+                                              )}
+                                            </span>
+                                          ) : (
+                                            <>
+                                              <span
+                                                className="text-muted d-inline-flex align-items-center gap-1"
+                                                style={{ fontSize: "0.82rem" }}
+                                                title={summary.note || ""}
+                                              >
+                                                <FaInfoCircle style={{ fontSize: "0.7rem" }} />
+                                                {rateStatusText(summary)}
+                                              </span>
+                                              {summary.note && (
+                                                <span
+                                                  className="text-muted"
+                                                  style={{ fontSize: "0.74rem" }}
+                                                >
+                                                  {summary.note}
+                                                </span>
+                                              )}
+                                              {p.finalRateNote && (
+                                                <span
+                                                  className="text-muted"
+                                                  style={{ fontSize: "0.74rem" }}
+                                                >
+                                                  {p.finalRateNote}
+                                                </span>
+                                              )}
+                                              {summary.status === "NO_ROOM_VALUES" &&
+                                                editPath && (
+                                                  <button
+                                                    type="button"
+                                                    className="btn btn-link p-0 text-danger text-decoration-none fw-semibold align-self-start"
+                                                    style={{ fontSize: "0.76rem" }}
+                                                    onClick={() => {
+                                                      setDetailsHotel(null);
+                                                      navigate(editPath, {
+                                                        state: { from: "/promotion" },
+                                                      });
+                                                    }}
+                                                  >
+                                                    Set rates for this promotion
+                                                  </button>
+                                                )}
+                                              {summary.status === "NO_ROOM_SETUP" &&
+                                                occupancyPath && (
+                                                  <button
+                                                    type="button"
+                                                    className="btn btn-link p-0 text-danger text-decoration-none fw-semibold align-self-start"
+                                                    style={{ fontSize: "0.76rem" }}
+                                                    onClick={() => {
+                                                      setDetailsHotel(null);
+                                                      navigate(occupancyPath, {
+                                                        state: { from: "/promotion" },
+                                                      });
+                                                    }}
+                                                  >
+                                                    Configure room occupancy
+                                                  </button>
+                                                )}
+                                            </>
+                                          )}
+                                          {roomRows.length > 0 && (
+                                            <button
+                                              type="button"
+                                              className="btn btn-link p-0 text-danger text-decoration-none align-self-start"
+                                              style={{ fontSize: "0.76rem" }}
+                                              onClick={() =>
+                                                setExpandedPromoKey(
+                                                  isExpanded ? null : rowKey,
+                                                )
+                                              }
+                                            >
+                                              {isExpanded ? "Hide" : "Show"} room-wise
+                                              rates ({roomRows.length})
+                                            </button>
+                                          )}
                                         </div>
-                                      )}
-                                    </td>
-                                  </tr>
+                                      </td>
+                                    </tr>
+                                    {isExpanded && (
+                                      <tr>
+                                        <td
+                                          colSpan={6}
+                                          style={{
+                                            backgroundColor: "#fff8fa",
+                                            padding: "12px 16px",
+                                          }}
+                                        >
+                                          <div
+                                            className="fw-semibold text-dark mb-2"
+                                            style={{ fontSize: "0.82rem" }}
+                                          >
+                                            Rate after promotion — per room / night
+                                            ({detailsCurrency})
+                                          </div>
+                                          <div className="table-responsive">
+                                            <Table
+                                              size="sm"
+                                              bordered
+                                              className="mb-0 align-middle"
+                                              style={{
+                                                fontSize: "0.82rem",
+                                                backgroundColor: "#ffffff",
+                                              }}
+                                            >
+                                              <thead className="table-light">
+                                                <tr>
+                                                  <th>Room Category</th>
+                                                  <th>Room Type</th>
+                                                  <th>Occupancy</th>
+                                                  <th>Offer</th>
+                                                  <th className="text-end">
+                                                    Contract rate
+                                                  </th>
+                                                  <th className="text-end">
+                                                    After promotion
+                                                  </th>
+                                                  <th className="text-end">Saving</th>
+                                                </tr>
+                                              </thead>
+                                              <tbody>
+                                                {roomRows.map((r, i) => (
+                                                  <tr key={i}>
+                                                    <td>{r.roomCategory || "—"}</td>
+                                                    <td>{r.roomType || "—"}</td>
+                                                    <td>{r.occupancy || "—"}</td>
+                                                    <td className="text-muted">
+                                                      {r.detail || "—"}
+                                                    </td>
+                                                    <td className="text-end">
+                                                      {r.baseRate != null
+                                                        ? formatRate(r.baseRate)
+                                                        : "—"}
+                                                    </td>
+                                                    <td
+                                                      className="text-end fw-semibold"
+                                                      style={{ color: "#EC0B43" }}
+                                                    >
+                                                      {r.promoRate != null
+                                                        ? formatRate(r.promoRate)
+                                                        : "—"}
+                                                    </td>
+                                                    <td className="text-end">
+                                                      {r.savingAmount != null &&
+                                                      Number(r.savingAmount) > 0
+                                                        ? `${formatRate(r.savingAmount)} (${formatPercent(r.savingPercent)})`
+                                                        : "—"}
+                                                    </td>
+                                                  </tr>
+                                                ))}
+                                              </tbody>
+                                            </Table>
+                                          </div>
+                                          {summary.note && (
+                                            <div
+                                              className="text-muted d-flex align-items-center gap-1 mt-2"
+                                              style={{ fontSize: "0.78rem" }}
+                                            >
+                                              <FaInfoCircle style={{ fontSize: "0.7rem" }} />
+                                              {summary.note}
+                                            </div>
+                                          )}
+                                        </td>
+                                      </tr>
+                                    )}
+                                  </React.Fragment>
                                 );
                               })}
                             </tbody>
@@ -1628,6 +2524,31 @@ export default function PromotionHotelSearch() {
                       )}
                     </Card.Body>
                   </Card>
+                  <div
+                    className="text-muted d-flex align-items-start gap-2 mt-2"
+                    style={{ fontSize: "0.76rem" }}
+                  >
+                    <FaInfoCircle
+                      className="flex-shrink-0"
+                      style={{ fontSize: "0.7rem", marginTop: 3 }}
+                    />
+                    <span>
+                      Rates are per room per night in {detailsCurrency}, before
+                      agent markup. Each promotion row shows that promotion on
+                      its own against the lowest live contract rate inside its
+                      validity window; the final rate combines this hotel's
+                      live promotions the way the room search does — a Special
+                      Rate competes with the contract rate (the lower one is
+                      used), a Stay-Pay takes precedence over a Discount on the
+                      same room (they are never stacked), and Discount /
+                      Stay-Pay are applied to the contract rate. Stay-Pay
+                      figures are the effective nightly rate over one full
+                      stay/pay cycle (e.g. Stay 2 Pay 1 halves the rate across
+                      2 nights; shorter stays pay the full rate). The exact
+                      price for a stay is confirmed on the room list after you
+                      pick dates and guests.
+                    </span>
+                  </div>
                 </>
               )}
             </Modal.Body>
