@@ -333,6 +333,11 @@ export default function Sidebar() {
           children: [
             // { label: "Country", to: "/masters/country-mapping" },
             { label: "City", to: "/masters/city-mapping" },
+            // super_admin-only automatic filler for api_city_mapping — same
+            // matching engine the manual "City" screen drives, run for every
+            // supplier at once. See /masters/city-mapping-bulk (route also
+            // gated to super_admin).
+            { label: "Bulk (Auto) Mapping", to: "/masters/city-mapping-bulk", roles: ["super_admin"] },
             { label: "Hotel", to: "/masters/hotel-mapping" },
             { label: "Fetch Hotels", to: "/masters/fetch-new-hotels" },
 

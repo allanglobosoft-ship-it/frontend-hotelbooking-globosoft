@@ -1,0 +1,148 @@
+/* Bulk (Auto) City Mapping — /masters/city-mapping-bulk
+   Page-local polish only; colours come from the global tokens in
+   modernTheme.css (--mt-red, --mt-radius-sm, --mt-shadow-sm).
+   Brand tints are derived from the red theme ($brand-red #EC0B43):
+   #feeff2 = ~7% red on white (chip / row highlight), #fac3d1 = ~24%
+   (chip border), #aa0830 = ~72% red on black (text on those tints). */
+
+.bcm-page h4 { letter-spacing: -.02em; }
+
+/* Step cards: numbered header, calm body. */
+.bcm-step .card-header {
+  background: #fff;
+  border-bottom: 1px solid #eef0f3;
+  font-weight: 600;
+}
+.bcm-step-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--mt-red, #EC0B43);
+  color: #fff;
+  font-size: .75rem;
+  font-weight: 700;
+  margin-right: .5rem;
+}
+
+/* Supplier chips (checkbox styled as a pill). */
+.bcm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  padding: .35rem .8rem;
+  border: 1px solid #dfe3e8;
+  border-radius: 999px;
+  background: #fff;
+  font-size: .875rem;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color .15s, background .15s, color .15s;
+}
+.bcm-chip input { margin: 0; }
+.bcm-chip.is-on {
+  border-color: var(--mt-red, #EC0B43);
+  background: #feeff2;
+  color: #aa0830;
+  font-weight: 600;
+}
+.bcm-chip.is-off-limits {
+  cursor: not-allowed;
+  color: #9aa3ad;
+  background: #f6f7f9;
+  border-style: dashed;
+}
+
+/* Action bar sticks under the top bar while the long result list scrolls. */
+.bcm-actions {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: rgba(248, 249, 250, .96);
+  backdrop-filter: blur(4px);
+  padding: .75rem 0;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid #eef0f3;
+}
+
+/* Summary tiles. */
+.bcm-tile {
+  background: #fff;
+  border: 1px solid #eef0f3;
+  border-radius: var(--mt-radius-sm, 10px);
+  padding: .75rem 1rem;
+  height: 100%;
+}
+.bcm-tile-label {
+  font-size: .75rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: #6c757d;
+}
+.bcm-tile-value { font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
+.bcm-tile-hint { font-size: .75rem; color: #8a939c; }
+.bcm-tile.is-new .bcm-tile-value { color: var(--mt-red, #EC0B43); }
+.bcm-tile.is-ok .bcm-tile-value { color: #198754; }
+.bcm-tile.is-warn .bcm-tile-value { color: #b8860b; }
+.bcm-tile.is-bad .bcm-tile-value { color: #dc3545; }
+
+/* Per-supplier accordion header: name · coverage bar · compact counts. */
+.bcm-sup-head {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
+  flex-wrap: wrap;
+}
+.bcm-sup-name { font-weight: 700; min-width: 90px; }
+.bcm-coverage { flex: 1 1 180px; min-width: 140px; }
+.bcm-coverage .progress { height: 6px; background: #eef0f3; }
+.bcm-coverage .progress-bar { background: #198754; }
+.bcm-coverage small { color: #6c757d; }
+.bcm-counts { display: flex; gap: .35rem; flex-wrap: wrap; }
+.bcm-count {
+  font-size: .75rem;
+  padding: .15rem .5rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.bcm-count.is-new  { background: #feeff2; color: #aa0830; border-color: #fac3d1; font-weight: 700; }
+.bcm-count.is-ok   { background: #e9f7ef; color: #146c43; }
+.bcm-count.is-done { background: #f1f3f5; color: #495057; }
+.bcm-count.is-warn { background: #fff8e1; color: #8a6d00; }
+.bcm-count.is-bad  { background: #fdecef; color: #b02a37; }
+.bcm-count.is-err  { background: #dc3545; color: #fff; }
+
+/* Detail grid inside a supplier panel. */
+.bcm-kv { display: grid; grid-template-columns: auto 1fr; gap: .15rem 1rem; font-size: .85rem; }
+.bcm-kv dt { color: #6c757d; font-weight: 500; }
+.bcm-kv dd { margin: 0; }
+
+/* Leftover tables. */
+.bcm-leftovers .nav-tabs .nav-link { font-size: .875rem; padding: .4rem .75rem; }
+.bcm-leftovers table td, .bcm-leftovers table th { font-size: .85rem; vertical-align: middle; }
+.bcm-detail { color: #6c757d; max-width: 520px; }
+.bcm-empty { color: #8a939c; font-size: .875rem; padding: 1.5rem 0; text-align: center; }
+
+/* Mapping dialog. */
+.bcm-city-card {
+  background: #f8f9fa;
+  border: 1px solid #eef0f3;
+  border-radius: var(--mt-radius-sm, 10px);
+  padding: .6rem .9rem;
+}
+.bcm-cand tbody tr { cursor: pointer; }
+.bcm-cand tbody tr.is-picked { background: #feeff2; }
+.bcm-cand td, .bcm-cand th { font-size: .85rem; vertical-align: middle; }
+.bcm-score { font-size: .72rem; padding: .1rem .45rem; border-radius: 999px; background: #f1f3f5; color: #495057; white-space: nowrap; }
+.bcm-score.s100 { background: #e9f7ef; color: #146c43; }
+.bcm-score.s80  { background: #e7f1ff; color: #0b5ed7; }
+.bcm-score.s60  { background: #fff8e1; color: #8a6d00; }
+
+@media (max-width: 575.98px) {
+  .bcm-sup-name { min-width: 0; }
+  .bcm-actions .btn { flex: 1 1 auto; }
+}
