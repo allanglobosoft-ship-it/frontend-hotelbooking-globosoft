@@ -309,6 +309,18 @@ const PackageSearch = () => {
   const [errors, setErrors] = useState({});
   const [results, setResults] = useState([]);
   const [hasSearched, setHasSearched] = useState(false);
+  // Default listing — every active package, loaded automatically when the
+  // page opens (see loadDefaultPackages) so the operator can browse before
+  // searching. It fills the same `results` a search does, so the sidebar
+  // filters, sort bar, map and cards all work on it; `hasSearched` stays
+  // false while it is on screen, which keeps the search form expanded.
+  // Starts true because the load is kicked off on mount — avoids a one-frame
+  // flash of the "Ready to Search?" card before the request begins.
+  const [isDefaultLoading, setIsDefaultLoading] = useState(true);
+  // Latest package-list request wins. A search started while the default
+  // listing is still loading bumps this, so the late default response is
+  // dropped instead of overwriting the search results.
+  const packageRequestIdRef = useRef(0);
   // When results are on screen the big search form collapses into a sticky
   // summary strip. Clicking "Modify Search" flips this true to re-expand it.
   const [isEditingSearch, setIsEditingSearch] = useState(false);
@@ -607,11 +619,42 @@ const PackageSearch = () => {
     }
   };
 
+  // ─────────────────────────────────────────────
+  // API: Default listing — all active packages
+  // Same /api/v1/package-booking/search endpoint the Search button uses, sent
+  // with no criteria: the backend then skips every filter (destination,
+  // nationality, travel window, occupancy) and returns each package whose
+  // liveStatus is Active. No agent is sent, so rates carry no agent markup —
+  // harmless here: the cards show no price, the Low/High sort order is the
+  // same with or without markup, and booking always goes through a real
+  // search (see handleBookFromDefaultList).
+  // ─────────────────────────────────────────────
+  const loadDefaultPackages = async () => {
+    const requestId = ++packageRequestIdRef.current;
+    setIsDefaultLoading(true);
+    try {
+      const response = await axiosInstance.post(
+        "/api/v1/package-booking/search",
+        {},
+      );
+      if (requestId !== packageRequestIdRef.current) return; // superseded
+      setResults(Array.isArray(response.data) ? response.data : []);
+    } catch (error) {
+      if (requestId !== packageRequestIdRef.current) return;
+      console.error("Failed to load active packages:", error);
+      toast.error(error.response?.data?.message || "Failed to load packages");
+      setResults([]);
+    } finally {
+      if (requestId === packageRequestIdRef.current) setIsDefaultLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchAgents();
     loadInitialDestinations();
     loadInitialNationalities();
     fetchEmployees();
+    loadDefaultPackages();
   }, []);
 
   // Agent logins: resolve the agent's own id so the search still carries an
@@ -673,7 +716,9 @@ const PackageSearch = () => {
   };
 
   const handleSearchSubmit = async (e) => {
-    e.preventDefault();
+    // No event when run from a default-listing "Book" click (see
+    // handleBookFromDefaultList).
+    if (e) e.preventDefault();
     const formErrors = validateForm();
     if (Object.keys(formErrors).length > 0) {
       setErrors(formErrors);
@@ -681,6 +726,11 @@ const PackageSearch = () => {
     }
 
     setErrors({});
+    // A search supersedes the automatic default listing — invalidate any
+    // default request still in flight so its late response can't replace
+    // these results (see loadDefaultPackages).
+    packageRequestIdRef.current += 1;
+    setIsDefaultLoading(false);
     setIsLoading(true);
     startProgress();
     setHasSearched(true);
@@ -833,6 +883,24 @@ const PackageSearch = () => {
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
+  // "Book" on a default-listing card. Those rows come from a criteria-free
+  // search, so they carry no matched package category and no agent,
+  // destination, nationality or travel window — all of which the booking
+  // page needs (its Hotels step cannot load without a category). Booking
+  // therefore still goes through a real search: missing details are flagged
+  // on the search form above, and a complete form runs the search so the
+  // operator books from results matched to those details, exactly as before.
+  const handleBookFromDefaultList = () => {
+    const formErrors = validateForm();
+    if (Object.keys(formErrors).length > 0) {
+      setErrors(formErrors);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      toast.error("Fill in the search details above to book this package.");
+      return;
+    }
+    handleSearchSubmit();
+  };
+
   // Resolve image paths the same way PackageDetailedView does, so saved
   // absolute Windows paths still render in-browser.
   const getImageUrl = (imagePath) => {
@@ -878,6 +946,9 @@ const PackageSearch = () => {
   // Results are on screen once a search has run. Collapse the full form into
   // the sticky summary strip then, unless the user chose to modify the search.
   const collapseSearch = hasSearched && !isEditingSearch;
+  // Until a search runs, the results area holds the default listing (every
+  // active package) fetched on page open by loadDefaultPackages.
+  const isDefaultListing = !hasSearched;
   const selectedAgentName = agents.find(
     (a) => String(a.id) === String(agentId),
   )?.companyName;
@@ -1491,7 +1562,23 @@ const PackageSearch = () => {
 
           {/* Results / Empty State */}
           <div ref={resultsRef}>
-          {!hasSearched ? (
+          {isLoading || isDefaultLoading ? (
+            /* A package-list request is in flight — the default listing on
+               page open, or a search. Shown in place of the empty states so
+               "No Packages Found" never flashes before the response lands. */
+            <Card className="empty-state-card mt-5 text-center py-5">
+              <Card.Body>
+                <Spinner animation="border" variant="danger" />
+                <p className="mt-3 small text-muted mb-0">
+                  {isLoading
+                    ? "Searching packages..."
+                    : "Loading available packages..."}
+                </p>
+              </Card.Body>
+            </Card>
+          ) : isDefaultListing && results.length === 0 ? (
+            /* Default listing came back empty (or failed) — fall back to the
+               original search prompt. */
             <Card className="empty-state-card mt-5 text-center py-5">
               <Card.Body>
                 <div className="empty-state-icon">
@@ -1506,9 +1593,20 @@ const PackageSearch = () => {
             </Card>
           ) : results.length > 0 ? (
             <div className="mt-4">
-              {/* Results Header */}
-              <div className="d-flex justify-content-between align-items-center mb-3">
-                <h5 className="fw-bold mb-0 text-dark">Search Results</h5>
+              {/* Results Header — the default listing is labelled as such,
+                  with a pointer to the search form that narrows it. */}
+              <div className="d-flex justify-content-between align-items-center gap-2 mb-3">
+                <div>
+                  <h5 className="fw-bold mb-0 text-dark">
+                    {isDefaultListing ? "Available Packages" : "Search Results"}
+                  </h5>
+                  {isDefaultListing && (
+                    <small className="text-muted">
+                      Showing all active packages — search above to filter by
+                      destination, nationality, travel dates and guests.
+                    </small>
+                  )}
+                </div>
                 <span className="text-muted fw-medium">
                   {filteredResults.length}
                   {filteredResults.length !== results.length
@@ -1848,7 +1946,11 @@ const PackageSearch = () => {
                                           variant="primary"
                                           size="sm"
                                           className="pkg-book-btn rounded-pill fw-bold"
-                                          onClick={() => handleBookNow(pkg)}
+                                          onClick={() =>
+                                            isDefaultListing
+                                              ? handleBookFromDefaultList()
+                                              : handleBookNow(pkg)
+                                          }
                                         >
                                          Book
                                         </Button>
@@ -1909,6 +2011,8 @@ const PackageSearch = () => {
                   onClick={() => {
                     setHasSearched(false);
                     setResults([]);
+                    // Back to the default listing the page opens with.
+                    loadDefaultPackages();
                   }}
                 >
                   Clear Search
