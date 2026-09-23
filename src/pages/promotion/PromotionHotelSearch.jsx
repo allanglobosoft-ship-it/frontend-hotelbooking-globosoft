@@ -1006,18 +1006,6 @@ export default function PromotionHotelSearch() {
     setFamilyFilter("all");
   }, [results]);
 
-  const openHotelPromotions = (h) => {
-    if (!h || !h.hotelId) return;
-    // Tag the navigation with `from: "/promotion"` so the Promotions
-    // page's Back button knows to bring the operator back to this
-    // deals showcase (see pages/HotelActions/Promotion/Promotion.jsx —
-    // it reads location.state?.from and overrides its default backUrl
-    // only when this marker is present).
-    navigate(`/hotel-actions/${h.hotelId}/promotions`, {
-      state: { from: "/promotion" },
-    });
-  };
-
   // Counts per family across all fetched hotels — powers both the stats
   // row and the badge counts on the family filter pills.
   const familyCounts = useMemo(() => {
@@ -2567,14 +2555,18 @@ export default function PromotionHotelSearch() {
                 >
                   Close
                 </Button>
+                {/* Same flow as the hotel card's Book Now button — swap
+                    this modal for the Book Now popup of the hotel being
+                    viewed (promotion-validity guard, room preflight and
+                    /room-list hand-off all live in handleBookNowSubmit). */}
                 <Button
                   variant="danger"
                   onClick={() => {
-                    if (detailsHotel) openHotelPromotions(detailsHotel);
+                    if (detailsHotel) openBookingModal(detailsHotel);
                     setDetailsHotel(null);
                   }}
                 >
-                  Manage Promotions
+                  Book Now
                 </Button>
               </div>
             </Modal.Footer>
