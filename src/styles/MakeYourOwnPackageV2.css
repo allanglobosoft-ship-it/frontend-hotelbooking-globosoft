@@ -1,0 +1,979 @@
+/* ============================================================
+   Make Your Own Package V2 — page-scoped layout styles
+   ------------------------------------------------------------
+   Imported ONLY by the three V2 pages (criteria form, combined
+   search wizard, booking page). Every rule is scoped under the
+   `.myop-v2` wrapper class those pages put on their <main> /
+   root element, so nothing here can leak into the legacy v1
+   pages or the shared components they render.
+
+   Scope of this file is layout, spacing, grouping and
+   responsive behaviour only. Colours reuse values that already
+   exist on these pages / in the global theme (brand red
+   #EC0B43 / #C90939, greys #dee2e6 / #e5e7eb / #e9ecef / #f8f9fa
+   etc.) and no font-family or font-size is redefined here —
+   text keeps the size of whatever Bootstrap class the JSX
+   already uses.
+   ============================================================ */
+
+.myop-v2 {
+  --myop-radius: 12px;
+  --myop-radius-lg: 16px;
+  --myop-border: #e5e7eb;
+  --myop-border-strong: #dee2e6;
+  --myop-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --myop-sticky-top: 76px; /* 60px TopBar + 16px gutter */
+}
+
+/* ── Structural cards must not "jump" on hover ────────────────
+   modernTheme.css lifts every top-level .card by 3px on hover,
+   which is fine for result tiles but wrong for form containers,
+   the wizard frame and the summary card. */
+.myop-v2 .myop-v2-static-card,
+.myop-v2 .myop-v2-static-card:hover {
+  transform: none !important;
+  margin-bottom: 0;
+}
+
+/* ── Journey stepper (Trip details → Build package → Review) ── */
+.myop-v2-journey {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 1.25rem;
+}
+.myop-v2-journey__step {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.myop-v2-journey__dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 1.5px solid var(--myop-border-strong);
+  background: #ffffff;
+  color: #6c757d;
+  font-weight: 600;
+}
+.myop-v2-journey__step.is-done .myop-v2-journey__dot,
+.myop-v2-journey__step.is-active .myop-v2-journey__dot {
+  background: #EC0B43;
+  border-color: #EC0B43;
+  color: #ffffff;
+}
+.myop-v2-journey__label {
+  white-space: nowrap;
+  color: #6c757d;
+  font-weight: 500;
+}
+.myop-v2-journey__step.is-done .myop-v2-journey__label,
+.myop-v2-journey__step.is-active .myop-v2-journey__label {
+  color: #212529;
+}
+.myop-v2-journey__step.is-active .myop-v2-journey__label {
+  font-weight: 600;
+}
+.myop-v2-journey__line {
+  flex: 1 1 24px;
+  height: 2px;
+  min-width: 16px;
+  background: var(--myop-border-strong);
+  border-radius: 999px;
+}
+.myop-v2-journey__line.is-done {
+  background: #EC0B43;
+}
+@media (max-width: 575.98px) {
+  .myop-v2-journey__label {
+    display: none;
+  }
+  .myop-v2-journey__step.is-active .myop-v2-journey__label {
+    display: inline;
+  }
+}
+
+/* ── Page header row (title left, agent balance right) ─────── */
+.myop-v2-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+/* ── Field groups on forms (criteria page, booking page) ────── */
+.myop-v2-fieldgroup {
+  border: 1px solid var(--myop-border);
+  border-radius: var(--myop-radius);
+  padding: 1rem 1.25rem 1.25rem;
+  background: #ffffff;
+}
+.myop-v2-fieldgroup + .myop-v2-fieldgroup {
+  margin-top: 1rem;
+}
+.myop-v2-fieldgroup__title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--myop-border);
+}
+.myop-v2-fieldgroup__title .fw-semibold {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Itinerary rows on the criteria form */
+.myop-v2-itin-row {
+  padding: 0.5rem 0;
+}
+.myop-v2-itin-row + .myop-v2-itin-row {
+  border-top: 1px dashed var(--myop-border);
+}
+.myop-v2-itin-row__index {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--myop-border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: #f8f9fa;
+  font-weight: 600;
+}
+.myop-v2-icon-btn {
+  width: 42px;
+  height: 42px;
+  min-width: 42px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* "What happens next" strip under the criteria form */
+.myop-v2-next-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.myop-v2-next-steps__item {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid var(--myop-border);
+  border-radius: var(--myop-radius);
+  background: #ffffff;
+}
+@media (max-width: 767.98px) {
+  .myop-v2-next-steps {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Wizard page ───────────────────────────────────────────── */
+.myop-v2 .myop-v2-wizard-frame {
+  border-radius: var(--myop-radius-lg);
+  /* The global .card rule clips overflow, which would make the sticky
+     filter column inside the hotel step inert. Nothing in the frame
+     needs clipping (react-select menus are portalled). */
+  overflow: visible !important;
+}
+/* Flatten the second card layer inside each wizard step so the
+   results, filters and tables get the horizontal room back. */
+.myop-v2 .myop-v2-step {
+  border: 0 !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  margin-bottom: 0;
+  overflow: visible !important;
+}
+.myop-v2 .myop-v2-step > .card-body {
+  padding: 0 !important;
+}
+.myop-v2-step-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 0.75rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--myop-border);
+}
+.myop-v2-step-intro__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.myop-v2-step-intro__icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #EC0B43;
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* Trip context strip (dates / pax / nationality chips) */
+.myop-v2-trip-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.myop-v2-trip-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--myop-border-strong);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #212529;
+  white-space: nowrap;
+}
+.myop-v2 .myop-v2-city-chips {
+  gap: 6px;
+}
+
+/* Sub-step list for the wizard */
+.myop-v2-substeps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 0.75rem;
+}
+.myop-v2-substep {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 8px;
+  border: 1px solid var(--myop-border-strong);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #6c757d;
+  text-align: left;
+  line-height: 1.2;
+}
+.myop-v2-substep:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.myop-v2-substep.is-clickable {
+  cursor: pointer;
+}
+.myop-v2-substep.is-clickable:hover {
+  border-color: #EC0B43;
+}
+.myop-v2-substep__dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--myop-border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: #f8f9fa;
+  color: #6c757d;
+}
+.myop-v2-substep.is-done {
+  color: #212529;
+}
+.myop-v2-substep.is-done .myop-v2-substep__dot {
+  background: #EC0B43;
+  border-color: #EC0B43;
+  color: #ffffff;
+}
+.myop-v2-substep.is-current {
+  color: #ffffff;
+  background: #EC0B43;
+  border-color: #EC0B43;
+  font-weight: 600;
+}
+.myop-v2-substep.is-current .myop-v2-substep__dot {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #EC0B43;
+}
+.myop-v2-substep__count {
+  margin-left: 2px;
+}
+
+/* Service selection rows (wizard step 0) */
+.myop-v2-service-group + .myop-v2-service-group {
+  margin-top: 1.25rem;
+}
+.myop-v2-service-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--myop-border);
+}
+.myop-v2-service-row:last-child {
+  border-bottom: 0;
+}
+.myop-v2-service-row__choice {
+  display: flex;
+  gap: 1rem;
+  flex-shrink: 0;
+  min-width: 128px;
+  justify-content: flex-end;
+}
+
+/* Add-on detail step: strip the inner card chrome so the shared
+   <SingleAddOnService/> sits flush inside the wizard frame. */
+.myop-v2 .myop-v2-addon-step > .card {
+  border: 0 !important;
+  box-shadow: none !important;
+  margin-bottom: 0;
+}
+.myop-v2 .myop-v2-addon-step > .card > .card-body {
+  padding: 0 !important;
+}
+.myop-v2-addon-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border: 1px solid var(--myop-border);
+  border-radius: var(--myop-radius);
+  background: #f8f9fa;
+  margin-bottom: 1rem;
+}
+
+/* Notice / hint blocks inside steps */
+.myop-v2-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--myop-border);
+  border-radius: var(--myop-radius);
+  background: #f8f9fa;
+  margin-bottom: 1rem;
+}
+.myop-v2-hint--warning {
+  border-color: #ffc107;
+  background: #fff3cd;
+}
+
+/* Hotel step: filters column visible at every width */
+.myop-v2 .myop-v2-filters {
+  position: static;
+}
+@media (min-width: 992px) {
+  .myop-v2 .myop-v2-filters {
+    position: sticky;
+    top: var(--myop-sticky-top);
+    /* leave room for the sticky wizard navigation bar underneath */
+    max-height: calc(100vh - var(--myop-sticky-top) - 90px);
+    overflow-y: auto;
+  }
+}
+.myop-v2 .myop-v2-filters .left-fixed {
+  position: static;
+  top: auto;
+}
+@media (max-width: 991.98px) {
+  .myop-v2 .myop-v2-filters {
+    max-height: none;
+    overflow: visible;
+  }
+}
+.myop-v2 .myop-v2-filters .sort-pill {
+  min-width: 0;
+}
+.myop-v2 .myop-v2-filters__toggle {
+  display: none;
+}
+@media (max-width: 991.98px) {
+  .myop-v2 .myop-v2-filters__toggle {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .myop-v2 .myop-v2-filters__body {
+    display: none;
+  }
+  .myop-v2 .myop-v2-filters__body.is-open {
+    display: block;
+    margin-top: 0.75rem;
+  }
+}
+
+/* Result cards (hotel / activity / cab) — one definition */
+.myop-v2-result-card {
+  background: #ffffff;
+  border: 1px solid var(--myop-border-strong);
+  border-radius: var(--myop-radius);
+  box-shadow: var(--myop-shadow);
+  overflow: hidden;
+  position: relative;
+}
+.myop-v2-result-card.is-added {
+  border-color: #EC0B43;
+}
+.myop-v2-added-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #EC0B43;
+  color: #ffffff;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.myop-v2-hotel-card__media {
+  position: relative;
+  height: 100%;
+  min-height: 180px;
+  padding: 12px;
+}
+.myop-v2-hotel-card__body {
+  padding: 16px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.myop-v2-hotel-card__footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 10px;
+  border-top: 1px solid #eee;
+}
+.myop-v2-media-badge {
+  position: absolute;
+  background-color: rgba(0, 0, 0, 0.7);
+  color: #ffffff;
+  padding: 4px 8px;
+  border-radius: 15px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.myop-v2-media-badge__api {
+  margin-left: 4px;
+  background-color: #6c757d;
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+.myop-v2-ratio-16x9 {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background-color: #f5f5f5;
+}
+/* LazyImage renders a Bootstrap .ratio box; pin it to the frame so the
+   badges positioned on top of the image are unaffected. */
+.myop-v2-ratio-16x9 > .ratio {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.myop-v2-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #eee;
+}
+
+/* Rate cards: explicit stay basis under the price */
+.myop-v2 .rate-pricing .myop-v2-stay-basis {
+  display: block;
+}
+
+/* Transfer rate table — stack cells on phones */
+.myop-v2-transfer-table th,
+.myop-v2-transfer-table td {
+  padding: 12px;
+  vertical-align: middle;
+}
+.myop-v2-transfer-table thead {
+  background-color: #f8f9fa;
+}
+.myop-v2-transfer-table th {
+  font-weight: 600;
+}
+.myop-v2-transfer-table th.myop-v2-col-action {
+  width: 170px;
+}
+.myop-v2-transfer-table td.myop-v2-col-action {
+  text-align: center;
+}
+@media (max-width: 767.98px) {
+  .myop-v2-transfer-table thead {
+    display: none;
+  }
+  .myop-v2-transfer-table tbody tr {
+    display: block;
+    border-bottom: 1px solid var(--myop-border-strong);
+    padding: 6px 0;
+  }
+  .myop-v2-transfer-table td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    border: 0;
+    padding: 6px 12px;
+  }
+  .myop-v2-transfer-table td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    color: #6c757d;
+  }
+  .myop-v2-transfer-table th.myop-v2-col-action,
+  .myop-v2-transfer-table td.myop-v2-col-action {
+    width: auto;
+    text-align: right;
+  }
+}
+
+/* Selector card on the transfer step */
+.myop-v2-selector-card {
+  border: 1px solid var(--myop-border);
+  border-radius: var(--myop-radius);
+  padding: 1rem 1.25rem;
+  background: #ffffff;
+  margin-bottom: 1.25rem;
+}
+
+/* Sticky wizard navigation (lives OUTSIDE the wizard card, because
+   the global .card rule clips overflow and would defeat sticky). */
+.myop-v2-wizard-nav {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  margin-top: 1rem;
+  background: #ffffff;
+  border: 1px solid var(--myop-border);
+  border-radius: var(--myop-radius);
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.06);
+}
+.myop-v2-wizard-nav__center {
+  flex: 1 1 200px;
+  text-align: center;
+  min-width: 0;
+}
+@media (max-width: 575.98px) {
+  .myop-v2-wizard-nav__center {
+    order: -1;
+    flex-basis: 100%;
+  }
+  .myop-v2-wizard-nav .btn {
+    flex: 1 1 45%;
+  }
+}
+
+/* "Your package" side panel */
+.myop-v2-package-col {
+  min-width: 0;
+}
+.myop-v2-package-panel {
+  border-radius: var(--myop-radius-lg);
+}
+@media (min-width: 992px) {
+  .myop-v2-package-sticky {
+    position: sticky;
+    top: var(--myop-sticky-top);
+  }
+}
+.myop-v2 .myop-v2-package-panel__toggle {
+  display: none;
+}
+@media (max-width: 991.98px) {
+  .myop-v2 .myop-v2-package-panel__toggle {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .myop-v2 .myop-v2-package-panel__body {
+    display: none;
+  }
+  .myop-v2 .myop-v2-package-panel__body.is-open {
+    display: block;
+  }
+}
+.myop-v2-package-scroll {
+  max-height: calc(100vh - var(--myop-sticky-top) - 260px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+@media (max-width: 991.98px) {
+  .myop-v2-package-scroll {
+    max-height: none;
+  }
+}
+.myop-v2-package-group + .myop-v2-package-group {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--myop-border);
+}
+.myop-v2-package-group__title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 0.35rem;
+}
+.myop-v2-package-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+}
+.myop-v2-package-item__main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.myop-v2-package-item__side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.myop-v2-package-item__remove {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #dc3545;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.myop-v2-package-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--myop-border);
+}
+
+/* ── Recommended Existing Packages (wizard) ───────────────────
+   Read-only suggestion strip rendered between the wizard card and the
+   sticky navigation bar. Uses the same result-card tokens as the hotel /
+   activity tiles above it so it reads as part of the same results area. */
+.myop-v2-suggest {
+  margin-top: 1.25rem;
+  padding: 1.25rem;
+  background: #ffffff;
+  border: 1px solid var(--myop-border);
+  border-radius: var(--myop-radius-lg);
+  box-shadow: var(--myop-shadow);
+}
+.myop-v2-suggest-loading {
+  display: flex;
+  align-items: center;
+  margin-top: 1rem;
+  padding: 0.5rem 0.25rem;
+}
+.myop-v2-suggest__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--myop-border);
+}
+.myop-v2-suggest__title {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 320px;
+}
+.myop-v2-suggest__criteria {
+  padding-top: 4px;
+  min-width: 0;
+}
+.myop-v2-suggest__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+.myop-v2-suggest-card {
+  display: flex;
+  flex-direction: column;
+}
+.myop-v2-suggest-card__media > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.myop-v2-suggest-card__type {
+  top: 10px;
+  left: 10px;
+  text-transform: uppercase;
+}
+/* "Fits your trip" — a highlighted chip, deliberately distinct from the
+   red "In package" state the hotel/cab/activity tiles use for cart items. */
+.myop-v2-suggest-card--fit {
+  border-color: #EC0B43;
+}
+.myop-v2-suggest-card__fit {
+  border-color: #EC0B43;
+  color: #EC0B43;
+  font-weight: 600;
+}
+.myop-v2-suggest-card__body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  padding: 14px 16px 16px;
+  gap: 6px;
+}
+.myop-v2-suggest-card__name {
+  font-weight: 600;
+  color: #333;
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.myop-v2-suggest-card__line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.myop-v2-suggest-card__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.myop-v2-suggest-card__chips .myop-v2-trip-chip {
+  padding: 3px 8px;
+  white-space: normal;
+}
+.myop-v2-suggest-card__desc {
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+}
+.myop-v2-suggest-card__warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  color: #212529;
+}
+.myop-v2-suggest-card .myop-v2-card-footer {
+  margin-top: auto;
+}
+.myop-v2-suggest-card__cta {
+  white-space: nowrap;
+}
+@media (max-width: 575.98px) {
+  .myop-v2-suggest {
+    padding: 1rem;
+  }
+  .myop-v2-suggest__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Booking page ──────────────────────────────────────────── */
+.myop-v2.make-pkg-booking-container .content-wrapper {
+  padding: 1.5rem;
+  /* `clip` does not create a scroll container, so the sticky summary
+     card and action bar keep working; `hidden` would make them inert. */
+  overflow-x: clip;
+}
+@supports not (overflow: clip) {
+  .myop-v2.make-pkg-booking-container .content-wrapper {
+    overflow-x: hidden;
+  }
+}
+@media (max-width: 767.98px) {
+  .myop-v2.make-pkg-booking-container .content-wrapper {
+    padding: 1rem;
+  }
+}
+.myop-v2-section-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 0.5rem;
+  flex-wrap: wrap;
+}
+.myop-v2-section-intro {
+  margin-bottom: 0.75rem;
+}
+.myop-v2-subheading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0.75rem 0 0.5rem;
+}
+.myop-v2-money {
+  white-space: nowrap;
+}
+.myop-v2 .accordion-body .card.myop-v2-nested-card {
+  margin-bottom: 0.75rem;
+}
+.myop-v2 .accordion-body .card.myop-v2-nested-card:last-child {
+  margin-bottom: 0;
+}
+
+/* Summary card + sticky wrapper */
+.myop-v2-summary-sticky {
+  position: sticky;
+  top: var(--myop-sticky-top);
+  /* Never taller than the viewport, so the price breakup, Tourism Dirham
+     input and the T&C tick stay reachable while the card is pinned. */
+  /* leave room for the sticky action bar underneath */
+  max-height: calc(100vh - var(--myop-sticky-top) - 96px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+@media (max-width: 991.98px) {
+  .myop-v2-summary-sticky {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    margin-top: 1rem;
+  }
+}
+.myop-v2 .myop-v2-summary-card {
+  margin-bottom: 0;
+  border-radius: var(--myop-radius-lg) !important;
+}
+.myop-v2 .myop-v2-summary-card:hover {
+  transform: none;
+}
+.myop-v2-breakup-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+}
+.myop-v2-breakup-row--total {
+  border-top: 1px solid var(--myop-border);
+  margin-top: 4px;
+  padding-top: 6px;
+}
+
+/* Sticky bottom action bar */
+.myop-v2-action-bar {
+  position: sticky;
+  bottom: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: #ffffff;
+  border: 1px solid var(--myop-border);
+  border-radius: var(--myop-radius);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
+}
+.myop-v2-action-bar__center {
+  flex: 1 1 220px;
+  text-align: center;
+  min-width: 0;
+}
+@media (max-width: 575.98px) {
+  .myop-v2-action-bar__center {
+    order: -1;
+    flex-basis: 100%;
+  }
+  .myop-v2-action-bar > .btn {
+    flex: 1 1 45%;
+    justify-content: center;
+  }
+}
+
+/* Modals rendered by the booking page are portaled outside the
+   page wrapper, so they get their own class hook. */
+.myop-v2-modal-footer {
+  flex-wrap: wrap;
+}
+.myop-v2-modal-footer__block {
+  width: calc(100% - var(--bs-modal-footer-gap, 0.5rem));
+  margin-bottom: 0.5rem;
+}
+.myop-v2-modal-footer__block .card-body {
+  padding: 0.75rem 1rem;
+}
+@media (max-width: 575.98px) {
+  .myop-v2-modal-footer > .btn {
+    flex: 1 1 100%;
+    margin: 0;
+  }
+  .myop-v2-modal-footer__block {
+    margin-bottom: 0.25rem;
+  }
+}
+.myop-v2-modal-footer__total {
+  flex: 1 1 auto;
+  text-align: center;
+  min-width: 0;
+}

@@ -30,6 +30,9 @@ import {
   FaPlus,
   FaRoute,
   FaClock,
+  FaInfoCircle,
+  FaArrowLeft,
+  FaArrowRight,
 } from "react-icons/fa";
 import Sidebar from "../../../components/Sidebar";
 import TopBar from "../../../components/TopBar";
@@ -45,6 +48,8 @@ import axiosInstance from "../../../components/AxiosInstance";
 import toast from "react-hot-toast";
 import "../../../styles/HotelBookingPage.css";
 import "../../../styles/MakePkgBookingPage.css";
+import "../../../styles/MakeYourOwnPackageV2.css";
+import MyopV2JourneyStepper from "../../../components/myopv2/MyopV2JourneyStepper";
 
 // v2 helpers — read the choice made on the /addons step. Visa is just
 // YES/NO in v2; the legacy adult/child/infant rate inputs are removed.
@@ -216,6 +221,45 @@ const MakePkgBookingPageV2 = () => {
 
   // Validation errors state
   const [validationErrors, setValidationErrors] = useState({});
+
+  // ── UI-only state (no effect on payload / validation) ──────────
+  // Accordion open state is controlled so the sections that need input
+  // (Guest Details "5" and Hotels "1", which holds the per-room guest
+  // names) start open, and so a failed submit can expand whichever
+  // section contains the highlighted fields before handleSubmit scrolls
+  // to the first `.is-invalid` control.
+  const [openSections, setOpenSections] = useState(["5", "1"]);
+  // Toggles the read-only price breakdown in the Package Summary card.
+  const [showPriceBreakup, setShowPriceBreakup] = useState(false);
+  // Bumped by the page-level submit button right before handleSubmit runs,
+  // so the auto-expand below fires once per attempt (handleGuestChange
+  // rebuilds the validationErrors object on every keystroke, which would
+  // otherwise re-open a section the operator deliberately collapsed).
+  const [submitAttempt, setSubmitAttempt] = useState(0);
+  useEffect(() => {
+    if (submitAttempt === 0) return;
+    const keys = Object.keys(validationErrors || {});
+    if (keys.length === 0) return;
+    const needed = [];
+    if (keys.some((k) => k.startsWith("primaryGuest_"))) needed.push("5");
+    if (keys.some((k) => k.startsWith("hotel_"))) needed.push("1");
+    if (needed.length === 0) return;
+    setOpenSections((prev) => {
+      const next = Array.isArray(prev) ? [...prev] : [];
+      let changed = false;
+      needed.forEach((k) => {
+        if (!next.includes(k)) {
+          next.push(k);
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+    // validationErrors is read on purpose only when a submit attempt bumps
+    // the counter (both updates land in the same event, so the render this
+    // effect follows already carries the fresh error map).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [submitAttempt]);
 
   // Order summary modal state
   const [showOrderSummaryModal, setShowOrderSummaryModal] = useState(false);
@@ -1927,6 +1971,15 @@ const MakePkgBookingPageV2 = () => {
   const activities = getActivities();
   const transfers = getTransfers();
 
+  // Read-only counts for the section-header badges — derived from the
+  // same validationErrors map the inputs use, nothing else.
+  const primaryGuestErrorCount = Object.keys(validationErrors || {}).filter(
+    (k) => k.startsWith("primaryGuest_"),
+  ).length;
+  const hotelGuestErrorCount = Object.keys(validationErrors || {}).filter(
+    (k) => k.startsWith("hotel_"),
+  ).length;
+
   const uniqueActivityDates = [
     ...new Set(
       activities
@@ -1947,7 +2000,7 @@ const MakePkgBookingPageV2 = () => {
   });
 
   return (
-    <div className="make-pkg-booking-container d-flex flex-column">
+    <div className="make-pkg-booking-container d-flex flex-column myop-v2">
 
       {/* ── Booking page visual overhaul ──
           One injected stylesheet that modernises every existing card,
@@ -2158,16 +2211,14 @@ const MakePkgBookingPageV2 = () => {
       <TopBar />
       <div className="d-flex flex-grow-1">
         <Sidebar />
-        <main className="content-wrapper py-4 flex-grow-1" style={{ minWidth: 0, overflowX: "hidden" }}>
+        {/* overflow-x is clipped from the page stylesheet (`clip`, not
+            `hidden`) so the sticky Package Summary and action bar keep
+            working — `overflow: hidden` would turn <main> into their
+            scroll container and make position:sticky inert. */}
+        <main className="content-wrapper flex-grow-1" style={{ minWidth: 0 }}>
           <Container fluid>
-            <div className="d-flex justify-content-end mb-2">
-              <AgentBalanceDisplay
-                agentId={sessionStorage.getItem("makePkgAgentId")}
-              />
-            </div>
-
-            {/* ── Top header strip: back arrow + title + step pill ── */}
-            <div className="d-flex align-items-center justify-content-between mb-3">
+            {/* ── Top header strip: back arrow + title + agent balance ── */}
+            <div className="myop-v2-page-header">
               <div className="d-flex align-items-center">
                 <button
                   type="button"
@@ -2182,71 +2233,19 @@ const MakePkgBookingPageV2 = () => {
                   Make Your Own Package
                 </h3>
               </div>
+              <AgentBalanceDisplay
+                agentId={sessionStorage.getItem("makePkgAgentId")}
+              />
             </div>
 
-            {/* ── Inline wizard step indicator (image-style: clean, flat) ── */}
-            {(() => {
-              const steps = [
-                { label: "Accommodation" },
-                { label: "Transfers" },
-                { label: "Tours & Activities" },
-                { label: "Add-on Services" },
-                { label: "Summary & Payment" },
-              ];
-              const currentIdx = steps.length - 1; // booking page = last step
-              return (
-                <div className="d-flex align-items-center mb-4 px-1">
-                  {steps.map((step, idx) => {
-                    const done = idx < currentIdx;
-                    const active = idx === currentIdx;
-                    return (
-                      <React.Fragment key={step.label}>
-                        <div className="d-flex align-items-center" style={{ flexShrink: 0 }}>
-                          <div
-                            style={{
-                              width: 28, height: 28,
-                              borderRadius: "50%",
-                              background: done ? "#22c55e" : active ? "#3b82f6" : "#ffffff",
-                              color: done || active ? "#fff" : "#9ca3af",
-                              border: done || active ? "none" : "1.5px solid #d1d5db",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              fontWeight: 600,
-                              fontSize: "0.8rem",
-                              flexShrink: 0,
-                            }}
-                          >
-                            {done ? "✓" : idx + 1}
-                          </div>
-                          <span
-                            style={{
-                              marginLeft: 8,
-                              fontSize: "0.88rem",
-                              fontWeight: active ? 600 : 500,
-                              color: done ? "#1f2937" : active ? "#1f2937" : "#9ca3af",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            {step.label}
-                          </span>
-                        </div>
-                        {idx < steps.length - 1 && (
-                          <div
-                            style={{
-                              flex: 1,
-                              height: 1,
-                              background: idx < currentIdx ? "#22c55e" : "#e5e7eb",
-                              margin: "0 12px",
-                            }}
-                          />
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
-                </div>
-              );
-            })()}
+            {/* ── Journey indicator — phase 3 of 3, same component as the
+                criteria form and the wizard so the vocabulary matches ── */}
+            <MyopV2JourneyStepper current={3} />
+            <div className="text-muted small mb-3">
+              Review the package, enter the guest details, then continue to the
+              policies and order summary. Nothing is booked until you confirm on
+              the final summary.
+            </div>
 
             {/* (Old "Confirm Booking" totals card removed — the same
                 breakdown now lives in the sticky Package Summary
@@ -2256,114 +2255,193 @@ const MakePkgBookingPageV2 = () => {
 
             <Row>
               <Col lg={8}>
-                {/* v2: default-open the two sections the operator
-                    actually has to fill out — Guest Details (5) and
-                    Add-Ons (6). The cart-line accordions
-                    (0 Itinerary / 1 Hotel / 2 Tour / 3 Transfer)
-                    start collapsed so the page opens compact; each
-                    header surfaces a quick summary chip so the
-                    operator can scan without expanding. */}
+                {/* v2: sections that need input come first and start
+                    open — Guest Details (5) and Hotels (1, which holds the
+                    per-room guest names). The review sections (Transfers /
+                    Tours / Itinerary / Add-Ons) follow, collapsed. Open
+                    state is controlled so a failed submit can expand the
+                    section that contains the highlighted field. eventKeys
+                    are unchanged. */}
                 <Accordion
-                  defaultActiveKey={["5", "6"]}
+                  activeKey={openSections}
+                  onSelect={(eventKey) =>
+                    setOpenSections(
+                      Array.isArray(eventKey)
+                        ? eventKey
+                        : eventKey != null
+                          ? [eventKey]
+                          : [],
+                    )
+                  }
                   alwaysOpen
                   className="booking-accordion"
                 >
-                  {/* Itinerary Option Section */}
-                  <Accordion.Item eventKey="0" className="mb-2">
+                  {/* Guest Details Section - Always Open */}
+                  <Accordion.Item eventKey="5" className="mb-2">
                     <Accordion.Header>
-                      <h5 className="mb-0 fw-bold d-flex align-items-center">
-                        Itinerary
-                        {uniqueActivityDates.length > 0 && (
-                          <span className="badge bg-info-subtle text-info ms-2">
-                            {uniqueActivityDates.length} day
-                            {uniqueActivityDates.length === 1 ? "" : "s"}
-                          </span>
-                        )}
+                      <h5 className="mb-0 fw-bold d-flex align-items-center flex-wrap">
+                        Guest Details
+                        <span className="myop-v2-section-badges">
+                          <Badge bg="light" text="dark" className="border">Required</Badge>
+                          {primaryGuestErrorCount > 0 && (
+                            <Badge bg="danger">
+                              {primaryGuestErrorCount} to fix
+                            </Badge>
+                          )}
+                        </span>
                       </h5>
                     </Accordion.Header>
                     <Accordion.Body>
-                      <div className="itinerary-days-container">
-                        {uniqueActivityDates.map((dateString, index) => (
-                          <div className="itinerary-day-box mb-3" key={index}>
-                            <div className="d-flex justify-content-between align-items-center">
-                               <h6 className="mb-0 fw-bold">
-                                <small className="fw-normal text-muted">
-                                  Itinerary for activity on
-                                </small>{" "}
-                                {formatActivityDateHeader(dateString)}
-                              </h6>
-                              <Button
-                                variant="outline-danger"
-                                size="sm"
-                                className="rounded-circle itinerary-plus-btn"
-                                onClick={() =>
-                                  handleOpenItineraryModal(dateString)
-                                }
-                              >
-                                <FaPlus />
-                              </Button>
-                            </div>
-                            {/* Selected Itineraries Preview */}
-                            {(selectedItineraries[dateString] || []).length >
-                              0 && (
-                              <div className="mt-3 pt-3 border-top">
-                                {(selectedItineraries[dateString] || []).map(
-                                  (itineraryId) => {
-                                    const itinerary = itineraryList.find(
-                                      (item) =>
-                                        item.itineraryId === itineraryId,
-                                    );
-                                    if (!itinerary) return null;
-                                    return (
-                                      <div
-                                        key={itineraryId}
-                                        className="d-flex justify-content-between align-items-center mb-2 itinerary-preview-item"
-                                      >
-                                        <div className="d-flex align-items-center flex-grow-1">
-                                          <FaCheckCircle
-                                            className="text-success me-2"
-                                            size={14}
-                                          />
-                                          <span className="small">
-                                            {itinerary.itineraryHeading ||
-                                              "Untitled"}
-                                          </span>
-                                        </div>
-                                        <Button
-                                          variant="link"
-                                          size="sm"
-                                          className="text-danger p-0 ms-2"
-                                          style={{
-                                            fontSize: "0.75rem",
-                                            minWidth: "auto",
-                                          }}
-                                          onClick={() => {
-                                            setSelectedItineraries((prev) => ({
-                                              ...prev,
-                                              [dateString]: prev[
-                                                dateString
-                                              ].filter(
-                                                (id) => id !== itineraryId,
-                                              ),
-                                            }));
-                                          }}
-                                        >
-                                          ×
-                                        </Button>
-                                      </div>
-                                    );
-                                  },
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                        {uniqueActivityDates.length === 0 && (
-                          <div className="text-muted small">
-                            No activities found to generate itinerary days.
-                          </div>
-                        )}
+                      <div className="text-muted small myop-v2-section-intro">
+                        Lead guest for this booking. The name entered here is
+                        also pre-filled as the first guest of each room below.
                       </div>
+                      <Form className="booking-form">
+                        <Row className="g-2">
+                          <Col md={2}>
+                            <Form.Label>
+                              Title <span className="text-danger">*</span>
+                            </Form.Label>
+                            <Form.Select
+                              value={primaryGuest.salutation}
+                              onChange={(e) =>
+                                handlePrimaryGuestChange(
+                                  "salutation",
+                                  e.target.value,
+                                )
+                              }
+                              isInvalid={
+                                !!validationErrors.primaryGuest_salutation
+                              }
+                              required
+                            >
+                              <option value="">Select</option>
+                              <option value="Mr">Mr</option>
+                              <option value="Mrs">Mrs</option>
+                              <option value="Ms">Ms</option>
+                              <option value="Dr">Dr</option>
+                            </Form.Select>
+                            <Form.Control.Feedback type="invalid">
+                              {validationErrors.primaryGuest_salutation}
+                            </Form.Control.Feedback>
+                          </Col>
+                          <Col md={4}>
+                            <Form.Label>
+                              First Name <span className="text-danger">*</span>
+                            </Form.Label>
+                            <Form.Control
+                              type="text"
+                              value={primaryGuest.firstName}
+                              onChange={(e) =>
+                                handlePrimaryGuestChange(
+                                  "firstName",
+                                  e.target.value,
+                                )
+                              }
+                              isInvalid={
+                                !!validationErrors.primaryGuest_firstName
+                              }
+                              required
+                            />
+                            <Form.Control.Feedback type="invalid">
+                              {validationErrors.primaryGuest_firstName}
+                            </Form.Control.Feedback>
+                          </Col>
+                          <Col md={3}>
+                            <Form.Label>Middle Name</Form.Label>
+                            <Form.Control
+                              type="text"
+                              value={primaryGuest.middleName}
+                              onChange={(e) =>
+                                setPrimaryGuest({
+                                  ...primaryGuest,
+                                  middleName: e.target.value,
+                                })
+                              }
+                            />
+                          </Col>
+                          <Col md={3}>
+                            <Form.Label>
+                              Last Name <span className="text-danger">*</span>
+                            </Form.Label>
+                            <Form.Control
+                              type="text"
+                              value={primaryGuest.lastName}
+                              onChange={(e) =>
+                                handlePrimaryGuestChange(
+                                  "lastName",
+                                  e.target.value,
+                                )
+                              }
+                              isInvalid={
+                                !!validationErrors.primaryGuest_lastName
+                              }
+                              required
+                            />
+                            <Form.Control.Feedback type="invalid">
+                              {validationErrors.primaryGuest_lastName}
+                            </Form.Control.Feedback>
+                          </Col>
+                          <Col md={4}>
+                            <Form.Label>
+                              Contact Number{" "}
+                              <span className="text-danger">*</span>
+                            </Form.Label>
+                            <Form.Control
+                              type="tel"
+                              value={primaryGuest.contactNumber}
+                              onChange={(e) =>
+                                handlePrimaryGuestChange(
+                                  "contactNumber",
+                                  e.target.value,
+                                )
+                              }
+                              isInvalid={
+                                !!validationErrors.primaryGuest_contactNumber
+                              }
+                              required
+                            />
+                            <Form.Control.Feedback type="invalid">
+                              {validationErrors.primaryGuest_contactNumber}
+                            </Form.Control.Feedback>
+                          </Col>
+                          <Col md={4}>
+                            <Form.Label>
+                              Email Id <span className="text-danger">*</span>
+                            </Form.Label>
+                            <Form.Control
+                              type="email"
+                              value={primaryGuest.emailId}
+                              onChange={(e) =>
+                                handlePrimaryGuestChange(
+                                  "emailId",
+                                  e.target.value,
+                                )
+                              }
+                              isInvalid={
+                                !!validationErrors.primaryGuest_emailId
+                              }
+                              required
+                            />
+                            <Form.Control.Feedback type="invalid">
+                              {validationErrors.primaryGuest_emailId}
+                            </Form.Control.Feedback>
+                          </Col>
+                          <Col md={4}>
+                            <Form.Label>Passport Number</Form.Label>
+                            <Form.Control
+                              type="text"
+                              value={primaryGuest.passportNumber}
+                              onChange={(e) =>
+                                setPrimaryGuest({
+                                  ...primaryGuest,
+                                  passportNumber: e.target.value,
+                                })
+                              }
+                            />
+                          </Col>
+                        </Row>
+                      </Form>
                     </Accordion.Body>
                   </Accordion.Item>
 
@@ -2371,14 +2449,26 @@ const MakePkgBookingPageV2 = () => {
                   {hotels.length > 0 && (
                     <Accordion.Item eventKey="1" className="mb-2">
                       <Accordion.Header>
-                        <h5 className="mb-0 fw-bold d-flex align-items-center">
+                        <h5 className="mb-0 fw-bold d-flex align-items-center flex-wrap">
                           Hotels
                           <span className="badge bg-primary-subtle text-primary ms-2">
                             {hotels.length}
                           </span>
+                          <span className="myop-v2-section-badges">
+                            <Badge bg="light" text="dark" className="border">Guest names required</Badge>
+                            {hotelGuestErrorCount > 0 && (
+                              <Badge bg="danger">
+                                {hotelGuestErrorCount} to fix
+                              </Badge>
+                            )}
+                          </span>
                         </h5>
                       </Accordion.Header>
                       <Accordion.Body>
+                        <div className="text-muted small myop-v2-section-intro">
+                          Enter the name of every guest in each room. Tourism
+                          dirham, remarks and the voucher option are optional.
+                        </div>
                         {hotels.map((item, hotelIndex) => {
                           const hotel = item.hotel || {};
                           const details = hotel.details || {};
@@ -2561,6 +2651,13 @@ const MakePkgBookingPageV2 = () => {
                                       </tbody>
                                     </Table>
                                     {/* Guest Details for each room */}
+                                    <div className="myop-v2-subheading">
+                                      <FaUsers className="text-primary" />
+                                      <span className="fw-semibold small">Room guests</span>
+                                      <span className="text-muted small">
+                                        — required for every guest
+                                      </span>
+                                    </div>
                                     {searchRoomDTOs.map((room, roomIndex) => {
                                       const adults = parseInt(
                                         room.adult || room.adults || 1,
@@ -2602,7 +2699,7 @@ const MakePkgBookingPageV2 = () => {
                                       return (
                                         <Card
                                           key={`guest-${roomIndex}`}
-                                          className="mb-2 guest-details-card"
+                                          className="mb-2 guest-details-card myop-v2-nested-card"
                                         >
                                           <Card.Header>
                                             <h6 className="mb-0">
@@ -2637,7 +2734,7 @@ const MakePkgBookingPageV2 = () => {
                                                         : `Adult ${guestIndex + 1}`}
                                                     </h6>
                                                     <Row className="g-2">
-                                                      <Col md={3}>
+                                                      <Col md={2}>
                                                         <Form.Label className="small">
                                                           Salutation{" "}
                                                           <span className="text-danger">
@@ -2731,7 +2828,7 @@ const MakePkgBookingPageV2 = () => {
                                                           }
                                                         </Form.Control.Feedback>
                                                       </Col>
-                                                      <Col md={5}>
+                                                      <Col md={3}>
                                                         <Form.Label className="small">
                                                           Last Name{" "}
                                                           <span className="text-danger">
@@ -2769,7 +2866,7 @@ const MakePkgBookingPageV2 = () => {
                                                           }
                                                         </Form.Control.Feedback>
                                                       </Col>
-                                                      <Col md={4}>
+                                                      <Col md={3}>
                                                         <Form.Label className="small">
                                                           Gender{" "}
                                                           <span className="text-danger">
@@ -2860,6 +2957,30 @@ const MakePkgBookingPageV2 = () => {
                                   </Table>
                                 )}
 
+                                {/* Stay totals — read-only, same figures the
+                                    Package Summary and Order Summary use. */}
+                                <Row className="g-2 small mb-3">
+                                  <Col xs={12} md>
+                                    <span className="text-muted">
+                                      {dateRange.length > 0
+                                        ? `${dateRange.length} night${dateRange.length === 1 ? "" : "s"} · stay total`
+                                        : "Stay total"}
+                                    </span>
+                                  </Col>
+                                  <Col xs={6} md="auto" className="ms-md-auto text-md-end myop-v2-money">
+                                    <span className="text-muted">Selling: </span>
+                                    <strong className="text-success">
+                                      AED {hotelSellingPrice.toFixed(2)}
+                                    </strong>
+                                  </Col>
+                                  <Col xs={6} md="auto" className="text-md-end myop-v2-money">
+                                    <span className="text-muted">Total: </span>
+                                    <strong className="text-primary">
+                                      AED {hotelTotalPrice.toFixed(2)}
+                                    </strong>
+                                  </Col>
+                                </Row>
+
                                 {/* Selling Price and Total Price */}
                                 {/* <div className="mb-3">
                                 <Row className="g-2">
@@ -2882,9 +3003,20 @@ const MakePkgBookingPageV2 = () => {
                                 </Row>
                               </div> */}
 
-                                {/* Tourism Dirhams */}
-                                <Row className="mb-2">
-                                  <Col md={6}>
+                                {/* Hotel booking options — grouped so the
+                                    optional operator inputs read as one block
+                                    after the required guest names. */}
+                                <div className="myop-v2-fieldgroup mt-3">
+                                <div className="myop-v2-fieldgroup__title">
+                                  <span className="fw-semibold small text-dark">
+                                    <FaBed className="text-primary" />
+                                    Hotel booking options
+                                  </span>
+                                  <span className="text-muted small">Optional</span>
+                                </div>
+                                <Row className="g-3 mb-2">
+                                  {/* Tourism Dirhams */}
+                                  <Col md={4}>
                                     <Form.Label>
                                       Tourism Dirhams (AED)
                                     </Form.Label>
@@ -2902,15 +3034,58 @@ const MakePkgBookingPageV2 = () => {
                                       min="0"
                                     />
                                   </Col>
+                                  {/* Booking Confirmation */}
+                                  <Col md={8}>
+                                    <Form.Label className="mb-2">
+                                      Voucher option
+                                    </Form.Label>
+                                    <div>
+                                      <Form.Check
+                                        type="radio"
+                                        label="Book & Voucher"
+                                        name={`bookingConfirmation-${hotelIndex}`}
+                                        value="Book & Voucher"
+                                        checked={
+                                          hotelBookingConfirmation[hotelIndex] ===
+                                          "Book & Voucher"
+                                        }
+                                        onChange={(e) =>
+                                          setHotelBookingConfirmation({
+                                            ...hotelBookingConfirmation,
+                                            [hotelIndex]: e.target.value,
+                                          })
+                                        }
+                                        inline
+                                        className="me-3"
+                                      />
+                                      <Form.Check
+                                        type="radio"
+                                        label="Book Now & Voucher later"
+                                        name={`bookingConfirmation-${hotelIndex}`}
+                                        value="Book Now & Voucher later"
+                                        checked={
+                                          hotelBookingConfirmation[hotelIndex] ===
+                                          "Book Now & Voucher later"
+                                        }
+                                        onChange={(e) =>
+                                          setHotelBookingConfirmation({
+                                            ...hotelBookingConfirmation,
+                                            [hotelIndex]: e.target.value,
+                                          })
+                                        }
+                                        inline
+                                      />
+                                    </div>
+                                  </Col>
                                 </Row>
 
-                                {/* Remarks */}
-                                <Row className="mb-2">
-                                  <Col>
+                                <Row className="g-3">
+                                  {/* Remarks */}
+                                  <Col md={6}>
                                     <Form.Label>Remarks</Form.Label>
                                     <Form.Control
                                       as="textarea"
-                                      rows={3}
+                                      rows={2}
                                       value={hotelRemarks[hotelIndex] || ""}
                                       onChange={(e) =>
                                         setHotelRemarks({
@@ -2921,15 +3096,12 @@ const MakePkgBookingPageV2 = () => {
                                       placeholder="Enter any remarks..."
                                     />
                                   </Col>
-                                </Row>
-
-                                {/* Special Request */}
-                                <Row className="mb-2">
-                                  <Col>
+                                  {/* Special Request */}
+                                  <Col md={6}>
                                     <Form.Label>Special Request</Form.Label>
                                     <Form.Control
                                       as="textarea"
-                                      rows={3}
+                                      rows={2}
                                       value={
                                         hotelSpecialRequests[hotelIndex] || ""
                                       }
@@ -2943,50 +3115,200 @@ const MakePkgBookingPageV2 = () => {
                                     />
                                   </Col>
                                 </Row>
-
-                                {/* Booking Confirmation */}
-                                <div className="mb-3">
-                                  <Form.Label className="mb-2">
-                                    Are you sure to continue booking?
-                                  </Form.Label>
-                                  <div>
-                                    <Form.Check
-                                      type="radio"
-                                      label="Book & Voucher"
-                                      name={`bookingConfirmation-${hotelIndex}`}
-                                      value="Book & Voucher"
-                                      checked={
-                                        hotelBookingConfirmation[hotelIndex] ===
-                                        "Book & Voucher"
-                                      }
-                                      onChange={(e) =>
-                                        setHotelBookingConfirmation({
-                                          ...hotelBookingConfirmation,
-                                          [hotelIndex]: e.target.value,
-                                        })
-                                      }
-                                      inline
-                                      className="me-3"
-                                    />
-                                    <Form.Check
-                                      type="radio"
-                                      label="Book Now & Voucher later"
-                                      name={`bookingConfirmation-${hotelIndex}`}
-                                      value="Book Now & Voucher later"
-                                      checked={
-                                        hotelBookingConfirmation[hotelIndex] ===
-                                        "Book Now & Voucher later"
-                                      }
-                                      onChange={(e) =>
-                                        setHotelBookingConfirmation({
-                                          ...hotelBookingConfirmation,
-                                          [hotelIndex]: e.target.value,
-                                        })
-                                      }
-                                      inline
-                                    />
-                                  </div>
                                 </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </Accordion.Body>
+                    </Accordion.Item>
+                  )}
+
+                  {/* Transfer Option Section */}
+                  {transfers.length > 0 && (
+                    <Accordion.Item eventKey="3" className="mb-2">
+                      <Accordion.Header>
+                        <h5 className="mb-0 fw-bold d-flex align-items-center flex-wrap">
+                          Transfers
+                          <span className="badge bg-info-subtle text-info ms-2">
+                            {transfers.length}
+                          </span>
+                          <span className="myop-v2-section-badges">
+                            <Badge bg="light" text="dark" className="border">Optional input</Badge>
+                          </span>
+                        </h5>
+                      </Accordion.Header>
+                      <Accordion.Body>
+                        <div className="text-muted small myop-v2-section-intro">
+                          Review the transfers in the package. The transporter
+                          name can be filled in now or left for later.
+                        </div>
+                        {transfers.map((item, transferIndex) => {
+                          const cab = item.cab || {};
+                          const details = cab.details || {};
+                          const vehicleName =
+                            cab.vehicleName ||
+                            details.vehicleName ||
+                            cab.cabName ||
+                            "Transfer";
+                          // Route names are stamped on the v2 cab payload by
+                          // the wizard (pickupName / dropoffName) — display
+                          // only, nothing is written back.
+                          const routeText =
+                            cab.pickupName || cab.dropoffName
+                              ? `${cab.pickupName || "—"} → ${cab.dropoffName || "—"}`
+                              : "";
+                          const capacity =
+                            cab.capacity || details.capacity || "";
+                          const pickupDate = cab.pickupDate || "";
+                          const dropDate = cab.dropoffDate || "";
+                          const adult =
+                            cab.adult || details.adult || cab.noOfAdult || "0";
+                          const child =
+                            cab.child || details.child || cab.noOfChild || "0";
+                          const travelType =
+                            cab.travelType || details.travelType || "1";
+                          const shareType =
+                            cab.shareType || details.shareType || "Private";
+
+                          // Handle childAge
+                          let childAges = [];
+                          if (cab.childAge) {
+                            childAges = Array.isArray(cab.childAge)
+                              ? cab.childAge
+                              : [cab.childAge];
+                          } else if (cab.childAges) {
+                            childAges = Array.isArray(cab.childAges)
+                              ? cab.childAges
+                              : [cab.childAges];
+                          } else if (cab.childAgeArray) {
+                            childAges = Array.isArray(cab.childAgeArray)
+                              ? cab.childAgeArray
+                              : [cab.childAgeArray];
+                          } else if (details.childAge) {
+                            childAges = Array.isArray(details.childAge)
+                              ? details.childAge
+                              : [details.childAge];
+                          } else if (details.childAgeArray) {
+                            childAges = Array.isArray(details.childAgeArray)
+                              ? details.childAgeArray
+                              : [details.childAgeArray];
+                          }
+
+                          const transferDetail =
+                            transferDetails[transferIndex] || {};
+                          // Selling Price = totalRate (with markup)
+                          const sellingPrice = parseFloat(cab.totalRate || 0);
+                          // Total Price = totalRateWithoutmrk (without markup)
+                          const totalPrice = parseFloat(
+                            cab.totalRateWithoutmrk || cab.totalRate || 0,
+                          );
+
+                          // Get travel type label
+                          const getTravelTypeLabel = (type) => {
+                            if (type === "1") return "Arrival & Departure";
+                            if (type === "2") return "Arrival";
+                            if (type === "3") return "Departure";
+                            return type;
+                          };
+
+                          return (
+                            <div
+                              key={transferIndex}
+                              className="simple-section-row"
+                            >
+                              <div className="simple-section-row-title">
+                                <FaCar className="text-primary me-2" />
+                                <span className="fw-bold">
+                                  {transfers.length > 1
+                                    ? `Transfer ${transferIndex + 1}: `
+                                    : ""}
+                                  {capacity
+                                    ? `${capacity} Seater`
+                                    : vehicleName}
+                                </span>
+                              </div>
+                              <div className="simple-section-row-body">
+                                {routeText && (
+                                  <div className="small mb-2">
+                                    <FaMapMarkerAlt className="text-primary me-1" />
+                                    <strong>Route:</strong> {routeText}
+                                  </div>
+                                )}
+                                <Row className="g-2 align-items-center small mb-2">
+                                  <Col md={4}>
+                                    <FaCalendarAlt className="text-primary me-1" />
+                                    <strong>Pickup:</strong>{" "}
+                                    {formatDate(pickupDate)}
+                                    {" / "}
+                                    <strong>Drop:</strong>{" "}
+                                    {formatDate(dropDate)}
+                                  </Col>
+                                  <Col md={3}>
+                                    <span className="text-muted">Type: </span>
+                                    <strong>
+                                      {getTravelTypeLabel(travelType)} /{" "}
+                                      {shareType}
+                                    </strong>
+                                  </Col>
+                                  <Col md={2}>
+                                    <span className="text-muted">Adults: </span>
+                                    <strong>{adult}</strong>
+                                  </Col>
+                                  <Col md={3}>
+                                    <span className="text-muted">Children: </span>
+                                    <strong>{child}</strong>
+                                    {childAges.length > 0 && (
+                                      <span className="text-muted ms-1">
+                                        ({childAges.join(", ")})
+                                      </span>
+                                    )}
+                                  </Col>
+                                </Row>
+                                <Row className="g-2 align-items-end mb-2">
+                                  <Col md={6}>
+                                    <Form.Label className="small mb-1">
+                                      Transporter Name
+                                    </Form.Label>
+                                    <Form.Control
+                                      size="sm"
+                                      type="text"
+                                      value={
+                                        transferDetails[transferIndex]
+                                          ?.transporterName !== undefined
+                                          ? transferDetails[transferIndex]
+                                              .transporterName
+                                          : primaryGuest.firstName || ""
+                                      }
+                                      onChange={(e) =>
+                                        setTransferDetails({
+                                          ...transferDetails,
+                                          [transferIndex]: {
+                                            ...transferDetail,
+                                            transporterName: e.target.value,
+                                          },
+                                        })
+                                      }
+                                      placeholder="Enter transporter name"
+                                    />
+                                  </Col>
+                                  <Col xs={6} md="auto" className="ms-md-auto text-md-end myop-v2-money">
+                                    <span className="text-muted small">
+                                      Selling:{" "}
+                                    </span>
+                                    <strong className="text-success">
+                                      AED {sellingPrice.toFixed(2)}
+                                    </strong>
+                                  </Col>
+                                  <Col xs={6} md="auto" className="text-md-end myop-v2-money">
+                                    <span className="text-muted small">
+                                      Total:{" "}
+                                    </span>
+                                    <strong className="text-primary">
+                                      AED {totalPrice.toFixed(2)}
+                                    </strong>
+                                  </Col>
+                                </Row>
                               </div>
                             </div>
                           );
@@ -2999,10 +3321,13 @@ const MakePkgBookingPageV2 = () => {
                   {activities.length > 0 && (
                     <Accordion.Item eventKey="2" className="mb-2">
                       <Accordion.Header>
-                        <h5 className="mb-0 fw-bold d-flex align-items-center">
+                        <h5 className="mb-0 fw-bold d-flex align-items-center flex-wrap">
                           Tours &amp; Activities
                           <span className="badge bg-warning-subtle text-warning ms-2">
                             {activities.length}
+                          </span>
+                          <span className="myop-v2-section-badges">
+                            <Badge bg="light" text="dark" className="border">Review</Badge>
                           </span>
                         </h5>
                       </Accordion.Header>
@@ -3076,16 +3401,16 @@ const MakePkgBookingPageV2 = () => {
                               </div>
                               <div className="simple-section-row-body">
                                 <Row className="g-2 align-items-center small">
-                                  <Col md={4}>
+                                  <Col xs={12} md="auto">
                                     <FaCalendarAlt className="text-primary me-1" />
                                     <strong>Tour date:</strong>{" "}
                                     {formatDate(activityDate)}
                                   </Col>
-                                  <Col md={2}>
+                                  <Col xs={6} md="auto">
                                     <span className="text-muted">Adults: </span>
                                     <strong>{adult}</strong>
                                   </Col>
-                                  <Col md={2}>
+                                  <Col xs={6} md="auto">
                                     <span className="text-muted">Children: </span>
                                     <strong>{child}</strong>
                                     {childAges.length > 0 && (
@@ -3094,13 +3419,13 @@ const MakePkgBookingPageV2 = () => {
                                       </span>
                                     )}
                                   </Col>
-                                  <Col md={2} className="text-md-end">
+                                  <Col xs={6} md="auto" className="ms-md-auto text-md-end myop-v2-money">
                                     <span className="text-muted">Selling: </span>
                                     <strong className="text-success">
                                       AED {sellingPrice.toFixed(2)}
                                     </strong>
                                   </Col>
-                                  <Col md={2} className="text-md-end">
+                                  <Col xs={6} md="auto" className="text-md-end myop-v2-money">
                                     <span className="text-muted">Total: </span>
                                     <strong className="text-primary">
                                       AED {totalPrice.toFixed(2)}
@@ -3157,177 +3482,111 @@ const MakePkgBookingPageV2 = () => {
                     </Accordion.Item>
                   )}
 
-                  {/* Transfer Option Section */}
-                  {transfers.length > 0 && (
-                    <Accordion.Item eventKey="3" className="mb-2">
-                      <Accordion.Header>
-                        <h5 className="mb-0 fw-bold d-flex align-items-center">
-                          Transfers
+                  {/* Itinerary Option Section */}
+                  <Accordion.Item eventKey="0" className="mb-2">
+                    <Accordion.Header>
+                      <h5 className="mb-0 fw-bold d-flex align-items-center flex-wrap">
+                        Itinerary
+                        {uniqueActivityDates.length > 0 && (
                           <span className="badge bg-info-subtle text-info ms-2">
-                            {transfers.length}
+                            {uniqueActivityDates.length} day
+                            {uniqueActivityDates.length === 1 ? "" : "s"}
                           </span>
-                        </h5>
-                      </Accordion.Header>
-                      <Accordion.Body>
-                        {transfers.map((item, transferIndex) => {
-                          const cab = item.cab || {};
-                          const details = cab.details || {};
-                          const vehicleName =
-                            cab.vehicleName ||
-                            details.vehicleName ||
-                            "Transfer";
-                          const capacity =
-                            cab.capacity || details.capacity || "";
-                          const pickupDate = cab.pickupDate || "";
-                          const dropDate = cab.dropoffDate || "";
-                          const adult =
-                            cab.adult || details.adult || cab.noOfAdult || "0";
-                          const child =
-                            cab.child || details.child || cab.noOfChild || "0";
-                          const travelType =
-                            cab.travelType || details.travelType || "1";
-                          const shareType =
-                            cab.shareType || details.shareType || "Private";
-
-                          // Handle childAge
-                          let childAges = [];
-                          if (cab.childAge) {
-                            childAges = Array.isArray(cab.childAge)
-                              ? cab.childAge
-                              : [cab.childAge];
-                          } else if (cab.childAges) {
-                            childAges = Array.isArray(cab.childAges)
-                              ? cab.childAges
-                              : [cab.childAges];
-                          } else if (cab.childAgeArray) {
-                            childAges = Array.isArray(cab.childAgeArray)
-                              ? cab.childAgeArray
-                              : [cab.childAgeArray];
-                          } else if (details.childAge) {
-                            childAges = Array.isArray(details.childAge)
-                              ? details.childAge
-                              : [details.childAge];
-                          } else if (details.childAgeArray) {
-                            childAges = Array.isArray(details.childAgeArray)
-                              ? details.childAgeArray
-                              : [details.childAgeArray];
-                          }
-
-                          const transferDetail =
-                            transferDetails[transferIndex] || {};
-                          // Selling Price = totalRate (with markup)
-                          const sellingPrice = parseFloat(cab.totalRate || 0);
-                          // Total Price = totalRateWithoutmrk (without markup)
-                          const totalPrice = parseFloat(
-                            cab.totalRateWithoutmrk || cab.totalRate || 0,
-                          );
-
-                          // Get travel type label
-                          const getTravelTypeLabel = (type) => {
-                            if (type === "1") return "Arrival & Departure";
-                            if (type === "2") return "Arrival";
-                            if (type === "3") return "Departure";
-                            return type;
-                          };
-
-                          return (
-                            <div
-                              key={transferIndex}
-                              className="simple-section-row"
-                            >
-                              <div className="simple-section-row-title">
-                                <FaCar className="text-primary me-2" />
-                                <span className="fw-bold">
-                                  {transfers.length > 1
-                                    ? `Transfer ${transferIndex + 1}: `
-                                    : ""}
-                                  {capacity
-                                    ? `${capacity} Seater`
-                                    : vehicleName}
-                                </span>
-                              </div>
-                              <div className="simple-section-row-body">
-                                <Row className="g-2 align-items-center small mb-2">
-                                  <Col md={4}>
-                                    <FaCalendarAlt className="text-primary me-1" />
-                                    <strong>Pickup:</strong>{" "}
-                                    {formatDate(pickupDate)}
-                                    {" / "}
-                                    <strong>Drop:</strong>{" "}
-                                    {formatDate(dropDate)}
-                                  </Col>
-                                  <Col md={3}>
-                                    <span className="text-muted">Type: </span>
-                                    <strong>
-                                      {getTravelTypeLabel(travelType)} /{" "}
-                                      {shareType}
-                                    </strong>
-                                  </Col>
-                                  <Col md={2}>
-                                    <span className="text-muted">Adults: </span>
-                                    <strong>{adult}</strong>
-                                  </Col>
-                                  <Col md={3}>
-                                    <span className="text-muted">Children: </span>
-                                    <strong>{child}</strong>
-                                    {childAges.length > 0 && (
-                                      <span className="text-muted ms-1">
-                                        ({childAges.join(", ")})
-                                      </span>
-                                    )}
-                                  </Col>
-                                </Row>
-                                <Row className="g-2 align-items-end mb-2">
-                                  <Col md={6}>
-                                    <Form.Label className="small mb-1">
-                                      Transporter Name
-                                    </Form.Label>
-                                    <Form.Control
-                                      size="sm"
-                                      type="text"
-                                      value={
-                                        transferDetails[transferIndex]
-                                          ?.transporterName !== undefined
-                                          ? transferDetails[transferIndex]
-                                              .transporterName
-                                          : primaryGuest.firstName || ""
-                                      }
-                                      onChange={(e) =>
-                                        setTransferDetails({
-                                          ...transferDetails,
-                                          [transferIndex]: {
-                                            ...transferDetail,
-                                            transporterName: e.target.value,
-                                          },
-                                        })
-                                      }
-                                      placeholder="Enter transporter name"
-                                    />
-                                  </Col>
-                                  <Col md={3} className="text-md-end">
-                                    <span className="text-muted small">
-                                      Selling:{" "}
-                                    </span>
-                                    <strong className="text-success">
-                                      AED {sellingPrice.toFixed(2)}
-                                    </strong>
-                                  </Col>
-                                  <Col md={3} className="text-md-end">
-                                    <span className="text-muted small">
-                                      Total:{" "}
-                                    </span>
-                                    <strong className="text-primary">
-                                      AED {totalPrice.toFixed(2)}
-                                    </strong>
-                                  </Col>
-                                </Row>
-                              </div>
+                        )}
+                        <span className="myop-v2-section-badges">
+                          <Badge bg="light" text="dark" className="border">Optional</Badge>
+                        </span>
+                      </h5>
+                    </Accordion.Header>
+                    <Accordion.Body>
+                      <div className="text-muted small myop-v2-section-intro">
+                        Optionally attach day-wise itinerary notes to each
+                        activity date using the <FaPlus size={10} /> button.
+                      </div>
+                      <div className="itinerary-days-container">
+                        {uniqueActivityDates.map((dateString, index) => (
+                          <div className="itinerary-day-box mb-3" key={index}>
+                            <div className="d-flex justify-content-between align-items-center">
+                               <h6 className="mb-0 fw-bold">
+                                <small className="fw-normal text-muted">
+                                  Itinerary for activity on
+                                </small>{" "}
+                                {formatActivityDateHeader(dateString)}
+                              </h6>
+                              <Button
+                                variant="outline-danger"
+                                size="sm"
+                                className="rounded-circle itinerary-plus-btn"
+                                onClick={() =>
+                                  handleOpenItineraryModal(dateString)
+                                }
+                              >
+                                <FaPlus />
+                              </Button>
                             </div>
-                          );
-                        })}
-                      </Accordion.Body>
-                    </Accordion.Item>
-                  )}
+                            {/* Selected Itineraries Preview */}
+                            {(selectedItineraries[dateString] || []).length >
+                              0 && (
+                              <div className="mt-3 pt-3 border-top">
+                                {(selectedItineraries[dateString] || []).map(
+                                  (itineraryId) => {
+                                    const itinerary = itineraryList.find(
+                                      (item) =>
+                                        item.itineraryId === itineraryId,
+                                    );
+                                    if (!itinerary) return null;
+                                    return (
+                                      <div
+                                        key={itineraryId}
+                                        className="d-flex justify-content-between align-items-center mb-2 itinerary-preview-item"
+                                      >
+                                        <div className="d-flex align-items-center flex-grow-1">
+                                          <FaCheckCircle
+                                            className="text-success me-2"
+                                            size={14}
+                                          />
+                                          <span className="small">
+                                            {itinerary.itineraryHeading ||
+                                              "Untitled"}
+                                          </span>
+                                        </div>
+                                        <Button
+                                          variant="link"
+                                          size="sm"
+                                          className="text-danger p-0 ms-2"
+                                          style={{
+                                            fontSize: "0.75rem",
+                                            minWidth: "auto",
+                                          }}
+                                          onClick={() => {
+                                            setSelectedItineraries((prev) => ({
+                                              ...prev,
+                                              [dateString]: prev[
+                                                dateString
+                                              ].filter(
+                                                (id) => id !== itineraryId,
+                                              ),
+                                            }));
+                                          }}
+                                        >
+                                          ×
+                                        </Button>
+                                      </div>
+                                    );
+                                  },
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                        {uniqueActivityDates.length === 0 && (
+                          <div className="text-muted small">
+                            No activities found to generate itinerary days.
+                          </div>
+                        )}
+                      </div>
+                    </Accordion.Body>
+                  </Accordion.Item>
 
                   {/* Visa Information accordion removed in v2 — the
                       Visa YES/NO + support contact is captured on the
@@ -3335,161 +3594,6 @@ const MakePkgBookingPageV2 = () => {
                       Services" panel below alongside the other add-ons,
                       so duplicating it as its own accordion here was
                       redundant. */}
-
-                  {/* Guest Details Section - Always Open */}
-                  <Accordion.Item eventKey="5" className="mb-2">
-                    <Accordion.Header>
-                      <h5 className="mb-0 fw-bold">Guest Details</h5>
-                    </Accordion.Header>
-                    <Accordion.Body>
-                      <Form className="booking-form">
-                        <Row className="g-2">
-                          <Col md={3}>
-                            <Form.Label>
-                              Title <span className="text-danger">*</span>
-                            </Form.Label>
-                            <Form.Select
-                              value={primaryGuest.salutation}
-                              onChange={(e) =>
-                                handlePrimaryGuestChange(
-                                  "salutation",
-                                  e.target.value,
-                                )
-                              }
-                              isInvalid={
-                                !!validationErrors.primaryGuest_salutation
-                              }
-                              required
-                            >
-                              <option value="">Select</option>
-                              <option value="Mr">Mr</option>
-                              <option value="Mrs">Mrs</option>
-                              <option value="Ms">Ms</option>
-                              <option value="Dr">Dr</option>
-                            </Form.Select>
-                            <Form.Control.Feedback type="invalid">
-                              {validationErrors.primaryGuest_salutation}
-                            </Form.Control.Feedback>
-                          </Col>
-                          <Col md={4}>
-                            <Form.Label>
-                              First Name <span className="text-danger">*</span>
-                            </Form.Label>
-                            <Form.Control
-                              type="text"
-                              value={primaryGuest.firstName}
-                              onChange={(e) =>
-                                handlePrimaryGuestChange(
-                                  "firstName",
-                                  e.target.value,
-                                )
-                              }
-                              isInvalid={
-                                !!validationErrors.primaryGuest_firstName
-                              }
-                              required
-                            />
-                            <Form.Control.Feedback type="invalid">
-                              {validationErrors.primaryGuest_firstName}
-                            </Form.Control.Feedback>
-                          </Col>
-                          <Col md={5}>
-                            <Form.Label>Middle Name</Form.Label>
-                            <Form.Control
-                              type="text"
-                              value={primaryGuest.middleName}
-                              onChange={(e) =>
-                                setPrimaryGuest({
-                                  ...primaryGuest,
-                                  middleName: e.target.value,
-                                })
-                              }
-                            />
-                          </Col>
-                          <Col md={4}>
-                            <Form.Label>
-                              Last Name <span className="text-danger">*</span>
-                            </Form.Label>
-                            <Form.Control
-                              type="text"
-                              value={primaryGuest.lastName}
-                              onChange={(e) =>
-                                handlePrimaryGuestChange(
-                                  "lastName",
-                                  e.target.value,
-                                )
-                              }
-                              isInvalid={
-                                !!validationErrors.primaryGuest_lastName
-                              }
-                              required
-                            />
-                            <Form.Control.Feedback type="invalid">
-                              {validationErrors.primaryGuest_lastName}
-                            </Form.Control.Feedback>
-                          </Col>
-                          <Col md={4}>
-                            <Form.Label>
-                              Contact Number{" "}
-                              <span className="text-danger">*</span>
-                            </Form.Label>
-                            <Form.Control
-                              type="tel"
-                              value={primaryGuest.contactNumber}
-                              onChange={(e) =>
-                                handlePrimaryGuestChange(
-                                  "contactNumber",
-                                  e.target.value,
-                                )
-                              }
-                              isInvalid={
-                                !!validationErrors.primaryGuest_contactNumber
-                              }
-                              required
-                            />
-                            <Form.Control.Feedback type="invalid">
-                              {validationErrors.primaryGuest_contactNumber}
-                            </Form.Control.Feedback>
-                          </Col>
-                          <Col md={4}>
-                            <Form.Label>
-                              Email Id <span className="text-danger">*</span>
-                            </Form.Label>
-                            <Form.Control
-                              type="email"
-                              value={primaryGuest.emailId}
-                              onChange={(e) =>
-                                handlePrimaryGuestChange(
-                                  "emailId",
-                                  e.target.value,
-                                )
-                              }
-                              isInvalid={
-                                !!validationErrors.primaryGuest_emailId
-                              }
-                              required
-                            />
-                            <Form.Control.Feedback type="invalid">
-                              {validationErrors.primaryGuest_emailId}
-                            </Form.Control.Feedback>
-                          </Col>
-                          <Col md={4}>
-                            <Form.Label>Passport Number</Form.Label>
-                            <Form.Control
-                              type="text"
-                              value={primaryGuest.passportNumber}
-                              onChange={(e) =>
-                                setPrimaryGuest({
-                                  ...primaryGuest,
-                                  passportNumber: e.target.value,
-                                })
-                              }
-                            />
-                          </Col>
-                        </Row>
-                      </Form>
-                    </Accordion.Body>
-                  </Accordion.Item>
 
                   {/* ── Add-On Services accordion ──────────────────
                        Lives alongside Itinerary / Hotel / Activity /
@@ -3506,7 +3610,7 @@ const MakePkgBookingPageV2 = () => {
                        the save handler via collectEnabledAddOnServices(). */}
                   <Accordion.Item eventKey="6" className="mb-2">
                     <Accordion.Header>
-                      <h5 className="mb-0 fw-bold d-flex align-items-center">
+                      <h5 className="mb-0 fw-bold d-flex align-items-center flex-wrap">
                         Selected Add-On Services
                         <span
                           className={`badge ms-2 bg-${
@@ -3515,24 +3619,40 @@ const MakePkgBookingPageV2 = () => {
                         >
                           {addOnsCount > 0 ? `${addOnsCount} on` : "None"}
                         </span>
+                        <span className="myop-v2-section-badges">
+                          <Badge bg="light" text="dark" className="border">Review</Badge>
+                        </span>
                       </h5>
                     </Accordion.Header>
                     <Accordion.Body>
                       {(() => {
                         const all = readAddOnServices() || {};
-                        const enabled = ADDON_SERVICES_CATALOG.filter(
+                        // Display-only: list every enabled add-on, using the
+                        // admin-managed catalog (with the static one as a
+                        // fallback) so dynamic entries appear here too.
+                        const displayCatalog =
+                          addOnCatalog.length > 0 ? addOnCatalog : ADDON_SERVICES_CATALOG;
+                        const enabled = displayCatalog.filter(
                           (svc) => all[svc.key]?.enabled
                         );
+                        const priceFor = (svc) => {
+                          const unit = Number(svc.unitPrice) || 0;
+                          const qty = Number(all[svc.key]?.quantity) > 0
+                            ? Number(all[svc.key].quantity)
+                            : 1;
+                          return unit * qty;
+                        };
                         if (enabled.length === 0) {
                           return (
                             <div className="text-muted small fst-italic">
-                              No add-on services selected on the /addons step.
-                              Go back to the Add-Ons page to pick services for
-                              this booking.
+                              No add-on services were selected on the Select
+                              Services step. Add-ons are optional — use Edit
+                              package to change your selection.
                             </div>
                           );
                         }
                         return (
+                          <>
                           <Row className="g-3">
                             {enabled.map((svc) => {
                               const data = all[svc.key] || {};
@@ -3540,13 +3660,19 @@ const MakePkgBookingPageV2 = () => {
                                 const v = data[f.name];
                                 return v !== undefined && v !== "" && v !== null;
                               });
+                              const price = priceFor(svc);
                               return (
                                 <Col md={6} key={svc.key}>
-                                  <Card className="h-100 border-success-subtle">
-                                    <Card.Header className="bg-success-subtle py-2">
+                                  <Card className="h-100 border-success-subtle mb-0">
+                                    <Card.Header className="bg-success-subtle py-2 d-flex justify-content-between align-items-center gap-2">
                                       <strong className="small">
                                         {svc.label}
                                       </strong>
+                                      {price > 0 && (
+                                        <span className="small fw-semibold myop-v2-money">
+                                          {(svc.currency || "AED")} {price.toLocaleString()}
+                                        </span>
+                                      )}
                                     </Card.Header>
                                     <Card.Body className="p-2">
                                       {filled.length === 0 ? (
@@ -3578,6 +3704,18 @@ const MakePkgBookingPageV2 = () => {
                               );
                             })}
                           </Row>
+                          {addOnsTotal > 0 && (
+                            <div className="d-flex justify-content-end mt-3 small">
+                              <span className="text-muted me-2">Add-ons subtotal:</span>
+                              <strong className="myop-v2-money">
+                                AED {Number(addOnsTotal).toLocaleString(undefined, {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </strong>
+                            </div>
+                          )}
+                          </>
                         );
                       })()}
                     </Accordion.Body>
@@ -3587,9 +3725,9 @@ const MakePkgBookingPageV2 = () => {
 
               {/* ── Right-side Package Summary sidebar (image-style) ── */}
               <Col lg={4}>
-                <div style={{ position: "sticky", top: 90 }}>
+                <div className="myop-v2-summary-sticky pkg-summary-scroll">
                   <Card
-                    className="border-0 rounded-3"
+                    className="border-0 rounded-3 myop-v2-summary-card"
                     style={{
                       background: "#ffffff",
                       boxShadow: "0 1px 4px rgba(15, 23, 42, 0.06)",
@@ -3610,8 +3748,9 @@ const MakePkgBookingPageV2 = () => {
                             fontSize: "0.85rem",
                           }}
                           onClick={() => navigate(-1)}
+                          title="Go back to the package builder"
                         >
-                          Edit
+                          Edit package
                         </button>
                       </div>
                       {/* Slim, modern scrollbar — replaces the chunky
@@ -3637,7 +3776,7 @@ const MakePkgBookingPageV2 = () => {
                           background-color: #94a3b8;
                         }
                       `}</style>
-                      <div className="pkg-summary-scroll" style={{ maxHeight: "60vh", overflowY: "auto", marginLeft: -4, marginRight: -4, paddingRight: 6 }}>
+                      <div className="pkg-summary-scroll" style={{ marginLeft: -4, marginRight: -4, paddingRight: 6 }}>
                         {(() => {
                           // ── Data sources already populated by earlier
                           // steps — every value below is read-only. No
@@ -3968,15 +4107,17 @@ const MakePkgBookingPageV2 = () => {
                       {(() => {
                         // Right-rail "Total Package Price" — sums the
                         // tourism-dirham aggregate on top of the line-
-                        // item total. The per-row prices above use
-                        // exactly the same `totalRate` figures that feed
-                        // `totalPrice`, so the headline equals the sum
-                        // of the rows above plus TD.
+                        // item total. Note the rows above show each
+                        // service's selling `totalRate`, while `totalPrice`
+                        // is the without-markup sum — the "View Price
+                        // Breakup" disclosure below lists both figures.
                         const tdNum = aggregateTourismDirham;
                         // Roll dynamic add-on prices into the grand total so
                         // the headline reflects exactly what the operator
                         // sees in the rows above AND what gets billed.
                         const totalWithTd = totalPrice + tdNum + addOnsTotal;
+                        const fmtAed = (n) =>
+                          `AED ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 
                         // Non-refundable detection — if ANY single
                         // selected service is non-refundable, the whole
@@ -4060,10 +4201,70 @@ const MakePkgBookingPageV2 = () => {
                                   textDecoration: "none",
                                   fontSize: "0.85rem",
                                 }}
+                                onClick={() => setShowPriceBreakup((v) => !v)}
+                                aria-expanded={showPriceBreakup}
                               >
-                                View Price Breakup
+                                {showPriceBreakup ? "Hide Price Breakup" : "View Price Breakup"}
                               </button>
+                              {showPriceBreakup && (
+                                <div className="mt-2" style={{ fontSize: "0.8rem", color: "#374151" }}>
+                                  {/* Read-only — the same state values the
+                                      Order Summary's Rate Split uses. */}
+                                  <div className="myop-v2-breakup-row">
+                                    <span>Services — selling price (for reference)</span>
+                                    <span className="myop-v2-money">{fmtAed(sellingPrice)}</span>
+                                  </div>
+                                  <div className="myop-v2-breakup-row">
+                                    <span>Services — without markup</span>
+                                    <span className="myop-v2-money">{fmtAed(totalPrice)}</span>
+                                  </div>
+                                  <div className="myop-v2-breakup-row">
+                                    <span>Tourism dirham</span>
+                                    <span className="myop-v2-money">{fmtAed(tdNum)}</span>
+                                  </div>
+                                  {/* Booking-level Tourism Dirham — moved here from
+                                      the Order Summary modal so the final review is
+                                      read-only. Same state + handler as before; the
+                                      aggregate already sums it with the per-hotel
+                                      inputs entered in the Hotels section. */}
+                                  <div className="my-2 p-2 rounded" style={{ background: "#f9fafb", border: "1px solid #e5e7eb" }}>
+                                    <label
+                                      className="form-label fw-semibold mb-1"
+                                      style={{ fontSize: "0.875rem" }}
+                                      htmlFor="myop-v2-booking-level-td"
+                                    >
+                                      Extra Tourism Dirham for the whole booking (optional)
+                                    </label>
+                                    <input
+                                      id="myop-v2-booking-level-td"
+                                      type="number"
+                                      min="0"
+                                      step="0.01"
+                                      className="form-control"
+                                      placeholder="0.00"
+                                      value={tourismDirham}
+                                      onChange={(e) => setTourismDirham(e.target.value)}
+                                    />
+                                    <small className="text-muted">
+                                      Added on top of the per-hotel Tourism Dirham entered
+                                      in the Hotels section; both are included in the total.
+                                    </small>
+                                  </div>
+                                  <div className="myop-v2-breakup-row">
+                                    <span>Add-on services</span>
+                                    <span className="myop-v2-money">{fmtAed(addOnsTotal)}</span>
+                                  </div>
+                                  <div className="myop-v2-breakup-row myop-v2-breakup-row--total fw-bold">
+                                    <span>Total Package Price</span>
+                                    <span className="myop-v2-money">{fmtAed(totalWithTd)}</span>
+                                  </div>
+                                  <div className="text-end" style={{ fontSize: "0.72rem", color: "#9ca3af" }}>
+                                    = without markup + Tourism dirham + add-ons
+                                  </div>
+                                </div>
+                              )}
                             </div>
+
 
                             {/* ── Terms & Conditions block ──
                                 Tick-to-accept + price/availability time
@@ -4090,6 +4291,11 @@ const MakePkgBookingPageV2 = () => {
                                   </span>
                                 }
                               />
+                              <div className="mt-1" style={{ fontSize: "0.76rem", color: "#6b7280" }}>
+                                Ticking this pre-fills the Terms &amp; Conditions acceptance on
+                                the policy review step that opens next; the Cancellation Policies
+                                are shown and accepted there.
+                              </div>
                               {timeLimitText && (
                                 <div className="mt-2" style={{ fontSize: "0.78rem", color: "#6b7280" }}>
                                   <span className="fw-semibold">Time limit:</span> Quoted price &amp; availability valid until <span className="fw-semibold">{timeLimitText}</span>
@@ -4120,10 +4326,9 @@ const MakePkgBookingPageV2 = () => {
               </Col>
             </Row>
 
-            {/* ── Bottom action bar (image-style) ── */}
-            <Row className="mt-4">
-              <Col lg={12}>
-                <div className="d-flex justify-content-between align-items-center">
+            {/* ── Bottom action bar — sticky so Back / Review & Confirm
+                stay reachable while the long form is being filled ── */}
+            <div className="myop-v2-action-bar mt-4">
                   <button
                     type="button"
                     onClick={() => navigate(-1)}
@@ -4137,11 +4342,25 @@ const MakePkgBookingPageV2 = () => {
                       fontSize: "0.95rem",
                     }}
                   >
-                    ‹ Back
+                    <FaArrowLeft className="me-2" /> Back
                   </button>
+                  <div className="myop-v2-action-bar__center">
+                    <div className="fw-bold" style={{ fontSize: "0.95rem", color: "#111827" }}>
+                      Total Package Price: AED {(totalPrice + aggregateTourismDirham + addOnsTotal).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                    </div>
+                    <div style={{ fontSize: "0.72rem", color: "#9ca3af" }}>
+                      Next: review policies → order summary → confirm
+                    </div>
+                  </div>
                   <button
                     type="button"
-                    onClick={handleSubmit}
+                    onClick={(e) => {
+                      // UI only: lets the accordion expand the sections that
+                      // hold highlighted fields for this attempt. handleSubmit
+                      // itself is unchanged.
+                      setSubmitAttempt((n) => n + 1);
+                      handleSubmit(e);
+                    }}
                     className="btn fw-semibold d-flex align-items-center"
                     style={{
                       // Brand red gradient — matches btn-search-modern and
@@ -4158,12 +4377,10 @@ const MakePkgBookingPageV2 = () => {
                       boxShadow: "0 2px 6px rgba(236, 11, 67,0.25)",
                     }}
                   >
-                    Confirm Booking
-                    <span className="ms-2">›</span>
+                    Review &amp; Confirm Booking
+                    <FaArrowRight className="ms-2" />
                   </button>
-                </div>
-              </Col>
-            </Row>
+            </div>
           </Container>
         </main>
       </div>
@@ -4174,6 +4391,7 @@ const MakePkgBookingPageV2 = () => {
         onHide={() => !isSubmitting && setShowOrderSummaryModal(false)}
         size="lg"
         centered
+        scrollable
         backdrop="static"
         keyboard={false}
         className="order-summary-modal"
@@ -4223,9 +4441,7 @@ const MakePkgBookingPageV2 = () => {
             </div>
           </Modal.Title>
         </Modal.Header>
-        <Modal.Body
-          style={{ maxHeight: "70vh", overflowY: "auto", padding: "1.5rem" }}
-        >
+        <Modal.Body style={{ padding: "1.5rem" }}>
           <div className="order-summary">
             {/* Guest Information Section */}
             <div className="mb-4">
@@ -4594,50 +4810,40 @@ const MakePkgBookingPageV2 = () => {
                 })}`;
               return (
                 <>
-                  <div className="p-3 rounded bg-white shadow-sm mt-2 border">
-                    <div className="d-flex justify-content-between align-items-center">
-                      <h6 className="mb-0 text-muted">Selling Price</h6>
-                      <h5 className="mb-0 text-success fw-bold">
-                        {formatAed(sellingWithTd)}
-                      </h5>
-                    </div>
-                  </div>
+                  {/* ── Accepted-policies indicator ────────────────────
+                      Order Summary no longer carries the T&C / Cancellation
+                      content or the acceptance checkboxes — those live on
+                      the dedicated pre-summary policy modal (see
+                      `showPolicyModal`). The Order Summary just shows a
+                      confirmation badge so the operator knows what's
+                      already been ticked. */}
+                  <Card className="mt-2 mb-3 shadow-sm rounded-3" style={{ borderLeft: "4px solid #16a34a" }}>
+                    <Card.Body className="d-flex align-items-start gap-3">
+                      <FaCheckCircle size={22} className="text-success mt-1" />
+                      <div className="small">
+                        <div className="fw-semibold text-success mb-1">
+                          Terms &amp; Conditions and Cancellation Policies accepted
+                        </div>
+                        <div className="text-muted">
+                          The customer has reviewed and accepted both policy
+                          sections. This acceptance will be saved with the
+                          booking for the audit trail.
+                        </div>
+                      </div>
+                    </Card.Body>
+                  </Card>
 
-                  <div
-                    className="p-3 rounded text-white text-center mt-2"
-                    style={{
-                      background:
-                        "linear-gradient(135deg, #198754 0%, #0d6efd 100%)",
-                    }}
+                  <h6
+                    className="mb-2 fw-bold"
+                    style={{ fontSize: "1rem", color: "#212529" }}
                   >
-                    <h6 className="mb-0 fw-bold">Total Price</h6>
-                    <h4 className="mb-0">{formatAed(totalWithTd)}</h4>
-                  </div>
-
-                  <div className="mt-3 mb-3">
-                    <label
-                      className="form-label fw-semibold"
-                      style={{ fontSize: "0.875rem" }}
-                    >
-                      Additional Tourism Dirham (booking-level)
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      className="form-control"
-                      placeholder="0.00"
-                      value={tourismDirham}
-                      onChange={(e) => setTourismDirham(e.target.value)}
-                    />
-                    <small className="text-muted">
-                      Optional. Added on top of every per-hotel Tourism
-                      Dirham already entered on the booking form — both
-                      sources are summed into Selling + TD and Total + TD.
-                    </small>
-                  </div>
-
-                  <div className="mt-3 p-3 bg-white border rounded">
+                    Price Summary
+                  </h6>
+                  {/* Rate split first so the operator can follow how the
+                      two headline figures below are built up. The booking-
+                      level Tourism Dirham is entered on the form (Package
+                      Summary card), so this review is read-only. */}
+                  <div className="p-3 bg-white border rounded">
                     <h6 className="fw-bold mb-2">Rate Split</h6>
                     <div className="d-flex justify-content-between">
                       <span>Selling Price</span>
@@ -4651,14 +4857,28 @@ const MakePkgBookingPageV2 = () => {
                       <span>Tourism Dirhams</span>
                       <span>{formatAed(tdAmount)}</span>
                     </div>
+                    <div className="d-flex justify-content-between">
+                      <span>Add-on services</span>
+                      <span>{formatAed(addOnsTotal)}</span>
+                    </div>
                     <hr className="my-2" />
                     <div className="d-flex justify-content-between fw-bold text-success">
-                      <span>Selling + TD</span>
+                      <span>Selling Price + Tourism Dirham + add-ons</span>
                       <span>{formatAed(sellingWithTd)}</span>
                     </div>
-                    <div className="d-flex justify-content-between fw-bold text-primary">
-                      <span>Total + TD</span>
-                      <span>{formatAed(totalWithTd)}</span>
+                  </div>
+
+                  <div
+                    className="p-3 rounded text-white text-center mt-2"
+                    style={{
+                      background:
+                        "linear-gradient(135deg, #198754 0%, #0d6efd 100%)",
+                    }}
+                  >
+                    <h6 className="mb-0 fw-bold">Total Package Price</h6>
+                    <h4 className="mb-0">{formatAed(totalWithTd)}</h4>
+                    <div className="small" style={{ opacity: 0.9 }}>
+                      without markup + Tourism Dirham + add-ons
                     </div>
                   </div>
 
@@ -4722,29 +4942,6 @@ const MakePkgBookingPageV2 = () => {
                       </div>
                     );
                   })()}
-
-                  {/* ── Accepted-policies indicator ────────────────────
-                      Order Summary no longer carries the T&C / Cancellation
-                      content or the acceptance checkboxes — those live on
-                      the dedicated pre-summary policy modal (see
-                      `showPolicyModal`). The Order Summary now just shows
-                      a confirmation badge so the operator knows what's
-                      already been ticked. */}
-                  <Card className="mt-4 shadow-sm rounded-3" style={{ borderLeft: "4px solid #16a34a" }}>
-                    <Card.Body className="d-flex align-items-start gap-3">
-                      <FaCheckCircle size={22} className="text-success mt-1" />
-                      <div className="small">
-                        <div className="fw-semibold text-success mb-1">
-                          Terms &amp; Conditions and Cancellation Policies accepted
-                        </div>
-                        <div className="text-muted">
-                          The customer has reviewed and accepted both policy
-                          sections. This acceptance will be saved with the
-                          booking for the audit trail.
-                        </div>
-                      </div>
-                    </Card.Body>
-                  </Card>
 
                   {/* Legacy IIFE — kept to preserve outer brace balance,
                       but neutralised. The full T&C / cancellation
@@ -4819,7 +5016,8 @@ const MakePkgBookingPageV2 = () => {
                   <div className="mt-4 text-center">
                     <p className="text-muted small mb-0">
                       Please review the booking details carefully before
-                      confirming.
+                      confirming. Cancelling returns you to the form; the
+                      policies will need to be accepted again.
                     </p>
                   </div>
                 </>
@@ -4828,6 +5026,7 @@ const MakePkgBookingPageV2 = () => {
           </div>
         </Modal.Body>
         <Modal.Footer
+          className="myop-v2-modal-footer"
           style={{
             borderTop: "2px solid #e9ecef",
             padding: "1.25rem 1.5rem",
@@ -4845,6 +5044,19 @@ const MakePkgBookingPageV2 = () => {
           >
             Cancel
           </Button>
+          {/* Read-only total next to the irreversible action so the
+              amount and the button are never apart on screen. */}
+          <div className="myop-v2-modal-footer__total">
+            <div style={{ fontSize: "0.75rem", color: "#6c757d", fontWeight: "500" }}>
+              Total Package Price
+            </div>
+            <div style={{ fontSize: "1rem", fontWeight: "600", color: "#212529" }}>
+              AED {Number(totalPrice + aggregateTourismDirham + addOnsTotal).toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}
+            </div>
+          </div>
           <Button
             variant="primary"
             onClick={() => {
@@ -5114,43 +5326,54 @@ const MakePkgBookingPageV2 = () => {
                   </Card.Body>
                 </Card>
 
-                {/* Acceptance gates */}
-                <Card className="mb-1 shadow-sm rounded-3" style={{ borderLeft: "4px solid #6366f1" }}>
-                  <Card.Body>
-                    <Form.Check
-                      type="checkbox"
-                      id="myop-policy-modal-terms"
-                      className="mb-2"
-                      checked={acceptedTerms}
-                      onChange={(e) => setAcceptedTerms(e.target.checked)}
-                      label={
-                        <span>
-                          I have read and accept the{" "}
-                          <span className="fw-semibold">Terms &amp; Conditions</span>{" "}
-                          for all services in this booking.
-                        </span>
-                      }
-                    />
-                    <Form.Check
-                      type="checkbox"
-                      id="myop-policy-modal-cancellation"
-                      checked={acceptedCancellations}
-                      onChange={(e) => setAcceptedCancellations(e.target.checked)}
-                      label={
-                        <span>
-                          I have read and accept the{" "}
-                          <span className="fw-semibold">Cancellation Policies</span>{" "}
-                          for all services in this booking.
-                        </span>
-                      }
-                    />
-                  </Card.Body>
-                </Card>
+                {/* Acceptance gates live in the footer (below) so they stay
+                    visible however long the policy lists get. */}
               </>
             );
           })()}
         </Modal.Body>
-        <Modal.Footer style={{ justifyContent: "space-between" }}>
+        <Modal.Footer className="myop-v2-modal-footer" style={{ justifyContent: "space-between" }}>
+          {/* Acceptance gates — always visible next to the button they
+              unlock, instead of at the bottom of the scrollable list. */}
+          <div className="myop-v2-modal-footer__block">
+            <Card className="mb-1 shadow-sm rounded-3" style={{ borderLeft: "4px solid #6366f1" }}>
+              <Card.Body>
+                <Form.Check
+                  type="checkbox"
+                  id="myop-policy-modal-terms"
+                  className="mb-2"
+                  checked={acceptedTerms}
+                  onChange={(e) => setAcceptedTerms(e.target.checked)}
+                  label={
+                    <span>
+                      I have read and accept the{" "}
+                      <span className="fw-semibold">Terms &amp; Conditions</span>{" "}
+                      for all services in this booking.
+                    </span>
+                  }
+                />
+                <Form.Check
+                  type="checkbox"
+                  id="myop-policy-modal-cancellation"
+                  checked={acceptedCancellations}
+                  onChange={(e) => setAcceptedCancellations(e.target.checked)}
+                  label={
+                    <span>
+                      I have read and accept the{" "}
+                      <span className="fw-semibold">Cancellation Policies</span>{" "}
+                      for all services in this booking.
+                    </span>
+                  }
+                />
+                {(!acceptedTerms || !acceptedCancellations) && (
+                  <div className="text-muted small mt-2">
+                    <FaInfoCircle className="me-1" />
+                    Tick both boxes to enable <span className="fw-semibold">Continue to Order Summary</span>.
+                  </div>
+                )}
+              </Card.Body>
+            </Card>
+          </div>
           <Button
             variant="outline-secondary"
             onClick={() => setShowPolicyModal(false)}
@@ -5180,6 +5403,7 @@ const MakePkgBookingPageV2 = () => {
         onHide={handleCloseItineraryModal}
         size="lg"
         centered
+        scrollable
         className="itinerary-modal"
       >
         <Modal.Header
@@ -5202,9 +5426,7 @@ const MakePkgBookingPageV2 = () => {
             )}
           </Modal.Title>
         </Modal.Header>
-        <Modal.Body
-          style={{ maxHeight: "70vh", overflowY: "auto", padding: "1.5rem" }}
-        >
+        <Modal.Body style={{ padding: "1.5rem" }}>
           {/* Search Bar */}
           <Form.Group className="mb-4">
             <div className="position-relative">

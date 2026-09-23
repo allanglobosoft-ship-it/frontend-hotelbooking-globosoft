@@ -23,9 +23,12 @@ import {
   FaUsers,
   FaChild,
   FaPlus,
+  FaArrowRight,
 } from "react-icons/fa";
 
 import { useNavigate } from "react-router-dom";
+import MyopV2JourneyStepper from "../../components/myopv2/MyopV2JourneyStepper";
+import "../../styles/MakeYourOwnPackageV2.css";
 
 // ── v2 prefetch ────────────────────────────────────────────────────────
 // The next page (MakePkgCombineSearchV2) ships the same hotel/transfer/
@@ -697,16 +700,32 @@ export default function MakeUrOwnPackageV2() {
   //   }
   // };
 
+  // Read-only helpers for the layout below — no business logic lives
+  // here; they only summarise state that already exists so the operator
+  // can see the trip taking shape while filling the form.
+  const totalNights = itinerary.reduce(
+    (acc, curr) => acc + (parseInt(curr.nights) || 0),
+    0
+  );
+  const hasFormErrors = Object.keys(errors).length > 0;
+
   return (
     <div className="min-vh-100 bg-light d-flex flex-column">
       <TopBar />
       <div className="d-flex flex-grow-1">
         <Sidebar />
-        <main className="flex-grow-1 p-4 hs-page">
+        <main className="flex-grow-1 p-4 hs-page myop-v2">
+          {/* Journey indicator — same component on all three V2 pages so
+              the operator always knows which phase they are in. */}
+          <MyopV2JourneyStepper current={1} />
+
           {/* ── Search Card + Ads ── */}
           <div className="d-flex gap-3 align-items-start mb-4 hs-search-ads-row">
            <div className="flex-grow-1" style={{ minWidth: 0 }}>
-          <Card className="shadow-sm rounded-xl mb-4 h-100" style={{ backgroundColor: '#ffffff' }}>
+          <Card
+            className="shadow-sm rounded-xl myop-v2-static-card"
+            style={{ backgroundColor: '#ffffff' }}
+          >
             <Card.Body className="p-4">
               <div className="d-flex align-items-center mb-4">
                 <div className="me-3">
@@ -719,330 +738,400 @@ export default function MakeUrOwnPackageV2() {
                     Build Your Own Package
                   </h2>
                   <p className="text-muted mb-0">
-                    Plan your perfect vacation package
+                    Tell us when, who and where.
                   </p>
                 </div>
               </div>
 
               <Form onSubmit={handleSearchSubmit}>
-                <Row className="g-4">
-                  <Col lg={3} md={6}>
-                    <Form.Group>
-                      <Form.Label className="fw-semibold text-dark">
-                        <FaCalendarAlt className="me-2" />
-                        Travel Date <span className="text-danger">*</span>
-                      </Form.Label>
-                      <Form.Control
-                        type="date"
-                        value={travelDate}
-                        min={today}
-                        onChange={(e) => {
-                          setTravelDate(e.target.value);
-                          if (e.target.value) clearError("travelDate");
-                        }}
-                        className="form-control-modern"
-                        isInvalid={!!errors.travelDate}
-                      />
-                      {errors.travelDate && (
-                        <div className="text-danger small mt-1">
-                          {errors.travelDate}
-                        </div>
-                      )}
-                    </Form.Group>
-                  </Col>
+                {/* ── Group 1: travel details ── */}
+                <div className="myop-v2-fieldgroup">
+                  <div className="myop-v2-fieldgroup__title">
+                    <span className="fw-semibold text-dark">
+                      <FaCalendarAlt className="text-primary" />
+                      Travel details
+                    </span>
+                    <span className="text-muted small">
+                      Fields marked <span className="text-danger">*</span> are required
+                    </span>
+                  </div>
+                  <Row className="g-4">
+                    <Col lg={3} md={6}>
+                      <Form.Group>
+                        <Form.Label className="fw-semibold text-dark">
+                          <FaCalendarAlt className="me-2" />
+                          Travel Date <span className="text-danger">*</span>
+                        </Form.Label>
+                        <Form.Control
+                          type="date"
+                          value={travelDate}
+                          min={today}
+                          onChange={(e) => {
+                            setTravelDate(e.target.value);
+                            if (e.target.value) clearError("travelDate");
+                          }}
+                          className="form-control-modern"
+                          isInvalid={!!errors.travelDate}
+                        />
+                        {errors.travelDate && (
+                          <div className="text-danger small mt-1">
+                            {errors.travelDate}
+                          </div>
+                        )}
+                      </Form.Group>
+                    </Col>
 
-                  {!isAgentRole && (
-                  <Col lg={3} md={6}>
-                    <Form.Group>
-                      <Form.Label className="fw-semibold text-dark">
-                        <FaUser className="me-2" />
-                        Agent <span className="text-danger">*</span>
-                      </Form.Label>
-                      <Form.Select
-                        value={agent}
-                        onChange={(e) => {
-                          setAgent(e.target.value);
-                          if (e.target.value) clearError("agent");
-                        }}
-                        className="form-control-modern"
-                        isInvalid={!!errors.agent}
-                      >
-                        <option value="">SELECT</option>
-                        {agents.map((agentItem) => (
-                          <option key={agentItem.id} value={agentItem.id}>
-                            {agentItem.companyName}
-                          </option>
-                        ))}
-                      </Form.Select>
-                      {errors.agent && (
-                        <div className="text-danger small mt-1">
-                          {errors.agent}
-                        </div>
-                      )}
-                      <AgentBalanceDisplay agentId={agent} />
-                    </Form.Group>
-                  </Col>
-                  )}
-
-                  <Col lg={3} md={6}>
-                    <Form.Group>
-                      <Form.Label className="fw-semibold text-dark">
-                        <FaGlobe className="me-2" />
-                        Native Country of Guest <span className="text-danger">*</span>
-                      </Form.Label>
-                      <Select
-                        options={nationalityList}
-                        value={selectedNationality}
-                        onChange={(option) => {
-                          setSelectedNationality(option);
-                          if (option) clearError("nationality");
-                        }}
-                        onInputChange={handleCountryInputChange}
-                        isLoading={isNationalityLoading}
-                        placeholder="SELECT"
-                        isSearchable
-                        isClearable
-                        className="modern-select"
-                        menuPortalTarget={document.body}
-                        styles={{
-                          menuPortal: base => ({ ...base, zIndex: 9999 }),
-                          control: (base) => ({
-                            ...base,
-                            minHeight: "42px",
-                            border: "1px solid #dee2e6",
-                            "&:hover": { borderColor: "#86b7fe" },
-                          }),
-                        }}
-                      />
-                      {errors.nationality && (
-                        <div className="text-danger small mt-1">
-                          {errors.nationality}
-                        </div>
-                      )}
-                      {/* Surface UAE-resident status to the operator so
-                          they can apply the resident rate. Matched on
-                          country code "AE" so a label change can't
-                          break the rule. */}
-                      {selectedNationality?.code === "AE" && (
-                        <div
-                          className="mt-1 small fw-semibold"
-                          style={{ color: "#0f7a3a" }}
+                    {!isAgentRole && (
+                    <Col lg={3} md={6}>
+                      <Form.Group>
+                        <Form.Label className="fw-semibold text-dark">
+                          <FaUser className="me-2" />
+                          Agent <span className="text-danger">*</span>
+                        </Form.Label>
+                        <Form.Select
+                          value={agent}
+                          onChange={(e) => {
+                            setAgent(e.target.value);
+                            if (e.target.value) clearError("agent");
+                          }}
+                          className="form-control-modern"
+                          isInvalid={!!errors.agent}
                         >
-                          Select "United Arab Emirates" if guest resident of UAE
-                        </div>
-                      )}
-                    </Form.Group>
-                  </Col>
+                          <option value="">SELECT</option>
+                          {agents.map((agentItem) => (
+                            <option key={agentItem.id} value={agentItem.id}>
+                              {agentItem.companyName}
+                            </option>
+                          ))}
+                        </Form.Select>
+                        {errors.agent && (
+                          <div className="text-danger small mt-1">
+                            {errors.agent}
+                          </div>
+                        )}
+                        <AgentBalanceDisplay agentId={agent} />
+                      </Form.Group>
+                    </Col>
+                    )}
 
-                  <Col lg={3} md={6}>
-                    <Form.Group>
-                      <Form.Label className="fw-semibold text-dark">
-                        <FaUsers className="me-2" />
-                        No of adult <span className="text-danger">*</span>
-                      </Form.Label>
-                      <Form.Select
-                        value={adults}
-                        onChange={(e) => {
-                          setAdults(parseInt(e.target.value) || 1);
-                          if (e.target.value) clearError("adults");
-                        }}
-                        className="form-control-modern"
-                        isInvalid={!!errors.adults}
-                      >
-                        {Array.from({ length: 9 }, (_, i) => i + 1).map((num) => (
-                          <option key={num} value={num}>
-                            {num}
-                          </option>
-                        ))}
-                      </Form.Select>
-                      {errors.adults && (
-                        <div className="text-danger small mt-1">
-                          {errors.adults}
-                        </div>
-                      )}
-                    </Form.Group>
-                  </Col>
+                    <Col lg={3} md={6}>
+                      <Form.Group>
+                        <Form.Label className="fw-semibold text-dark">
+                          <FaGlobe className="me-2" />
+                          Native Country of Guest <span className="text-danger">*</span>
+                        </Form.Label>
+                        <Select
+                          options={nationalityList}
+                          value={selectedNationality}
+                          onChange={(option) => {
+                            setSelectedNationality(option);
+                            if (option) clearError("nationality");
+                          }}
+                          onInputChange={handleCountryInputChange}
+                          isLoading={isNationalityLoading}
+                          placeholder="SELECT"
+                          isSearchable
+                          isClearable
+                          className="modern-select"
+                          menuPortalTarget={document.body}
+                          styles={{
+                            menuPortal: base => ({ ...base, zIndex: 9999 }),
+                            control: (base) => ({
+                              ...base,
+                              minHeight: "42px",
+                              border: "1px solid #dee2e6",
+                              "&:hover": { borderColor: "#86b7fe" },
+                            }),
+                          }}
+                        />
+                        {errors.nationality && (
+                          <div className="text-danger small mt-1">
+                            {errors.nationality}
+                          </div>
+                        )}
+                        {/* Surface UAE-resident status to the operator so
+                            they can apply the resident rate. Matched on
+                            country code "AE" so a label change can't
+                            break the rule. */}
+                        {selectedNationality?.code === "AE" && (
+                          <div
+                            className="mt-1 small fw-semibold"
+                            style={{ color: "#0f7a3a" }}
+                          >
+                            Select "United Arab Emirates" if guest resident of UAE
+                          </div>
+                        )}
+                      </Form.Group>
+                    </Col>
+                  </Row>
+                </div>
 
-                  <Col lg={3} md={6}>
-                    <Form.Group>
-                      <Form.Label className="fw-semibold text-dark">
-                        <FaChild className="me-2" />
-                        No of Child <span className="text-danger">*</span>
-                      </Form.Label>
-                      <Form.Select
-                        value={children}
-                        onChange={(e) => {
-                          const newChildren = parseInt(e.target.value) || 0;
-                          setChildren(newChildren);
-                          // Initialize or adjust child ages array
-                          if (newChildren > 0) {
-                            const newChildAges = Array.from({ length: newChildren }, (_, i) =>
-                              childAges[i] || ""
-                            );
-                            setChildAges(newChildAges);
-                          } else {
-                            setChildAges([]);
-                          }
-                          if (e.target.value) clearError("children");
-                          clearError("childAges");
-                        }}
-                        className="form-control-modern"
-                        isInvalid={!!errors.children}
-                      >
-                        {Array.from({ length: 6 }, (_, i) => i).map((num) => (
-                          <option key={num} value={num}>
-                            {num}
-                          </option>
-                        ))}
-                      </Form.Select>
-                      {errors.children && (
-                        <div className="text-danger small mt-1">
-                          {errors.children}
-                        </div>
-                      )}
-                    </Form.Group>
-                  </Col>
+                {/* ── Group 2: travellers ── */}
+                <div className="myop-v2-fieldgroup">
+                  <div className="myop-v2-fieldgroup__title">
+                    <span className="fw-semibold text-dark">
+                      <FaUsers className="text-primary" />
+                      Travellers
+                    </span>
+                    <span className="text-muted small">
+                      {adults} adult{adults === 1 ? "" : "s"}
+                      {children > 0 ? ` · ${children} child${children === 1 ? "" : "ren"}` : ""}
+                    </span>
+                  </div>
+                  <Row className="g-4">
+                    <Col lg={3} md={6}>
+                      <Form.Group>
+                        <Form.Label className="fw-semibold text-dark">
+                          <FaUsers className="me-2" />
+                          No of adult <span className="text-danger">*</span>
+                        </Form.Label>
+                        <Form.Select
+                          value={adults}
+                          onChange={(e) => {
+                            setAdults(parseInt(e.target.value) || 1);
+                            if (e.target.value) clearError("adults");
+                          }}
+                          className="form-control-modern"
+                          isInvalid={!!errors.adults}
+                        >
+                          {Array.from({ length: 9 }, (_, i) => i + 1).map((num) => (
+                            <option key={num} value={num}>
+                              {num}
+                            </option>
+                          ))}
+                        </Form.Select>
+                      </Form.Group>
+                    </Col>
 
-                  {/* Child Age Fields */}
-                  {children > 0 && (
-                    <>
-                      {Array.from({ length: children }, (_, i) => (
-                        <Col key={i} lg={3} md={4} sm={6}>
+                    <Col lg={3} md={6}>
+                      <Form.Group>
+                        <Form.Label className="fw-semibold text-dark">
+                          <FaChild className="me-2" />
+                          No of Child
+                        </Form.Label>
+                        <Form.Select
+                          value={children}
+                          onChange={(e) => {
+                            const newChildren = parseInt(e.target.value) || 0;
+                            setChildren(newChildren);
+                            // Initialize or adjust child ages array
+                            if (newChildren > 0) {
+                              const newChildAges = Array.from({ length: newChildren }, (_, i) =>
+                                childAges[i] || ""
+                              );
+                              setChildAges(newChildAges);
+                            } else {
+                              setChildAges([]);
+                            }
+                            if (e.target.value) clearError("children");
+                            clearError("childAges");
+                          }}
+                          className="form-control-modern"
+                          isInvalid={!!errors.children}
+                        >
+                          {Array.from({ length: 6 }, (_, i) => i).map((num) => (
+                            <option key={num} value={num}>
+                              {num}
+                            </option>
+                          ))}
+                        </Form.Select>
+                      </Form.Group>
+                    </Col>
+
+                    {/* Child Age Fields — one per child, on the same grid
+                        rhythm as the other traveller fields. The single
+                        validation message is repeated under every flagged
+                        input so it sits next to the box that is red. */}
+                    {children > 0 && (
+                      <>
+                        {Array.from({ length: children }, (_, i) => {
+                          // Display-only: the single validation key flags the
+                          // group; highlight just the boxes that fail the same
+                          // 0–17 rule so the operator sees which one to fix.
+                          const ageValue = childAges[i];
+                          const ageBad =
+                            !!errors.childAges &&
+                            (!ageValue || ageValue < 0 || ageValue > 17);
+                          return (
+                          <Col key={i} lg={3} md={6}>
+                            <Form.Group>
+                              <Form.Label className="fw-semibold text-dark">
+                                <FaChild className="me-2" />
+                                Child {i + 1} Age <span className="text-danger">*</span>
+                              </Form.Label>
+                              <Form.Control
+                                type="number"
+                                min="0"
+                                max="17"
+                                value={childAges[i] || ""}
+                                onChange={(e) => {
+                                  const newAges = [...childAges];
+                                  newAges[i] = e.target.value;
+                                  setChildAges(newAges);
+                                  clearError("childAges");
+                                }}
+                                placeholder="Enter age"
+                                className="form-control-modern"
+                                isInvalid={ageBad}
+                              />
+                              {ageBad && (
+                                <div className="text-danger small mt-1">
+                                  {errors.childAges}
+                                </div>
+                              )}
+                            </Form.Group>
+                          </Col>
+                          );
+                        })}
+                      </>
+                    )}
+                  </Row>
+                </div>
+
+                {/* ── Group 3: destinations & nights ── */}
+                <div className="myop-v2-fieldgroup">
+                  <div className="myop-v2-fieldgroup__title">
+                    <span className="fw-semibold text-dark">
+                      <FaMapMarkerAlt className="text-primary" />
+                      Destinations &amp; nights
+                    </span>
+                    <span className="text-muted small">
+                      {itinerary.length} destination{itinerary.length === 1 ? "" : "s"} · Total nights:{" "}
+                      <span className="fw-semibold text-dark">{totalNights}</span>
+                    </span>
+                  </div>
+
+                  {itinerary.map((item, index) => (
+                    <div className="myop-v2-itin-row" key={item.id}>
+                      <Row className="g-3 align-items-start">
+                        <Col lg={7} md={7}>
                           <Form.Group>
                             <Form.Label className="fw-semibold text-dark">
-                              <FaChild className="me-2" />
-                              Child {i + 1} Age <span className="text-danger">*</span>
+                              <FaMapMarkerAlt className="me-2" />
+                              Search Destination {itinerary.length > 1 ? `#${index + 1}` : ""} <span className="text-danger">*</span>
                             </Form.Label>
-                            <Form.Control
-                              type="number"
-                              min="0"
-                              max="17"
-                              value={childAges[i] || ""}
-                              onChange={(e) => {
-                                const newAges = [...childAges];
-                                newAges[i] = e.target.value;
-                                setChildAges(newAges);
-                                clearError("childAges");
-                              }}
-                              placeholder="Enter age"
-                              className="form-control-modern"
-                              isInvalid={!!errors.childAges}
-                            />
-                            {errors.childAges && i === 0 && (
+                            <div className="d-flex align-items-center gap-2">
+                              {itinerary.length > 1 && (
+                                <span className="myop-v2-itin-row__index small text-muted">
+                                  {index + 1}
+                                </span>
+                              )}
+                              <div className="flex-grow-1">
+                                <Select
+                                  options={destinationOptions}
+                                  value={item.selectedDestination}
+                                  onChange={(option) => updateDestination(item.id, option)}
+                                  placeholder="Search destinations..."
+                                  isSearchable
+                                  isClearable
+                                  className="modern-select"
+                                  isLoading={isDestinationLoading}
+                                  noOptionsMessage={() =>
+                                    isDestinationLoading
+                                      ? "Searching destinations..."
+                                      : "Type to search destinations..."
+                                  }
+                                  onMenuOpen={() => {
+                                    if (destinationOptions.length === 0) {
+                                      loadPopularDestinations();
+                                    }
+                                  }}
+                                  onInputChange={(inputValue, { action }) => {
+                                    if (action === "input-change") {
+                                      cityList(inputValue);
+                                    }
+                                  }}
+                                  menuPortalTarget={document.body}
+                                  styles={{
+                                    menuPortal: base => ({ ...base, zIndex: 9999 }),
+                                    control: (base) => ({
+                                      ...base,
+                                      minHeight: "42px",
+                                      border: "1px solid #dee2e6",
+                                      "&:hover": { borderColor: "#86b7fe" },
+                                    }),
+                                  }}
+                                />
+                              </div>
+                            </div>
+                            {errors[`destination_${item.id}`] && (
                               <div className="text-danger small mt-1">
-                                {errors.childAges}
+                                {errors[`destination_${item.id}`]}
                               </div>
                             )}
                           </Form.Group>
                         </Col>
-                      ))}
-                    </>
-                  )}
 
-                  {itinerary.map((item, index) => (
-                    <React.Fragment key={item.id}>
-                      <Col lg={6} md={6}>
-                        <Form.Group>
-                          <Form.Label className="fw-semibold text-dark">
-                            <FaMapMarkerAlt className="me-2" />
-                            Search Destination {itinerary.length > 1 ? `#${index + 1}` : ""} <span className="text-danger">*</span>
-                          </Form.Label>
-                          <div className="d-flex align-items-center gap-2">
-                            <div className="flex-grow-1">
-                              <Select
-                                options={destinationOptions}
-                                value={item.selectedDestination}
-                                onChange={(option) => updateDestination(item.id, option)}
-                                placeholder="Search destinations..."
-                                isSearchable
-                                isClearable
-                                className="modern-select"
-                                isLoading={isDestinationLoading}
-                                noOptionsMessage={() =>
-                                  isDestinationLoading
-                                    ? "Searching destinations..."
-                                    : "Type to search destinations..."
-                                }
-                                onMenuOpen={() => {
-                                  if (destinationOptions.length === 0) {
-                                    loadPopularDestinations();
-                                  }
-                                }}
-                                onInputChange={(inputValue, { action }) => {
-                                  if (action === "input-change") {
-                                    cityList(inputValue);
-                                  }
-                                }}
-                                menuPortalTarget={document.body}
-                                styles={{
-                                  menuPortal: base => ({ ...base, zIndex: 9999 }),
-                                  control: (base) => ({
-                                    ...base,
-                                    minHeight: "42px",
-                                    border: "1px solid #dee2e6",
-                                    "&:hover": { borderColor: "#86b7fe" },
-                                  }),
-                                }}
-                              />
-                            </div>
-                            <Button 
-                              variant="primary" 
-                              className="rounded-circle d-flex align-items-center justify-content-center"
-                              style={{ width: "42px", height: "42px", minWidth: "42px" }}
-                              onClick={addDestination}
-                              title="Add another destination"
-                            >
-                              <FaPlus />
-                            </Button>
-                            {itinerary.length > 1 && (
-                              <Button 
-                                variant="outline-danger" 
-                                className="rounded-circle d-flex align-items-center justify-content-center"
-                                style={{ width: "42px", height: "42px", minWidth: "42px" }}
-                                onClick={() => removeDestination(item.id)}
-                                title="Remove destination"
-                              >
-                                <span className="fw-bold">×</span>
-                              </Button>
+                        <Col lg={3} md={3}>
+                          <Form.Group>
+                            <Form.Label className="fw-semibold text-dark">
+                              <FaCalendarAlt className="me-2" />
+                              Number of nights <span className="text-danger">*</span>
+                            </Form.Label>
+                            <Form.Control
+                              type="number"
+                              min="1"
+                              max="30"
+                              value={item.nights}
+                              onChange={(e) => updateNights(item.id, e.target.value)}
+                              className="form-control-modern"
+                              isInvalid={!!errors[`nights_${item.id}`]}
+                            />
+                            {errors[`nights_${item.id}`] && (
+                              <div className="text-danger small mt-1">
+                                {errors[`nights_${item.id}`]}
+                              </div>
                             )}
-                          </div>
-                          {errors[`destination_${item.id}`] && (
-                            <div className="text-danger small mt-1">
-                              {errors[`destination_${item.id}`]}
-                            </div>
-                          )}
-                        </Form.Group>
-                      </Col>
+                          </Form.Group>
+                        </Col>
 
-                      <Col lg={3} md={6}>
-                        <Form.Group>
-                          <Form.Label className="fw-semibold text-dark">
-                            <FaCalendarAlt className="me-2" />
-                            Number of nights <span className="text-danger">*</span>
-                          </Form.Label>
-                          <Form.Control
-                            type="number"
-                            min="1"
-                            max="30"
-                            value={item.nights}
-                            onChange={(e) => updateNights(item.id, e.target.value)}
-                            className="form-control-modern"
-                            isInvalid={!!errors[`nights_${item.id}`]}
-                          />
-                          {errors[`nights_${item.id}`] && (
-                            <div className="text-danger small mt-1">
-                              {errors[`nights_${item.id}`]}
-                            </div>
-                          )}
-                        </Form.Group>
-                      </Col>
-                      <Col lg={3} className="d-none d-lg-block"></Col> {/* Spacer for alignment */}
-                    </React.Fragment>
+                        {itinerary.length > 1 && (
+                          <Col lg={2} md={2}>
+                            <Form.Group>
+                              {/* Invisible label keeps the button level with
+                                  the inputs beside it. */}
+                              <Form.Label className="fw-semibold text-dark d-none d-md-block">
+                                &nbsp;
+                              </Form.Label>
+                              <div>
+                                <Button
+                                  variant="outline-danger"
+                                  className="rounded-circle myop-v2-icon-btn"
+                                  onClick={() => removeDestination(item.id)}
+                                  title="Remove destination"
+                                  aria-label={`Remove destination ${index + 1}`}
+                                >
+                                  <span className="fw-bold">×</span>
+                                </Button>
+                              </div>
+                            </Form.Group>
+                          </Col>
+                        )}
+                      </Row>
+                    </div>
                   ))}
-                </Row>
+
+                  {/* One add action for the whole list instead of a "+"
+                      on every row. Same handler as before. */}
+                  <div className="mt-2">
+                    <Button
+                      variant="outline-primary"
+                      onClick={addDestination}
+                      title="Add another destination"
+                    >
+                      <FaPlus className="me-2" />
+                      Add another destination
+                    </Button>
+                  </div>
+                </div>
 
                 <Row className="mt-4">
-                  <Col className="d-flex justify-content-center">
+                  <Col className="d-flex flex-column align-items-center gap-2">
+                    {hasFormErrors && (
+                      <div className="text-danger small fw-semibold">
+                        Please complete the highlighted fields above.
+                      </div>
+                    )}
                     <Button
                       type="submit"
                       // btn-search-modern is the shared red-pill CTA already
@@ -1064,12 +1153,12 @@ export default function MakeUrOwnPackageV2() {
                             size="sm"
                             className="me-2"
                           />
-                          Creating Package...
+                          Preparing your search...
                         </>
                       ) : (
                         <>
-                          <FaSearch className="me-2" />
-                          Make your own trip
+                          Continue to build your package
+                          <FaArrowRight className="ms-2" />
                         </>
                       )}
                     </Button>
@@ -1086,13 +1175,44 @@ export default function MakeUrOwnPackageV2() {
            />
           </div>
 
-          <Card className="shadow-sm rounded-xl">
-            <Card.Body className="text-center text-muted py-5">
-              <FaSearch className="display-4 text-muted mb-3" />
-              <h4>Ready to Create Your Perfect Trip?</h4>
-              <p>
-                Use the search form above to plan your dream vacation package.
-              </p>
+          {/* "What happens next" — replaces the static placeholder card so
+              the space below the form explains the journey instead of
+              looking like an empty results area. */}
+          <Card className="shadow-sm rounded-xl myop-v2-static-card">
+            <Card.Body className="p-4">
+              <h4 className="fw-bold text-dark mb-3">What happens next</h4>
+              <div className="myop-v2-next-steps">
+                <div className="myop-v2-next-steps__item">
+                  <span className="myop-v2-journey__dot small">1</span>
+                  <div>
+                    <div className="fw-semibold text-dark">Choose services</div>
+                    <div className="text-muted small">
+                      Hotel and tours &amp; activities are part of every package;
+                      transfers and add-ons such as visa or meet &amp; greet are optional.
+                    </div>
+                  </div>
+                </div>
+                <div className="myop-v2-next-steps__item">
+                  <span className="myop-v2-journey__dot small">2</span>
+                  <div>
+                    <div className="fw-semibold text-dark">Build the package</div>
+                    <div className="text-muted small">
+                      Add hotel rooms first, then transfers and activities from the
+                      results prepared for these dates and destinations.
+                    </div>
+                  </div>
+                </div>
+                <div className="myop-v2-next-steps__item">
+                  <span className="myop-v2-journey__dot small">3</span>
+                  <div>
+                    <div className="fw-semibold text-dark">Review &amp; book</div>
+                    <div className="text-muted small">
+                      Enter guest details, check prices and policies, then confirm
+                      the booking.
+                    </div>
+                  </div>
+                </div>
+              </div>
             </Card.Body>
           </Card>
         </main>

@@ -32,6 +32,14 @@ import {
   FaChevronDown,
   FaMapMarkerAlt,
   FaConciergeBell,
+  FaSuitcase,
+  FaCheck,
+  FaTimes,
+  FaFilter,
+  FaCalendarAlt,
+  FaUsers,
+  FaArrowLeft,
+  FaArrowRight,
 } from "react-icons/fa";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
@@ -46,7 +54,12 @@ import AgentBalanceDisplay from "../../components/AgentBalanceDisplay";
 import { useLocation, useNavigate, useNavigationType } from "react-router-dom";
 import axiosInstance from "../../components/AxiosInstance";
 import { toast } from "react-hot-toast";
+import MyopV2JourneyStepper from "../../components/myopv2/MyopV2JourneyStepper";
+import MyopV2PackageSuggestions, {
+  PACKAGE_SUGGESTIONS_STORAGE_KEY,
+} from "../../components/myopv2/MyopV2PackageSuggestions";
 import "../../styles/RoomList.css";
+import "../../styles/MakeYourOwnPackageV2.css";
 
 // ─────────────────────────────────────────────
 // Search Progress Bar (same as HotelSearch)
@@ -105,13 +118,13 @@ function SkeletonHotelCard() {
         }}
       >
         <Row className="g-0">
-          <Col md={4} lg={3}>
+          <Col md={4}>
             <div
               className="skeleton w-100"
               style={{ minHeight: "180px", borderRadius: "0" }}
             />
           </Col>
-          <Col md={8} lg={9}>
+          <Col md={8}>
             <div className="p-3">
               <div
                 className="skeleton mb-2"
@@ -209,6 +222,17 @@ function LazyImage({ src, alt, className }) {
         />
       )}
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// "In package" pill — shown on result cards already in the cart
+// ─────────────────────────────────────────────
+function AddedPill() {
+  return (
+    <span className="myop-v2-added-pill small">
+      <FaCheck size={10} /> In package
+    </span>
   );
 }
 
@@ -407,6 +431,9 @@ const MYPKG_V2_RESET_KEYS = [
   // Add-on service selections (Visa enable + Visa type/number, etc.) so a
   // refresh also clears every service's Yes/No choice and filled details.
   ADDON_SERVICES_STORAGE_KEY,
+  // Cached "Recommended Existing Packages" result — keyed by the criteria it
+  // was fetched for, so it must go whenever the criteria go.
+  PACKAGE_SUGGESTIONS_STORAGE_KEY,
 ];
 
 const clearMyPkgV2SearchState = () => {
@@ -854,6 +881,80 @@ const [activeAccordion, setActiveAccordion] = useState({});
   // Redis-refresh logic still runs and just overwrites it harmlessly.
   const [hasHotelInCart, setHasHotelInCart] = useState(!v2Services.hotel);
 
+  // ── In-page "Your package" panel ────────────────────────────────
+  // Display-only copy of the cart array that checkHotelInCart already
+  // receives from /cart/fetch, so the operator can see what has been
+  // added without opening the TopBar cart modal. Refreshed by the same
+  // "cartUpdated" listener — no extra requests.
+  const [packageItems, setPackageItems] = useState([]);
+  const [removingCartKey, setRemovingCartKey] = useState(null);
+  // Below lg the panel collapses behind a toggle bar above the wizard.
+  const [packagePanelOpen, setPackagePanelOpen] = useState(false);
+  // Below lg the hotel filter column collapses behind a toggle button.
+  const [hotelFiltersOpen, setHotelFiltersOpen] = useState(false);
+
+  // Same cart-key resolution the TopBar cart modal uses (cartKey is
+  // injected on the inner payload by /cart/fetch).
+  const getPackageItemKey = (item) => {
+    if (!item) return "";
+    return (
+      item.cartKey ||
+      item.id ||
+      item.key ||
+      item.activity?.cartKey ||
+      item.activity?.id ||
+      item.activity?.activityId ||
+      item.hotel?.cartKey ||
+      item.cab?.cartKey ||
+      ""
+    );
+  };
+
+  // Remove one line from the package. Mirrors TopBar.handleRemoveFromCart
+  // for the v2 flow exactly (same endpoint, same params, same success
+  // handling) and then broadcasts "cartUpdated" so the TopBar badge, this
+  // panel and the hasHotelInCart gate all refresh together.
+  const handleRemovePackageItem = async (item) => {
+    const cartAgentId =
+      sessionStorage.getItem("makeYourOwnPackageAgentId") ||
+      localStorage.getItem("makeYourOwnPackageAgentId") ||
+      "";
+    if (!cartAgentId) {
+      toast.error("Select an agent before modifying the cart.");
+      return;
+    }
+    const cartKey = getPackageItemKey(item);
+    if (!cartKey) {
+      toast.error("Unable to identify the selected cart item.");
+      return;
+    }
+    setRemovingCartKey(cartKey);
+    try {
+      const response = await axiosInstance.post(
+        "/api/makeYourOwnPackageV2/cart/remove",
+        null,
+        { params: { userId: cartAgentId, cartItemId: cartKey } }
+      );
+      const v2Status = response.data?.status;
+      const ok =
+        response.data === 1 ||
+        response.data === "1" ||
+        v2Status === "SUCCESS" ||
+        v2Status === "NOT_FOUND";
+      if (ok) {
+        toast.success("Item removed from your package.");
+        window.dispatchEvent(new Event("cartUpdated"));
+      } else {
+        toast.error("Failed to remove item from cart.");
+      }
+    } catch (err) {
+      console.error("Error removing from cart:", err);
+      toast.error("Failed to remove item from cart. Please try again.");
+    } finally {
+      setRemovingCartKey(null);
+    }
+  };
+
   const checkHotelInCart = useCallback(async () => {
     const currentAgentId =
       sessionStorage.getItem("makeYourOwnPackageAgentId") ||
@@ -865,6 +966,7 @@ const [activeAccordion, setActiveAccordion] = useState({});
     if (!currentAgentId) {
       // v2: when this booking doesn't include a hotel, the gate stays open.
       setHasHotelInCart(!v2Services.hotel);
+      setPackageItems([]);
       return;
     }
 
@@ -878,14 +980,17 @@ const [activeAccordion, setActiveAccordion] = useState({});
         const hotelExists = response.data.some((item) => !!item.hotel);
         // v2: if the booking doesn't include a hotel, the gate is always open.
         setHasHotelInCart(hotelExists || !v2Services.hotel);
+        setPackageItems(response.data);
       } else {
         // v2: when this booking doesn't include a hotel, the gate stays open.
       setHasHotelInCart(!v2Services.hotel);
+        setPackageItems([]);
       }
     } catch (err) {
       console.error("Error checking hotel in cart:", err);
       // v2: when this booking doesn't include a hotel, the gate stays open.
       setHasHotelInCart(!v2Services.hotel);
+      setPackageItems([]);
     }
   }, [agent, agentId]);
 
@@ -1802,7 +1907,7 @@ const [activeAccordion, setActiveAccordion] = useState({});
         response.data === "1" ||
         response.data === 1
       ) {
-        toast.success("Room added to cart successfully!");
+        toast.success("Room added to your package.");
         window.dispatchEvent(new CustomEvent("cartUpdated"));
       } else {
         toast.error(response.data?.message || "Failed to add item to cart");
@@ -1917,7 +2022,7 @@ const [activeAccordion, setActiveAccordion] = useState({});
         response.data === "1" ||
         response.data === 1
       ) {
-        toast.success("Activity added to cart successfully.");
+        toast.success("Activity added to your package.");
         window.dispatchEvent(new Event("cartUpdated"));
       } else {
         throw new Error("Unexpected response");
@@ -2148,7 +2253,7 @@ const [activeAccordion, setActiveAccordion] = useState({});
         response.data === "1" ||
         response.data === 1
       ) {
-        toast.success("Transfer added to cart successfully.");
+        toast.success("Transfer added to your package.");
         window.dispatchEvent(new Event("cartUpdated"));
       } else {
         throw new Error("Unexpected response");
@@ -2176,6 +2281,155 @@ const [activeAccordion, setActiveAccordion] = useState({});
   const startEntry = totalElements === 0 ? 0 : pageIndex * pageSize + 1;
   const endEntry = Math.min((pageIndex + 1) * pageSize, totalElements);
 
+  // ── Wizard "Next / Proceed" handler ──────────────────────────────
+  // Extracted verbatim from the former inline onClick so the sticky
+  // navigation bar (rendered outside the wizard card) can call it.
+  // Behaviour is unchanged: transfer-step pickup/dropoff validation,
+  // step advance, and on the last step the cart fetch + hand-off to the
+  // booking page.
+  const handleWizardNext = async () => {
+    // ── Transfer step: pickup + dropoff are required
+    // before leaving this step (whether moving to the
+    // next wizard step or proceeding to booking).
+    // Single-city keeps the original hard requirement.
+    // Multi-city validates pickup/dropoff per cab at
+    // add-to-cart time (each city has its own selection),
+    // so leaving the step doesn't force a global value.
+    if (
+      wizardSteps[currentStepIdx]?.key === "transfer" &&
+      !isMultiCity
+    ) {
+      const nextErrors = {
+        pickup: transferPickupZone ? "" : "Please select a pickup location.",
+        dropoff: transferDropoffZone ? "" : "Please select a dropoff location.",
+      };
+      if (nextErrors.pickup || nextErrors.dropoff) {
+        setTransferZoneErrors(nextErrors);
+        toast.error("Please select both pickup and dropoff.");
+        return;
+      }
+    }
+    if (currentStepIdx < wizardSteps.length - 1) {
+      setCurrentStepIdx((i) => i + 1);
+      return;
+    }
+    // Last step → fetch the server-side cart, stash it
+    // in sessionStorage (the booking page reads from
+    // `makePkgCartData`), then navigate. Without this
+    // the booking page sees no cart and bounces back to
+    // the legacy entry route.
+    setIsProceeding(true);
+    try {
+      const proceedAgentId =
+        sessionStorage.getItem("makeYourOwnPackageAgentId") ||
+        localStorage.getItem("makeYourOwnPackageAgentId") ||
+        agent ||
+        agentId ||
+        "";
+      if (!proceedAgentId) {
+        toast.error("Select an agent before proceeding to checkout.");
+        return;
+      }
+      const res = await axiosInstance.post(
+        `/api/makeYourOwnPackageV2/cart/fetch?userId=${encodeURIComponent(proceedAgentId)}`
+      );
+      const cart = Array.isArray(res.data) ? res.data : [];
+      if (cart.length === 0) {
+        toast.error(
+          "Your cart is empty. Add at least one hotel / transfer / activity before proceeding."
+        );
+        return;
+      }
+      if (v2Services.hotel && !cart.some((it) => !!it.hotel)) {
+        toast.error(
+          "Please add a hotel to your package before proceeding."
+        );
+        return;
+      }
+      sessionStorage.setItem(
+        "makePkgCartData",
+        JSON.stringify(cart)
+      );
+      sessionStorage.setItem("makePkgAgentId", String(proceedAgentId));
+      navigate(
+        "/new-booking/make-your-own-package-v2/booking-page",
+        { state: searchCriteria }
+      );
+    } catch (err) {
+      console.error("Proceed to booking failed:", err);
+      toast.error("Failed to load cart data. Please try again.");
+    } finally {
+      setIsProceeding(false);
+    }
+  };
+
+  // ── Read-only helpers for the layout below ───────────────────────
+  // Everything here only *reads* state that already exists (cart array,
+  // wizard steps, search criteria) so the operator can see what has been
+  // selected without opening the TopBar cart modal.
+  const currentWizardStep = wizardSteps[currentStepIdx];
+  const nextWizardStep = wizardSteps[currentStepIdx + 1];
+  const wizardTotal = wizardSteps.length;
+  const isTransferStepActive = currentWizardStep?.key === "transfer";
+  const isLastWizardStep = currentStepIdx >= wizardSteps.length - 1;
+  const packageHotels = packageItems.filter((it) => it && it.hotel);
+  const packageCabs = packageItems.filter((it) => it && it.cab);
+  const packageActivities = packageItems.filter((it) => it && it.activity);
+  const packageCount = packageHotels.length + packageCabs.length + packageActivities.length;
+  const packageSubtotal = packageItems.reduce((sum, it) => {
+    const rec = it?.hotel || it?.cab || it?.activity || {};
+    return sum + (Number(rec.totalRate) || 0);
+  }, 0);
+  const addedHotelIds = new Set(
+    packageHotels.map((it) => String(it.hotel?.hotelId ?? "")).filter(Boolean)
+  );
+  const addedHotelNames = new Set(
+    packageHotels.map((it) => String(it.hotel?.hotelName || "").trim().toLowerCase()).filter(Boolean)
+  );
+  const isHotelInPackage = (hotel) =>
+    (hotel?.hotelCode != null && addedHotelIds.has(String(hotel.hotelCode))) ||
+    addedHotelNames.has(String(hotel?.name || "").trim().toLowerCase());
+  const addedActivityIds = new Set(
+    packageActivities
+      .map((it) => String(it.activity?.activityId ?? ""))
+      .filter(Boolean)
+  );
+  const isActivityInPackage = (activity) =>
+    addedActivityIds.has(String(activity?.id || activity?.activityId || ""));
+  const addedCabIds = new Set(
+    packageCabs.map((it) => String(it.cab?.cabId ?? "")).filter(Boolean)
+  );
+  const isCabInPackage = (cab) => addedCabIds.has(String(cab?.cabid || ""));
+  const activeAddonKeys = (() => {
+    try {
+      const all = readAddOnServices() || {};
+      return Object.keys(all).filter((k) => all[k] && all[k].enabled === true);
+    } catch {
+      return [];
+    }
+  })();
+  const addonLabelFor = (key) =>
+    dynamicAddonCatalog.find((s) => s.key === key)?.label ||
+    ADDON_SERVICES_CATALOG.find((s) => s.key === key)?.label ||
+    key;
+  const currentAddonEntry =
+    currentWizardStep?.type === "addon"
+      ? dynamicAddonCatalog.find((s) => s.key === currentWizardStep.serviceKey) ||
+        ADDON_SERVICES_CATALOG.find((s) => s.key === currentWizardStep.serviceKey) ||
+        null
+      : null;
+  const stayNights = parseInt(nightsCount) || 0;
+  const stayNightsLabel = `${stayNights} night${stayNights === 1 ? "" : "s"}`;
+  const hotelGateLocked = v2Services.hotel && !hasHotelInCart;
+  // Agent the recommendation query and its booking hand-off run under —
+  // the same chain the cart operations on this page already use.
+  const suggestionAgentId =
+    agentId ||
+    agent ||
+    sessionStorage.getItem("makeYourOwnPackageAgentId") ||
+    localStorage.getItem("makeYourOwnPackageAgentId") ||
+    "";
+
   // On refresh we redirect to the Search Criteria form (effect above).
   // Render a lightweight loader meanwhile so the wizard's "Select
   // Services" step never flashes before the redirect lands.
@@ -2187,61 +2441,279 @@ const [activeAccordion, setActiveAccordion] = useState({});
     );
   }
 
+  // Renders one line in the "Your package" panel. Read-only apart from
+  // the remove action, which calls the same cart endpoint the TopBar
+  // cart modal already uses.
+  const renderPackageItem = (item, title, lines, price) => {
+    const key = getPackageItemKey(item);
+    const removing = removingCartKey && removingCartKey === key;
+    return (
+      <div className="myop-v2-package-item" key={key || title}>
+        <div className="myop-v2-package-item__main">
+          <div className="fw-semibold text-dark small text-truncate" title={title}>
+            {title}
+          </div>
+          {lines.filter(Boolean).map((line, i) => (
+            <div key={i} className="text-muted" style={{ fontSize: "0.75rem" }}>
+              {line}
+            </div>
+          ))}
+        </div>
+        <div className="myop-v2-package-item__side">
+          <span className="fw-semibold small text-dark">
+            {price != null ? formatPrice(price) : ""}
+          </span>
+          <button
+            type="button"
+            className="myop-v2-package-item__remove small"
+            title="Remove from package"
+            aria-label={`Remove ${title} from package`}
+            disabled={!!removing}
+            onClick={() => handleRemovePackageItem(item)}
+          >
+            {removing ? <Spinner animation="border" size="sm" /> : <FaTimes size={12} />}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="min-vh-100 bg-light d-flex flex-column">
       <TopBar />
       <div className="d-flex flex-grow-1">
         <Sidebar />
-        <main className="flex-grow-1 p-4">
-          <div className="d-flex justify-content-end mb-2">
+        <main className="flex-grow-1 p-4 myop-v2">
+          {/* ── Page header: title left, agent balance right ── */}
+          <div className="myop-v2-page-header">
+            <h4 className="fw-bold mb-0 d-flex align-items-center">
+              <FaSuitcase className="me-2 text-primary" /> Make your own package
+            </h4>
             <AgentBalanceDisplay agentId={agentId} />
           </div>
 
-          {/* "Booking includes" summary + "Change services" link removed:
-              the wizard step indicator already shows the included
-              services, and the /addons page is no longer part of the
-              flow — services default to all-enabled and add-on
-              selection happens as the last wizard step. */}
+          {/* Journey indicator — phase 2 of 3 */}
+          <MyopV2JourneyStepper current={2} />
 
-          <Card className="shadow-sm rounded-xl mb-4">
-            <Card.Body>
-              <div className="mb-4">
-                <h4 className="fw-bold mb-3 d-flex align-items-center">
-                  <i className="bi bi-folder2-open me-2 text-primary"></i> Make your own package
-                </h4>
-                <div
-                  className="d-flex flex-wrap align-items-center bg-light rounded-3 p-1 border shadow-sm"
-                  style={{ gap: "2px" }}
-                >
-                  {isMultiCity ? (
-                    <>
-                      {/* "All" + per-city clickable filters (multi-city only) */}
-                      <div
-                        role="button"
-                        onClick={() => setCityFilter("ALL")}
-                        className={`px-3 py-2 rounded-2 d-flex align-items-center border-end ${
-                          cityFilter === "ALL"
-                            ? "bg-primary text-white"
-                            : "bg-white text-dark"
-                        }`}
-                        style={{
-                          fontSize: "0.8rem",
-                          fontWeight: "500",
-                          minWidth: "fit-content",
-                          cursor: "pointer",
-                        }}
-                      >
-                        All
+          <Row className="g-4">
+            {/* ═══════════════════════════════════════
+                YOUR PACKAGE — side panel
+                (first in DOM so the compact toggle bar sits above the
+                wizard on phones/tablets; ordered to the right on lg+)
+            ═══════════════════════════════════════ */}
+            <Col lg={4} xl={3} className="order-lg-2 myop-v2-package-col">
+              <div className="myop-v2-package-sticky">
+                <Card className="shadow-sm myop-v2-package-panel myop-v2-static-card">
+                  <Card.Body>
+                    <button
+                      type="button"
+                      className="btn bg-light border text-dark myop-v2-package-panel__toggle"
+                      onClick={() => setPackagePanelOpen((o) => !o)}
+                      aria-expanded={packagePanelOpen}
+                    >
+                      <span className="fw-bold">
+                        <FaSuitcase className="me-2 text-primary" />
+                        Your package
+                      </span>
+                      <span className="small text-muted d-inline-flex align-items-center gap-2">
+                        {packageCount} item{packageCount === 1 ? "" : "s"}
+                        <FaChevronDown
+                          style={{
+                            transition: "transform 0.3s ease",
+                            transform: packagePanelOpen ? "rotate(180deg)" : "rotate(0deg)",
+                          }}
+                        />
+                      </span>
+                    </button>
+
+                    <div className={`myop-v2-package-panel__body ${packagePanelOpen ? "is-open" : ""}`}>
+                      <div className="d-none d-lg-flex align-items-center justify-content-between mb-2">
+                        <h6 className="fw-bold mb-0 d-flex align-items-center">
+                          <FaSuitcase className="me-2 text-primary" />
+                          Your package
+                        </h6>
+                        <Badge bg="primary" pill>
+                          {packageCount}
+                        </Badge>
                       </div>
-                      {searchedCities.map((c) => {
-                        const active = cityFilter === c.id;
-                        return (
+
+                      <div className="myop-v2-package-scroll">
+                        {packageCount === 0 ? (
+                          <div className="text-muted small py-2">
+                            Nothing added yet. Start with a hotel room on the Hotel
+                            step — it unlocks transfers and activities.
+                          </div>
+                        ) : (
+                          <>
+                            <div className="myop-v2-package-group">
+                              <div className="myop-v2-package-group__title">
+                                <span className="fw-semibold small text-dark">
+                                  <FaHotel className="me-2 text-primary" />
+                                  Hotel rooms
+                                </span>
+                                <Badge bg={packageHotels.length > 0 ? "primary" : "secondary"} pill>
+                                  {packageHotels.length}
+                                </Badge>
+                              </div>
+                              {packageHotels.length === 0 ? (
+                                <div className="text-muted" style={{ fontSize: "0.75rem" }}>
+                                  No room added yet (required).
+                                </div>
+                              ) : (
+                                packageHotels.map((it) => {
+                                  const h = it.hotel || {};
+                                  const stay =
+                                    h.checkIn || h.checkOut
+                                      ? `${formatDateToDDMMYYYY(h.checkIn) || "—"} → ${formatDateToDDMMYYYY(h.checkOut) || "—"}`
+                                      : "";
+                                  return renderPackageItem(
+                                    it,
+                                    h.hotelName || "Hotel",
+                                    [
+                                      [h.roomCategory, h.roomType].filter(Boolean).join(" · "),
+                                      stay,
+                                    ],
+                                    h.totalRate
+                                  );
+                                })
+                              )}
+                            </div>
+
+                            {v2Services.transfer && (
+                              <div className="myop-v2-package-group">
+                                <div className="myop-v2-package-group__title">
+                                  <span className="fw-semibold small text-dark">
+                                    <FaCar className="me-2 text-primary" />
+                                    Transfers
+                                  </span>
+                                  <Badge bg={packageCabs.length > 0 ? "primary" : "secondary"} pill>
+                                    {packageCabs.length}
+                                  </Badge>
+                                </div>
+                                {packageCabs.length === 0 ? (
+                                  <div className="text-muted" style={{ fontSize: "0.75rem" }}>
+                                    No transfer added (optional).
+                                  </div>
+                                ) : (
+                                  packageCabs.map((it) => {
+                                    const c = it.cab || {};
+                                    const route =
+                                      c.pickupName || c.dropoffName
+                                        ? `${c.pickupName || "—"} → ${c.dropoffName || "—"}`
+                                        : "";
+                                    return renderPackageItem(
+                                      it,
+                                      c.cabName || "Transfer",
+                                      [route, c.pickupDate ? `Pickup ${c.pickupDate}` : ""],
+                                      c.totalRate
+                                    );
+                                  })
+                                )}
+                              </div>
+                            )}
+
+                            {v2Services.tour && (
+                              <div className="myop-v2-package-group">
+                                <div className="myop-v2-package-group__title">
+                                  <span className="fw-semibold small text-dark">
+                                    <FaTicketAlt className="me-2 text-primary" />
+                                    Activities
+                                  </span>
+                                  <Badge bg={packageActivities.length > 0 ? "primary" : "secondary"} pill>
+                                    {packageActivities.length}
+                                  </Badge>
+                                </div>
+                                {packageActivities.length === 0 ? (
+                                  <div className="text-muted" style={{ fontSize: "0.75rem" }}>
+                                    No activity added yet (required).
+                                  </div>
+                                ) : (
+                                  packageActivities.map((it) => {
+                                    const a = it.activity || {};
+                                    const pax = [
+                                      a.adult ? `${a.adult} adult${String(a.adult) === "1" ? "" : "s"}` : "",
+                                      a.child && String(a.child) !== "0" ? `${a.child} child${String(a.child) === "1" ? "" : "ren"}` : "",
+                                    ]
+                                      .filter(Boolean)
+                                      .join(", ");
+                                    return renderPackageItem(
+                                      it,
+                                      a.activityName || "Activity",
+                                      [a.activityDate ? `Date ${a.activityDate}` : "", pax],
+                                      a.totalRate
+                                    );
+                                  })
+                                )}
+                              </div>
+                            )}
+                          </>
+                        )}
+
+                        {activeAddonKeys.length > 0 && (
+                          <div className="myop-v2-package-group">
+                            <div className="myop-v2-package-group__title">
+                              <span className="fw-semibold small text-dark">
+                                <FaConciergeBell className="me-2 text-primary" />
+                                Add-on services
+                              </span>
+                              <Badge bg="primary" pill>
+                                {activeAddonKeys.length}
+                              </Badge>
+                            </div>
+                            <div className="d-flex flex-wrap gap-1">
+                              {activeAddonKeys.map((k) => (
+                                <span key={k} className="badge bg-light text-dark border">
+                                  {addonLabelFor(k)}
+                                </span>
+                              ))}
+                            </div>
+                            <div className="text-muted mt-1" style={{ fontSize: "0.75rem" }}>
+                              Change these on the Select Services step.
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="myop-v2-package-total">
+                        <span className="small text-muted">Subtotal (selling price)</span>
+                        <span className="fw-bold text-dark">{formatPrice(packageSubtotal)}</span>
+                      </div>
+                      <div className="text-muted" style={{ fontSize: "0.75rem" }}>
+                        Add-on services and tourism dirham are added on the booking page,
+                        where the package total is also shown without markup.
+                      </div>
+                    </div>
+                  </Card.Body>
+                </Card>
+              </div>
+            </Col>
+
+            {/* ═══════════════════════════════════════
+                WIZARD — main column
+            ═══════════════════════════════════════ */}
+            <Col lg={8} xl={9} className="order-lg-1">
+              <Card className="shadow-sm rounded-xl myop-v2-wizard-frame myop-v2-static-card">
+                <Card.Body>
+                  {/* ── Trip context: destinations + criteria the results are based on ── */}
+                  <div className="mb-4">
+                    <div className="d-flex align-items-center justify-content-between gap-2 flex-wrap mb-2">
+                      <span className="fw-semibold text-dark small text-uppercase" style={{ letterSpacing: "0.05em", fontSize: "0.7rem" }}>
+                        Trip details
+                      </span>
+                    </div>
+                    <div
+                      className="d-flex flex-wrap align-items-center bg-light rounded-3 p-1 border shadow-sm myop-v2-city-chips"
+                    >
+                      {isMultiCity ? (
+                        <>
+                          {/* "All" + per-city clickable filters (multi-city only) */}
                           <div
-                            key={c.id}
                             role="button"
-                            onClick={() => setCityFilter(c.id)}
-                            className={`px-3 py-2 rounded-2 d-flex align-items-center border-end ${
-                              active ? "bg-primary text-white" : "bg-white text-dark"
+                            onClick={() => setCityFilter("ALL")}
+                            className={`px-3 py-2 rounded-2 d-flex align-items-center ${
+                              cityFilter === "ALL"
+                                ? "bg-primary text-white"
+                                : "bg-white text-dark"
                             }`}
                             style={{
                               fontSize: "0.8rem",
@@ -2250,1703 +2722,1868 @@ const [activeAccordion, setActiveAccordion] = useState({});
                               cursor: "pointer",
                             }}
                           >
-                            <FaMapMarkerAlt
-                              className={`me-2 ${active ? "text-white" : "text-primary"}`}
-                              style={{ fontSize: "0.75rem" }}
-                            />
-                            {c.label}
-                            {c.nights != null && (
-                              <span
-                                className={`ms-2 small ${active ? "text-white-50" : "text-muted"}`}
-                              >
-                                ({c.nights}N)
-                              </span>
-                            )}
+                            All
                           </div>
-                        );
-                      })}
-                    </>
-                  ) : itineraryData.length > 0 ? (
-                    itineraryData.map((item, idx) => (
-                      <React.Fragment key={idx}>
+                          {searchedCities.map((c) => {
+                            const active = cityFilter === c.id;
+                            return (
+                              <div
+                                key={c.id}
+                                role="button"
+                                onClick={() => setCityFilter(c.id)}
+                                className={`px-3 py-2 rounded-2 d-flex align-items-center ${
+                                  active ? "bg-primary text-white" : "bg-white text-dark"
+                                }`}
+                                style={{
+                                  fontSize: "0.8rem",
+                                  fontWeight: "500",
+                                  minWidth: "fit-content",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                <FaMapMarkerAlt
+                                  className={`me-2 ${active ? "text-white" : "text-primary"}`}
+                                  style={{ fontSize: "0.75rem" }}
+                                />
+                                {c.label}
+                                {c.nights != null && (
+                                  <span
+                                    className={`ms-2 small ${active ? "text-white-50" : "text-muted"}`}
+                                  >
+                                    ({c.nights}N)
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </>
+                      ) : itineraryData.length > 0 ? (
+                        itineraryData.map((item, idx) => (
+                          <React.Fragment key={idx}>
+                            <div
+                              className="px-3 py-2 text-dark bg-white rounded-2 d-flex align-items-center"
+                              style={{ fontSize: "0.8rem", fontWeight: "500", minWidth: "fit-content" }}
+                            >
+                              <FaMapMarkerAlt className="text-primary me-2" style={{ fontSize: "0.75rem" }} />
+                              {item.selectedDestination?.label?.split(",")[0] || "Destination"}
+                              <span className="ms-2 text-muted small">({item.nights}N)</span>
+                            </div>
+                          </React.Fragment>
+                        ))
+                      ) : (
                         <div
-                          className="px-3 py-2 text-dark bg-white rounded-2 d-flex align-items-center border-end"
-                          style={{ fontSize: "0.8rem", fontWeight: "500", minWidth: "fit-content" }}
+                          className="px-3 py-2 text-dark bg-white rounded-2 border"
+                          style={{ fontSize: "0.85rem", fontWeight: "500" }}
                         >
-                          <FaMapMarkerAlt className="text-primary me-2" style={{ fontSize: "0.75rem" }} />
-                          {item.selectedDestination?.label?.split(",")[0] || "Destination"}
-                          <span className="ms-2 text-muted small">({item.nights}N)</span>
+                          {destinationLabel}
                         </div>
-                      </React.Fragment>
-                    ))
-                  ) : (
-                    <div
-                      className="px-3 py-2 text-dark bg-white rounded-2 border"
-                      style={{ fontSize: "0.85rem", fontWeight: "500" }}
-                    >
-                      {destinationLabel}
+                      )}
                     </div>
-                  )}
-                </div>
-              </div>
+                    {isMultiCity && (
+                      <div className="text-muted small mt-1">
+                        Use the city tabs to filter results and set each city's transfer pickup &amp; drop-off.
+                      </div>
+                    )}
+                    {/* Read-only criteria the results are based on */}
+                    <div className="myop-v2-trip-strip mt-2 small">
+                      {checkIn && (
+                        <span className="myop-v2-trip-chip">
+                          <FaCalendarAlt className="text-primary" />
+                          {formatDateToDDMMYYYY(checkIn)}
+                          {checkOut ? ` → ${formatDateToDDMMYYYY(checkOut)}` : ""}
+                        </span>
+                      )}
+                      {stayNights > 0 && (
+                        <span className="myop-v2-trip-chip">
+                          <FaBed className="text-primary" />
+                          {stayNightsLabel}
+                        </span>
+                      )}
+                      <span className="myop-v2-trip-chip">
+                        <FaUsers className="text-primary" />
+                        {adultCount} adult{adultCount === 1 ? "" : "s"}
+                        {childCount > 0 ? `, ${childCount} child${childCount === 1 ? "" : "ren"}` : ""}
+                      </span>
+                      {nationality?.label && (
+                        <span className="myop-v2-trip-chip">
+                          <FaGlobe className="text-primary" />
+                          {nationality.label}
+                        </span>
+                      )}
+                    </div>
+                  </div>
 
-              {/* ═══════════════════════════════════════
-                  WIZARD STEP INDICATOR — compact progress bar
-                  (too many steps to fit numbered circles)
-              ═══════════════════════════════════════ */}
-              {(() => {
-                const total = wizardSteps.length;
-                const idx = currentStepIdx;
-                const pct = total <= 1 ? 100 : Math.round(((idx + 1) / total) * 100);
-                const currentStep = wizardSteps[idx];
-                const nextStep = wizardSteps[idx + 1];
-                const CurrentIcon = currentStep?.Icon;
-                return (
+                  {/* ═══════════════════════════════════════
+                      WIZARD STEP INDICATOR — every step visible,
+                      completed steps clickable (same as pressing Back)
+                  ═══════════════════════════════════════ */}
                   <div className="mb-4">
-                    <div className="d-flex justify-content-between align-items-center mb-2">
-                      <div className="d-flex align-items-center gap-2">
-                        {CurrentIcon && (
-                          <span
-                            style={{
-                              width: 36, height: 36,
-                              borderRadius: "50%",
-                              // Brand red — matches the platform's primary
-                              // CTA color (btn-search-modern etc.). Was
-                              // indigo #6366f1.
-                              background: "#EC0B43",
-                              color: "#fff",
-                              display: "inline-flex",
-                              alignItems: "center",
-                              justifyContent: "center",
+                    <nav className="myop-v2-substeps" aria-label="Package steps">
+                      {wizardSteps.map((step, i) => {
+                        const done = i < currentStepIdx;
+                        const current = i === currentStepIdx;
+                        const count =
+                          step.key === "accommodation"
+                            ? packageHotels.length
+                            : step.key === "transfer"
+                              ? packageCabs.length
+                              : step.key === "tours"
+                                ? packageActivities.length
+                                : 0;
+                        return (
+                          <button
+                            type="button"
+                            key={step.key}
+                            className={`myop-v2-substep ${done ? "is-done is-clickable" : ""} ${current ? "is-current" : ""}`.trim()}
+                            disabled={!done}
+                            aria-current={current ? "step" : undefined}
+                            title={done ? `Go back to ${step.label}` : step.label}
+                            onClick={() => {
+                              // Jumping backwards is equivalent to pressing
+                              // Back repeatedly — no validation is skipped.
+                              if (done) setCurrentStepIdx(i);
                             }}
                           >
-                            <CurrentIcon />
-                          </span>
-                        )}
-                        <div>
-                          <div className="small text-muted text-uppercase" style={{ letterSpacing: "0.05em", fontSize: "0.7rem" }}>
-                            Step {idx + 1} of {total}
-                          </div>
-                          <div className="fw-bold" style={{ fontSize: "1rem" }}>
-                            {currentStep?.label}
-                          </div>
+                            <span className="myop-v2-substep__dot" style={{ fontSize: "0.7rem" }}>
+                              {done ? <FaCheck size={10} /> : i + 1}
+                            </span>
+                            <span style={{ fontSize: "0.8rem" }}>{step.label}</span>
+                            {count > 0 && (
+                              <Badge
+                                bg={current ? "light" : "primary"}
+                                text={current ? "dark" : undefined}
+                                pill
+                                className="myop-v2-substep__count"
+                              >
+                                {count}
+                              </Badge>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </nav>
+                    <div className="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                      <div>
+                        <div className="small text-muted text-uppercase" style={{ letterSpacing: "0.05em", fontSize: "0.7rem" }}>
+                          Step {currentStepIdx + 1} of {wizardTotal}
                         </div>
                       </div>
                       <div className="text-end">
                         <div className="small text-muted" style={{ fontSize: "0.7rem" }}>
-                          {nextStep ? "Up next" : "Final step"}
+                          {nextWizardStep ? "Up next" : "Final step"}
                         </div>
                         <div className="small fw-semibold" style={{ color: "#EC0B43" }}>
-                          {nextStep ? nextStep.label : "Proceed to Booking"}
+                          {nextWizardStep ? nextWizardStep.label : "Proceed to Booking"}
                         </div>
                       </div>
                     </div>
-                    <div style={{
-                      height: 8,
-                      background: "#e9ecef",
-                      borderRadius: 999,
-                      overflow: "hidden",
-                    }}>
-                      <div style={{
-                        width: `${pct}%`,
-                        height: "100%",
-                        // Brand red gradient — matches btn-search-modern.
-                        // Was indigo→violet #6366f1 → #8b5cf6.
-                        background: "linear-gradient(90deg, #EC0B43 0%, #C90939 100%)",
-                        borderRadius: 999,
-                        transition: "width 0.3s ease",
-                      }} />
-                    </div>
                   </div>
-                );
-              })()}
 
-              {/* ═══════════════════════════════════════
-                  STEP CONTENT
-              ═══════════════════════════════════════ */}
+                  {/* ═══════════════════════════════════════
+                      STEP CONTENT
+                  ═══════════════════════════════════════ */}
 
-              {/* ── SERVICE SELECTION (Step 0) ──
-                  Single picker page — every optional service has a
-                  toggle, hotel is locked ON. Only enabled services
-                  produce follow-up wizard steps; toggling something OFF
-                  here also strips its step (and disabled services don't
-                  trigger validation or contribute to the payload). The
-                  operator can come back to this step at any time to add
-                  more services without losing data already typed into
-                  the detail steps — addon field values are preserved
-                  across Yes→No→Yes toggles. */}
-              {wizardSteps[currentStepIdx]?.type === "select" && (
-                <Card className="border-0 shadow-sm rounded-4">
-                  <Card.Body className="p-4">
-                    <h5 className="fw-bold mb-1">Choose services for your  Package</h5>
-                    <div className="text-muted mb-4" style={{ fontSize: "0.95rem" }}>
-                      Inorder to Build Your Own Package ,Tours and activities and Hotels are mandatory
-                    </div>
-                    {/* Vertical list — one service per row, with a
-                        checkbox on the right. Order: addon catalogue
-                        first (visa, meet & greet, ...), then Cab /
-                        Transfer and Tours, then Hotel last (mandatory,
-                        always ticked & disabled). Descriptions only
-                        render when the catalogue actually provides one
-                        — addon rows without a `question` show name only. */}
-                    <div className="d-flex flex-column">
-                      {(() => {
-                        const rows = [
-                          ...dynamicAddonCatalog.map((svc) => ({
-                            key: `addon:${svc.key}`,
-                            addonKey: svc.key,
-                            label: svc.label,
-                            description: svc.description || svc.discountText || "",
-                            unitPrice: svc.unitPrice,
-                            currency: svc.currency,
-                            checked: !!addonFlags[svc.key],
-                          })),
-                          {
-                            key: "transfer",
-                            label: "Cab / Transfer",
-                            // description: "Airport, inter-city or hourly transfers.",
-                            checked: !!v2Services.transfer,
-                          },
-                          {
-                            key: "tour",
-                            label: "Tours & Activities",
-                            description: "Minimum three tours are mandatory",
-                            checked: !!v2Services.tour,
-                            mandatory: true,
-                          },
-                          {
-                            key: "hotel",
-                            label: "Hotel",
-                            // description: "Hotel accommodation for the trip.",
-                            checked: true,
-                            mandatory: true,
-                          },
-                        ];
-                        const applyChoice = (row, wantChecked) => {
-                          if (row.mandatory) return;
-                          if (row.addonKey) {
-                            toggleAddonService(row.addonKey, wantChecked);
-                          } else if (row.key === "transfer" || row.key === "tour") {
-                            toggleServiceGate(row.key, wantChecked);
-                          }
-                        };
-                        return rows.map((row, idx) => {
-                          const isYes = !!row.checked;
-                          const isNo = !row.checked;
-                          const isLast = idx === rows.length - 1;
-                          // Native radios grouped by `name` so picking Yes
-                          // auto-clears No and vice-versa. Each row uses
-                          // its own group name so rows don't interfere.
-                          const groupName = `svc-select-${row.key}`;
-                          return (
-                            <div
-                              key={row.key}
-                              className={`d-flex align-items-center justify-content-between py-3 ${isLast ? "" : "border-bottom"}`}
-                            >
-                              <div className="flex-grow-1 me-3">
-                                <div className="d-flex align-items-center gap-2 flex-wrap">
-                                  <span className="fw-semibold">{row.label}</span>
-                                  {row.mandatory && (
-                                    <Badge bg="warning" text="dark" className="text-uppercase" style={{ fontSize: "0.65rem" }}>
-                                      Mandatory
-                                    </Badge>
-                                  )}
-                                  {row.unitPrice != null && row.unitPrice > 0 && (
-                                    <Badge bg="info" className="text-dark" style={{ fontSize: "0.7rem" }}>
-                                      {(row.currency || "AED")} {Number(row.unitPrice).toLocaleString()}
-                                    </Badge>
-                                  )}
-                                </div>
-                                {row.description && (
-                                  <div className="small text-muted mt-1">{row.description}</div>
-                                )}
-                              </div>
-                              <div className="d-flex flex-shrink-0 gap-3" role="radiogroup" aria-label={`Include ${row.label}?`}>
-                                <Form.Check
-                                  type="radio"
-                                  id={`${groupName}-yes`}
-                                  name={groupName}
-                                  label="Yes"
-                                  checked={isYes}
-                                  disabled={row.mandatory}
-                                  onChange={() => applyChoice(row, true)}
-                                />
-                                <Form.Check
-                                  type="radio"
-                                  id={`${groupName}-no`}
-                                  name={groupName}
-                                  label="No"
-                                  checked={isNo}
-                                  disabled={row.mandatory}
-                                  onChange={() => applyChoice(row, false)}
-                                />
+                  {/* ── SERVICE SELECTION (Step 0) ──
+                      Single picker page — every optional service has a
+                      toggle, hotel is locked ON. Only enabled services
+                      produce follow-up wizard steps; toggling something OFF
+                      here also strips its step (and disabled services don't
+                      trigger validation or contribute to the payload). The
+                      operator can come back to this step at any time to add
+                      more services without losing data already typed into
+                      the detail steps — addon field values are preserved
+                      across Yes→No→Yes toggles. */}
+                  {wizardSteps[currentStepIdx]?.type === "select" && (
+                    <Card className="border-0 shadow-sm rounded-4 myop-v2-step">
+                      <Card.Body className="p-4">
+                        <div className="myop-v2-step-intro">
+                          <div className="myop-v2-step-intro__title">
+                            <span className="myop-v2-step-intro__icon">
+                              <FaConciergeBell />
+                            </span>
+                            <div>
+                              <h5 className="fw-bold mb-0">Choose services for your package</h5>
+                              <div className="text-muted" style={{ fontSize: "0.95rem" }}>
+                                Hotel and Tours &amp; Activities are part of every package.
+                                Switch the optional services on or off — each one you include
+                                gets its own step next.
                               </div>
                             </div>
-                          );
-                        });
-                      })()}
-                    </div>
-                    <div className="text-muted small mt-3 fst-italic">
-                      Hotel is mandatory and is always included in the package.
-                    </div>
-                  </Card.Body>
-                </Card>
-              )}
-
-              {/* ── ADD-ON SERVICE (one per catalogue entry) ──
-                  The `key` prop is critical: without it React reuses the
-                  same component instance across steps, the internal
-                  useState initializer doesn't re-run, and the old
-                  service's notes / toggle state bleed into every later
-                  step (and overwrite it on edit). Keying on serviceKey
-                  forces a clean unmount → mount when the user clicks
-                  Next, so each step starts from the correct slot in
-                  sessionStorage. */}
-              {wizardSteps[currentStepIdx]?.type === "addon" && (
-                <SingleAddOnService
-                  key={wizardSteps[currentStepIdx].serviceKey}
-                  serviceKey={wizardSteps[currentStepIdx].serviceKey}
-                />
-              )}
-
-              {/* ── HOTEL ── */}
-              {wizardSteps[currentStepIdx]?.key === "accommodation" && (
-                  <Card className="border-0 shadow-sm">
-                    <Card.Body>
-                      {/* Search form removed — the criteria submitted on the
-                          previous page already drives the hotel results, which
-                          are pre-fetched and hydrated on mount. */}
-
-                      {/* ── Loading-while-prefetch state ── */}
-                      {!hasSearched && !hasSearchResult && (
-                        <Card className="shadow-sm rounded-xl mt-4">
-                          <Card.Body className="text-center text-muted py-5">
-                            <Spinner animation="border" className="mb-3" />
-                            <h4>Loading hotel results…</h4>
-                            <p>Fetching availability for the criteria you submitted.</p>
-                          </Card.Body>
-                        </Card>
-                      )}
-
-                      {/* ══════════════════════════════════════════════════
-                          RESULTS SECTION — two-column layout
-                      ══════════════════════════════════════════════════ */}
-                      {hasSearched && (
-                        <div ref={resultsRef} className="mt-4">
-
-                          {/* ── Progress bar (visible during loading) ── */}
-                          <SearchProgressBar
-                            isLoading={isLoading}
-                            pollStatus={pollStatus}
-                          />
-
-                          <div className="search-layout">
-                            <Row className="g-4" style={{ alignItems: "flex-start" }}>
-
-                              {/* ────────────────────────────────────
-                                  LEFT SIDEBAR (mirrors HotelSearch)
-                              ──────────────────────────────────── */}
-                             <Col lg={3} className="leftside d-none d-lg-block" style={{
-      position: "sticky",
-      top: "90px", // adjust based on TopBar height
-      maxHeight: "calc(100vh - 100px)",
-      overflowY: "auto",
-    }}>
-  <div className="left-fixed">
-    <Card className="shadow-sm rounded-xl filtersection">
-      <Card.Body className="p-2">
-        {/* Map Preview */}
-        <div className="map-preview-wrapper mb-2">
-          <img
-            src="/images/map.jpg"
-            alt="Map preview"
-            className="map-preview-img"
-          />
-          <button className="map-overlay-btn">
-            EXPLORE ON MAP 📍
-          </button>
-        </div>
-
-        {/* Hotel name search */}
-        <Form.Control
-          type="text"
-          placeholder="Search hotel name..."
-          className="mb-3"
-          value={hotelSearchTerm}
-          onChange={(e) => setHotelSearchTerm(e.target.value)}
-        />
-
-        {/* Star Rating */}
-        <Form.Group className="mb-3">
-          <Form.Label className="fw-semibold small">Star Rating</Form.Label>
-          <Select
-            options={starOptions}
-            value={starRating}
-            onChange={setStarRating}
-            placeholder="All Stars"
-            isClearable
-            className="modern-select-sm"
-            menuPortalTarget={document.body}
-            styles={{
-              control: (base) => ({
-                ...base,
-                height: "36px",
-                minHeight: "36px",
-                width: "100%",
-              }),
-              menuPortal: (base) => ({ ...base, zIndex: 9999 }),
-              menu: (base) => ({ ...base, zIndex: 9999 }),
-            }}
-          />
-        </Form.Group>
-
-        <hr className="my-2" />
-
-        {/* Sort */}
-        <Form.Group className="mb-3">
-          <Form.Label className="fw-semibold small">Sort By Price</Form.Label>
-          <div className="d-flex gap-2">
-            <Button
-              size="sm"
-              className={`sort-pill w-50 ${sortBy === "priceAsc" ? "active" : ""}`}
-              onClick={() => setSortBy("priceAsc")}
-            >
-              Price ↑
-            </Button>
-            <Button
-              size="sm"
-              className={`sort-pill w-50 ${sortBy === "priceDesc" ? "active" : ""}`}
-              onClick={() => setSortBy("priceDesc")}
-            >
-              Price ↓
-            </Button>
-          </div>
-        </Form.Group>
-
-        <hr className="my-2" />
-
-        {/* Hotel Type */}
-        <Form.Group className="mb-3">
-          <Form.Label className="fw-semibold small">Hotel Type</Form.Label>
-          <div className="filter-checkbox-list">
-            {hotelTypeOptions.map((item) => (
-              <Form.Check
-                key={item.value}
-                type="checkbox"
-                id={`pkg-hotel-type-${item.value}`}
-                label={item.label}
-                checked={hotelType.some((t) => t.value === item.value)}
-                onChange={(e) => {
-                  if (e.target.checked)
-                    setHotelType([...hotelType, item]);
-                  else
-                    setHotelType(hotelType.filter((t) => t.value !== item.value));
-                }}
-              />
-            ))}
-          </div>
-        </Form.Group>
-
-        <hr className="my-2" />
-
-        {/* Channel
-        <Form.Group className="mb-3">
-          <Form.Label className="fw-semibold small">Channel</Form.Label>
-          <div className="filter-checkbox-list">
-            {channelTypeOptions.map((item) => (
-              <Form.Check
-                key={item.value}
-                type="checkbox"
-                id={`pkg-channel-${item.value}`}
-                label={item.label}
-                checked={channelType.some((c) => c.value === item.value)}
-                onChange={(e) => {
-                  if (e.target.checked)
-                    setChannelType([...channelType, item]);
-                  else
-                    setChannelType(channelType.filter((c) => c.value !== item.value));
-                }}
-              />
-            ))}
-          </div>
-        </Form.Group> */}
-
-        <hr className="my-2" />
-
-        {/* Clear All */}
-        <Button
-          className="clear-pill w-100"
-          variant="outline-primary"
-          size="sm"
-          onClick={clearAllFilters}
-        >
-          Clear All Filters
-        </Button>
-
-      </Card.Body>
-    </Card>
-  </div>
-</Col>
-
-                              {/* ────────────────────────────────────
-                                  RIGHT COLUMN
-                              ──────────────────────────────────── */}
-                              <Col lg={9}>
-
-                            
-
-
-                                {/* ── Skeleton cards — first load only ── */}
-                                {isLoading && allResults.length === 0 && (
-                                  <Row xs={1} className="g-4">
-                                    {[1, 2, 3].map((i) => (
-                                      <SkeletonHotelCard key={i} />
-                                    ))}
-                                  </Row>
-                                )}
-
-                                {/* ── Hotel result cards ── */}
-                                {(!isLoading || allResults.length > 0) && (
-                                  <Row xs={1} className="g-4">
-                                    {filteredResults.length > 0 ? (
-                                      filteredResults.map((hotel) => (
-                                        <Col key={hotel.id}>
-                                          <div
-                                            style={{
-                                              backgroundColor: "white",
-                                              border: "1px solid #dee2e6",
-                                              borderRadius: "12px",
-                                              boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
-                                              overflow: "hidden",
-                                            }}
-                                          >
-                                            <Row className="g-0">
-                                              <Col md={4} lg={3}>
-                                                <div
-                                                  style={{
-                                                    position: "relative",
-                                                    height: "100%",
-                                                    minHeight: "180px",
-                                                    padding: "12px",
-                                                  }}
-                                                >
-                                                  <LazyImage
-                                                    src={hotel.image}
-                                                    alt={hotel.name}
-                                                    style={{
-                                                      width: "100%",
-                                                      height: "100%",
-                                                      objectFit: "cover",
-                                                      borderRadius: "8px",
-                                                    }}
-                                                  />
-                                                  {/* Star + channel badge */}
-                                                  <div
-                                                    style={{
-                                                      position: "absolute",
-                                                      top: "22px",
-                                                      left: "22px",
-                                                      backgroundColor: "rgba(0,0,0,0.7)",
-                                                      color: "white",
-                                                      padding: "4px 8px",
-                                                      borderRadius: "15px",
-                                                      fontSize: "12px",
-                                                      display: "flex",
-                                                      alignItems: "center",
-                                                      gap: "4px",
-                                                    }}
-                                                  >
-                                                    <FaStar className="text-warning" />
-                                                    {hotel.rating}
-                                                    <span
-                                                      style={{
-                                                        marginLeft: "4px",
-                                                        backgroundColor: "#6c757d",
-                                                        padding: "1px 6px",
-                                                        borderRadius: "10px",
-                                                      }}
-                                                    >
-                                                      {(
-                                                        hotel.channelType || ""
-                                                      ).toUpperCase()}
-                                                    </span>
-                                                  </div>
-                                                </div>
-                                              </Col>
-
-                                              <Col md={8} lg={9}>
-                                                <div
-                                                  style={{
-                                                    padding: "16px",
-                                                    height: "100%",
-                                                    display: "flex",
-                                                    flexDirection: "column",
-                                                    justifyContent: "space-between",
-                                                  }}
-                                                >
-                                                  <div>
-                                                    <div className="d-flex align-items-center mb-1 gap-2">
-                                                      <h6
-                                                        style={{
-                                                          fontSize: "1rem",
-                                                          fontWeight: "600",
-                                                          marginBottom: 0,
-                                                          color: "#333",
-                                                        }}
-                                                      >
-                                                        {hotel.name || "Hotel Name Not Available"}
-                                                      </h6>
-                                                      <div className="d-flex gap-1">
-                                                        {renderStars(hotel.rating)}
-                                                      </div>
-                                                    </div>
-
-                                                    <p
-                                                      style={{
-                                                        fontSize: "0.85rem",
-                                                        color: "#666",
-                                                        marginBottom: "6px",
-                                                      }}
-                                                    >
-                                                      📍{" "}
-                                                      {hotel.address || "Address Not Available"}
-                                                    </p>
-
-                                                    {hotel.city && (
-                                                      <span
-                                                        className="d-inline-flex align-items-center bg-light text-dark border rounded-pill px-2 py-1 mb-2"
-                                                        style={{ fontSize: "0.72rem", fontWeight: 500 }}
-                                                      >
-                                                        <FaMapMarkerAlt
-                                                          className="text-primary me-1"
-                                                          style={{ fontSize: "0.7rem" }}
-                                                        />
-                                                        {hotel.city}
-                                                      </span>
-                                                    )}
-
-                                                    {hotel.badge && (
-                                                      <span
-                                                        style={{
-                                                          // Brand red — same
-                                                          // palette as the
-                                                          // wizard indicator
-                                                          // and Next button
-                                                          // above. Was
-                                                          // green #28a745.
-                                                          backgroundColor: "#EC0B43",
-                                                          color: "white",
-                                                          padding: "3px 8px",
-                                                          borderRadius: "4px",
-                                                          fontSize: "0.72rem",
-                                                          fontWeight: "500",
-                                                          display: "inline-block",
-                                                          marginBottom: "8px",
-                                                        }}
-                                                      >
-                                                        {hotel.badge}
-                                                      </span>
-                                                    )}
-                                                  </div>
-
-                                                  <div
-                                                    style={{
-                                                      display: "flex",
-                                                      justifyContent: "space-between",
-                                                      alignItems: "center",
-                                                      paddingTop: "10px",
-                                                      borderTop: "1px solid #eee",
-                                                    }}
-                                                  >
-                                                    <div
-                                                      style={{
-                                                        fontSize: "1.1rem",
-                                                        fontWeight: "600",
-                                                        color: "#333",
-                                                      }}
-                                                    >
-                                                      {hotel.price
-                                                        ? `AED ${hotel.price.toLocaleString()}`
-                                                        : "Price on request"}
-                                                    </div>
-
-                                                    <Button
-                                                      className="btn-view-rooms"
-                                                      size="sm"
-                                                      // Inline red override —
-                                                      // scoped to this page
-                                                      // only so the shared
-                                                      // .btn-view-rooms rule
-                                                      // (used by Individual
-                                                      // Hotel Search + MYOP
-                                                      // v1) stays green.
-                                                      style={{
-                                                        background: "linear-gradient(135deg, #EC0B43 0%, #C90939 100%)",
-                                                        border: "none",
-                                                      }}
-                                                      onClick={() => handleViewRooms(hotel)}
-                                                    >
-                                                      {expandedHotels[hotel.id]
-                                                        ? "Hide Rooms"
-                                                        : "View Rooms"}
-                                                    </Button>
-                                                  </div>
-                                                </div>
-                                              </Col>
-                                            </Row>
-
-                                            {/* ── Inline Room List ── */}
-                                            {expandedHotels[hotel.id] && (
-                                              <div className="border-top p-3 bg-light">
-                                                {loadingRooms[hotel.id] ? (
-                                                  <div className="text-center py-4">
-                                                    <Spinner
-                                                      animation="border"
-                                                      variant="primary"
-                                                    />
-                                                    <p className="mt-2 text-muted">
-                                                      Fetching rooms...
-                                                    </p>
-                                                  </div>
-                                                ) : hotelRooms[hotel.id] ? (
-                                                  <div className="room-categories-section">
-                                                    {(
-                                                      hotelRooms[hotel.id].hotels[0]
-                                                        .roomCategories || []
-                                                    ).map((category, idx) => (
-                                                     <Accordion
-  activeKey={activeAccordion[hotel.id + "-" + idx] || null}
-  onSelect={(eventKey) => {
-    const key = hotel.id + "-" + idx;
-    setActiveAccordion((prev) => ({
-      ...prev,
-      [key]: prev[key] === eventKey ? null : eventKey,
-    }));
-  }}
-  className="mb-3"
->
-  <Accordion.Item
-    eventKey="0"
-    className="room-category-item border-0 shadow-sm"
-  >
-    <Accordion.Header className="room-category-header">
-      <div className="d-flex justify-content-between align-items-center w-100">
-
-        {/* LEFT CONTENT */}
-        <div>
-          <h6 className="mb-1 fw-bold">{category.roomCategory}</h6>
-          <p className="mb-0 text-muted small">
-            {category.baseRoomType}
-          </p>
-        </div>
-
-        {/* RIGHT CONTENT WITH ARROW */}
-        <div className="d-flex align-items-center gap-3">
-          <div className="text-end">
-            <span className="fw-bold text-primary">
-              From {formatPrice(Math.min(...category.availableRates.map(r => r.rate)))}
-            </span>
-            <div className="small text-muted">
-              {category.availableRates.length} rates
-            </div>
-          </div>
-
-          {/* 🔥 ARROW ICON */}
-          <FaChevronDown
-            style={{
-              transition: "transform 0.3s ease",
-              transform:
-                activeAccordion[hotel.id + "-" + idx] === "0"
-                  ? "rotate(180deg)"
-                  : "rotate(0deg)",
-            }}
-          />
-        </div>
-      </div>
-    </Accordion.Header>
-                                                          <Accordion.Body className="room-rates-section p-3">
-                                                            <Row>
-                                                              {category.availableRates.map(
-                                                                (rate, rIdx) => (
-                                                                  <Col
-                                                                    key={rIdx}
-                                                                  md={6} lg={4} xl={5} className="mb-3"
-                                                                  >
-                                                                    <Card className="rate-card h-100 border-0 shadow-sm">
-                                                                      <Card.Body className="p-3">
-                                                                        <div className="rate-header mb-3 pb-2 border-bottom">
-                                                                          <div className="d-flex align-items-center gap-2 mb-2">
-                                                                            {getMealPlanIcon(
-                                                                              rate.mealPlan
-                                                                            )}
-                                                                            <span className="fw-semibold small">
-                                                                              {rate.mealPlan}
-                                                                            </span>
-                                                                          </div>
-                                                                          <div className="mb-1">
-                                                                            {getRoomStatusBadge(
-                                                                              rate.roomStatus
-                                                                            )}
-                                                                          </div>
-                                                                          <div>
-                                                                            {getRefundStatusBadge(
-                                                                              rate.nonRefundable
-                                                                            )}
-                                                                          </div>
-                                                                        </div>
-
-                                                                        <div className="rate-pricing mb-3 text-center">
-                                                                          {/* Room-rate price — black instead of the
-                                                                              default Bootstrap text-success green
-                                                                              (per request). Kept fs-4 + fw-bold so
-                                                                              the price still reads as the visual
-                                                                              anchor of the rate card. */}
-                                                                          <div className="current-price fs-4 fw-bold text-dark">
-                                                                            {formatPrice(
-                                                                              rate.totalRate
-                                                                            )}
-                                                                          </div>
-                                                                          {rate.recommendedRetailPrice >
-                                                                            rate.totalRate && (
-                                                                            <div className="original-price text-muted text-decoration-line-through small">
-                                                                              {formatPrice(
-                                                                                rate.recommendedRetailPrice
-                                                                              )}
-                                                                            </div>
-                                                                          )}
-                                                                          <div className="price-per-night text-muted small">
-                                                                            per night
-                                                                          </div>
-                                                                        </div>
-
-                                                                        <div className="rate-features mb-3">
-                                                                          <div className="feature-item d-flex align-items-start gap-2 mb-1">
-                                                                            <FaInfoCircle
-                                                                              className="text-muted mt-1"
-                                                                              size={12}
-                                                                            />
-                                                                            <span className="small">
-                                                                              {rate.contractLabel}
-                                                                            </span>
-                                                                          </div>
-                                                                          {rate.cancellationPolicies &&
-                                                                            rate.cancellationPolicies
-                                                                              .length > 0 &&
-                                                                            typeof rate
-                                                                              .cancellationPolicies[0] ===
-                                                                              "object" && (
-                                                                              <div className="feature-item d-flex align-items-start gap-2">
-                                                                                <FaShieldAlt
-                                                                                  className="text-muted mt-1"
-                                                                                  size={12}
-                                                                                />
-                                                                                <span
-                                                                                  className="small"
-                                                                                  title={
-                                                                                    rate
-                                                                                      .cancellationPolicies[0]
-                                                                                      .policyText
-                                                                                  }
-                                                                                >
-                                                                                  Cancellation Policy
-                                                                                  Applies
-                                                                                </span>
-                                                                              </div>
-                                                                            )}
-                                                                        </div>
-
-                                                                        <div className="d-grid gap-2">
-                                                                          <Button
-                                                                            variant="primary"
-                                                                            size="sm"
-                                                                            onClick={() =>
-                                                                              handleAddToCart(
-                                                                                hotel.id,
-                                                                                rate
-                                                                              )
-                                                                            }
-                                                                          >
-                                                                            Add to Package
-                                                                          </Button>
-                                                                        </div>
-                                                                      </Card.Body>
-                                                                    </Card>
-                                                                  </Col>
-                                                                )
-                                                              )}
-                                                            </Row>
-                                                          </Accordion.Body>
-                                                        </Accordion.Item>
-                                                      </Accordion>
-                                                    ))}
-                                                  </div>
-                                                ) : (
-                                                  <div className="text-center py-3 text-muted">
-                                                    No rooms available.
-                                                  </div>
-                                                )}
-                                              </div>
-                                            )}
-                                          </div>
-                                        </Col>
-                                      ))
-                                    ) : (
-                                      <Col xs={12}>
-                                        <Card className="shadow-sm rounded-xl">
-                                          <Card.Body className="text-center text-muted py-5">
-                                            <FaSearch className="display-4 text-muted mb-3" />
-                                            <h5>No results found</h5>
-                                            <p>
-                                              {channelType.length > 0
-                                                ? `No hotels found for selected channel(s): ${channelType
-                                                    .map((c) => c.label)
-                                                    .join(", ")}`
-                                                : hasActiveFilters
-                                                ? "No hotels match your current filters. Try adjusting or clearing some filters."
-                                                : "Try adjusting your search criteria."}
-                                            </p>
-                                            {hasActiveFilters && (
-                                              <Button
-                                                variant="outline-primary"
-                                                size="sm"
-                                                onClick={clearAllFilters}
-                                              >
-                                                Clear All Filters
-                                              </Button>
-                                            )}
-                                          </Card.Body>
-                                        </Card>
-                                      </Col>
-                                    )}
-                                  </Row>
-                                )}
-
-                                {/* ── Bottom pagination ── */}
-                                {filteredResults.length > 0 && !hasActiveFilters && !(isMultiCity && cityFilter !== "ALL") && (
-                                  <div className="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-4">
-                                    <small className="text-muted fw-semibold">
-                                      Showing {startEntry}–{endEntry} of {totalElements}{" "}
-                                      results
-                                    </small>
-                                    <Pagination className="mb-0 pagination-modern">
-                                      <Pagination.Prev
-                                        disabled={pageIndex === 0}
-                                        onClick={() => goToPage(pageIndex - 1)}
-                                      />
-                                      {pageNumbers.map((n) => (
-                                        <Pagination.Item
-                                          key={n}
-                                          active={n === pageIndex + 1}
-                                          onClick={() => goToPage(n - 1)}
-                                        >
-                                          {n}
-                                        </Pagination.Item>
-                                      ))}
-                                      <Pagination.Next
-                                        disabled={pageIndex >= effectiveTotalPages - 1}
-                                        onClick={() => goToPage(pageIndex + 1)}
-                                      />
-                                    </Pagination>
-                                  </div>
-                                )}
-
-                              </Col>
-                              {/* end right Col */}
-                            </Row>
                           </div>
                         </div>
-                      )}
-                    </Card.Body>
-                  </Card>
-              )}
-
-              {/* ── TRANSFER ── */}
-              {wizardSteps[currentStepIdx]?.key === "transfer" && (
-                  <Card className="border-0 shadow-sm rounded-4">
-                    <Card.Body>
-                      {/* ── Pickup / Dropoff selectors ──
-                          Always visible on the transfer step (even when the
-                          cab list comes back empty) — the operator needs
-                          them to satisfy the wizard's pickup+dropoff
-                          requirement, and they're populated independently
-                          from the cab list (via /cab-search/lookup-by-
-                          destination). Selections persist to sessionStorage
-                          and are stamped onto each cab DTO at booking save.
-                          Pairs with a manual "Search Transfers" button so
-                          the operator can retry the search after picking
-                          locations / when the prefetch returned empty. */}
-                      <Card className="mb-4 shadow-sm" style={{ borderRadius: "12px" }}>
-                        <Card.Body>
-                          {isMultiCity && (
-                            <div
-                              className="d-flex align-items-center bg-light border rounded-2 px-3 py-2 mb-3"
-                              style={{ fontSize: "0.85rem" }}
-                            >
-                              <FaMapMarkerAlt className="text-primary me-2" />
-                              {isCitySelectable ? (
-                                <span>
-                                  Setting pickup &amp; drop-off for{" "}
-                                  <strong>
-                                    {searchedCities.find((c) => c.id === cityFilter)?.label ||
-                                      "this city"}
-                                  </strong>
-                                  . Each city keeps its own selection.
-                                </span>
-                              ) : (
-                                <span>
-                                  Select a city tab above to set its pickup &amp; drop-off.
-                                </span>
-                              )}
-                            </div>
-                          )}
-                          <Row className="g-3 align-items-end">
-                            <Col md={5}>
-                              <Form.Label className="fw-semibold">
-                                Pickup <span className="text-danger">*</span>
-                              </Form.Label>
-                              <Select
-                                classNamePrefix="rs"
-                                isClearable
-                                isDisabled={!isCitySelectable}
-                                isLoading={cabLookupLoading}
-                                options={cabLookupOptions}
-                                value={transferPickupZone}
-                                placeholder="Select pickup location"
-                                onChange={handlePickupChange}
-                                formatOptionLabel={(opt) => (
-                                  <div>
-                                    <div>{opt.label}</div>
-                                    {opt.subtitle && (
-                                      <small className="text-muted">{opt.subtitle}</small>
+                        {(() => {
+                          // Rows are built once so both groups below share
+                          // the same data and the same applyChoice handler.
+                          const rows = [
+                            ...dynamicAddonCatalog.map((svc) => ({
+                              key: `addon:${svc.key}`,
+                              addonKey: svc.key,
+                              label: svc.label,
+                              description: svc.description || svc.discountText || "",
+                              unitPrice: svc.unitPrice,
+                              currency: svc.currency,
+                              checked: !!addonFlags[svc.key],
+                            })),
+                            {
+                              key: "transfer",
+                              label: "Cab / Transfer",
+                              // description: "Airport, inter-city or hourly transfers.",
+                              checked: !!v2Services.transfer,
+                            },
+                            {
+                              key: "hotel",
+                              label: "Hotel",
+                              // description: "Hotel accommodation for the trip.",
+                              checked: true,
+                              mandatory: true,
+                            },
+                            {
+                              key: "tour",
+                              label: "Tours & Activities",
+                              description: "Minimum three tours are mandatory",
+                              checked: !!v2Services.tour,
+                              mandatory: true,
+                            },
+                          ];
+                          const applyChoice = (row, wantChecked) => {
+                            if (row.mandatory) return;
+                            if (row.addonKey) {
+                              toggleAddonService(row.addonKey, wantChecked);
+                            } else if (row.key === "transfer" || row.key === "tour") {
+                              toggleServiceGate(row.key, wantChecked);
+                            }
+                          };
+                          const renderRow = (row) => {
+                            const isYes = !!row.checked;
+                            const isNo = !row.checked;
+                            // Native radios grouped by `name` so picking Yes
+                            // auto-clears No and vice-versa. Each row uses
+                            // its own group name so rows don't interfere.
+                            const groupName = `svc-select-${row.key}`;
+                            return (
+                              <div key={row.key} className="myop-v2-service-row">
+                                <div className="flex-grow-1" style={{ minWidth: 0 }}>
+                                  <div className="d-flex align-items-center gap-2 flex-wrap">
+                                    <span className="fw-semibold">{row.label}</span>
+                                    {row.mandatory && (
+                                      <Badge bg="warning" text="dark" className="text-uppercase" style={{ fontSize: "0.65rem" }}>
+                                        Mandatory
+                                      </Badge>
+                                    )}
+                                    {row.unitPrice != null && row.unitPrice > 0 && (
+                                      <Badge bg="info" className="text-dark" style={{ fontSize: "0.7rem" }}>
+                                        {(row.currency || "AED")} {Number(row.unitPrice).toLocaleString()}
+                                      </Badge>
+                                    )}
+                                    {!row.mandatory && (
+                                      <span className={`small ${isYes ? "text-success fw-semibold" : "text-muted"}`}>
+                                        {isYes ? "Included" : "Not included"}
+                                      </span>
                                     )}
                                   </div>
-                                )}
-                                menuPortalTarget={document.body}
-                                menuPosition="fixed"
-                                styles={{
-                                  menuPortal: (base) => ({ ...base, zIndex: 9999 }),
-                                  menu: (base) => ({ ...base, zIndex: 9999 }),
-                                }}
-                                noOptionsMessage={() =>
-                                  cabLookupLoading ? "Loading…" : "No locations found"
-                                }
-                              />
-                              {transferZoneErrors.pickup && (
-                                <div className="text-danger small mt-1">
-                                  {transferZoneErrors.pickup}
+                                  {row.description && (
+                                    <div className="small text-muted mt-1">{row.description}</div>
+                                  )}
                                 </div>
-                              )}
-                            </Col>
-                            <Col md={5}>
-                              <Form.Label className="fw-semibold">
-                                Dropoff <span className="text-danger">*</span>
-                              </Form.Label>
-                              <Select
-                                classNamePrefix="rs"
-                                isClearable
-                                isDisabled={!isCitySelectable}
-                                isLoading={cabLookupLoading}
-                                options={cabLookupOptions}
-                                value={transferDropoffZone}
-                                placeholder="Select dropoff location"
-                                onChange={handleDropoffChange}
-                                formatOptionLabel={(opt) => (
-                                  <div>
-                                    <div>{opt.label}</div>
-                                    {opt.subtitle && (
-                                      <small className="text-muted">{opt.subtitle}</small>
-                                    )}
+                                <div className="myop-v2-service-row__choice" role="radiogroup" aria-label={`Include ${row.label}?`}>
+                                  <Form.Check
+                                    type="radio"
+                                    id={`${groupName}-yes`}
+                                    name={groupName}
+                                    label="Yes"
+                                    checked={isYes}
+                                    disabled={row.mandatory}
+                                    onChange={() => applyChoice(row, true)}
+                                  />
+                                  <Form.Check
+                                    type="radio"
+                                    id={`${groupName}-no`}
+                                    name={groupName}
+                                    label="No"
+                                    checked={isNo}
+                                    disabled={row.mandatory}
+                                    onChange={() => applyChoice(row, false)}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          };
+                          const coreRows = rows.filter((r) => r.mandatory);
+                          const optionalRows = rows.filter((r) => !r.mandatory);
+                          return (
+                            <>
+                              <div className="myop-v2-service-group">
+                                <div className="fw-semibold text-dark small text-uppercase mb-1" style={{ letterSpacing: "0.05em", fontSize: "0.7rem" }}>
+                                  Included in every package
+                                </div>
+                                <div className="d-flex flex-column">{coreRows.map(renderRow)}</div>
+                              </div>
+                              <div className="myop-v2-service-group">
+                                <div className="fw-semibold text-dark small text-uppercase mb-1" style={{ letterSpacing: "0.05em", fontSize: "0.7rem" }}>
+                                  Optional services
+                                </div>
+                                {optionalRows.length === 0 ? (
+                                  <div className="text-muted small py-2">
+                                    Loading optional services…
                                   </div>
-                                )}
-                                menuPortalTarget={document.body}
-                                menuPosition="fixed"
-                                styles={{
-                                  menuPortal: (base) => ({ ...base, zIndex: 9999 }),
-                                  menu: (base) => ({ ...base, zIndex: 9999 }),
-                                }}
-                                noOptionsMessage={() =>
-                                  cabLookupLoading ? "Loading…" : "No locations found"
-                                }
-                              />
-                              {transferZoneErrors.dropoff && (
-                                <div className="text-danger small mt-1">
-                                  {transferZoneErrors.dropoff}
-                                </div>
-                              )}
-                            </Col>
-                            <Col md={2} className="d-grid">
-                              <Button
-                                variant="primary"
-                                onClick={handleTransferSearchSubmit}
-                                disabled={transferLoading}
-                                title="Re-run the transfer search with the current criteria"
-                              >
-                                {transferLoading ? (
-                                  <>
-                                    <Spinner animation="border" size="sm" className="me-2" />
-                                    Searching…
-                                  </>
                                 ) : (
-                                  <>
-                                    <FaSearch className="me-2" />
-                                    Search
-                                  </>
+                                  <div className="d-flex flex-column">{optionalRows.map(renderRow)}</div>
                                 )}
-                              </Button>
-                            </Col>
-                          </Row>
-                        </Card.Body>
-                      </Card>
-
-                      {transferLoading && (
-                        <Card className="shadow-sm rounded-xl mb-4 mt-4">
-                          <Card.Body className="text-center py-5">
-                            <div className="results-loader">
-                              <div className="loader-ring">
-                                <span></span><span></span><span></span><span></span>
                               </div>
-                              <h4 className="text-primary fw-bold mt-3 mb-1">
-                                Searching Transfers...
-                              </h4>
-                              <p className="text-muted small mb-0">
-                                Finding available transfer options
-                              </p>
+                            </>
+                          );
+                        })()}
+                      </Card.Body>
+                    </Card>
+                  )}
+
+                  {/* ── ADD-ON SERVICE (one per catalogue entry) ──
+                      The `key` prop is critical: without it React reuses the
+                      same component instance across steps, the internal
+                      useState initializer doesn't re-run, and the old
+                      service's notes / toggle state bleed into every later
+                      step (and overwrite it on edit). Keying on serviceKey
+                      forces a clean unmount → mount when the user clicks
+                      Next, so each step starts from the correct slot in
+                      sessionStorage. */}
+                  {wizardSteps[currentStepIdx]?.type === "addon" && (
+                    <div className="myop-v2-addon-step">
+                      {/* Read-only context carried over from Select Services
+                          so the operator decides with the price in view. */}
+                      <div className="myop-v2-addon-context small">
+                        <FaConciergeBell className="text-primary" />
+                        <span>
+                          You included{" "}
+                          <span className="fw-semibold text-dark">
+                            {currentAddonEntry?.label || wizardSteps[currentStepIdx].label}
+                          </span>{" "}
+                          on Select Services.
+                        </span>
+                        {currentAddonEntry?.unitPrice != null && Number(currentAddonEntry.unitPrice) > 0 && (
+                          <Badge bg="info" className="text-dark" style={{ fontSize: "0.7rem" }}>
+                            {(currentAddonEntry.currency || "AED")} {Number(currentAddonEntry.unitPrice).toLocaleString()}
+                          </Badge>
+                        )}
+                        <span className="text-muted">
+                          Fill in the details below, or choose No to skip it.
+                        </span>
+                        {currentAddonEntry?.description && (
+                          <span className="text-muted w-100">{currentAddonEntry.description}</span>
+                        )}
+                      </div>
+                      <SingleAddOnService
+                        key={wizardSteps[currentStepIdx].serviceKey}
+                        serviceKey={wizardSteps[currentStepIdx].serviceKey}
+                      />
+                    </div>
+                  )}
+
+                  {/* ── HOTEL ── */}
+                  {wizardSteps[currentStepIdx]?.key === "accommodation" && (
+                      <Card className="border-0 shadow-sm rounded-4 myop-v2-step">
+                        <Card.Body>
+                          {/* Search form removed — the criteria submitted on the
+                              previous page already drives the hotel results, which
+                              are pre-fetched and hydrated on mount. */}
+                          <div className="myop-v2-step-intro">
+                            <div className="myop-v2-step-intro__title">
+                              <span className="myop-v2-step-intro__icon">
+                                <FaHotel />
+                              </span>
+                              <div>
+                                <h5 className="fw-bold mb-0">Hotel</h5>
+                                <div className="text-muted small">
+                                  Click <span className="fw-semibold">View Rooms</span>, open a room
+                                  category and use <span className="fw-semibold">Add to Package</span>.
+                                  At least one room is required.
+                                </div>
+                              </div>
                             </div>
-                          </Card.Body>
-                        </Card>
-                      )}
+                            <div className="text-end small">
+                              <div className="text-muted">Rooms in package</div>
+                              <div className="fw-bold text-dark">{packageHotels.length}</div>
+                            </div>
+                          </div>
 
-                      {!hasTransferSearched && !transferLoading && (
-                        <div className="text-center text-muted mt-5">
-                          <Spinner animation="border" className="mb-3" />
-                          <h6>Loading available transfers…</h6>
-                        </div>
-                      )}
-
-                      {hasTransferSearched && !transferLoading && transferResults.length > 0 && (
-                        <div className="mt-4">
-                          <h6 className="fw-bold mb-3">
-                            Transfer Results ({filteredTransfers.length})
-                          </h6>
-
-                          {filteredTransfers.length === 0 && (
-                            <div className="text-center text-muted py-4">
-                              No transfers found for the selected city.
+                          {hasSearched && hotelGateLocked && (
+                            <div className="myop-v2-hint myop-v2-hint--warning small">
+                              <FaInfoCircle className="mt-1 flex-shrink-0" />
+                              <span>
+                                Add at least one room here to unlock the transfer and activity
+                                steps — their <span className="fw-semibold">Add to Package</span>{" "}
+                                buttons stay disabled until a hotel is in your package.
+                              </span>
                             </div>
                           )}
 
-                          <Row className="g-4">
-                            {filteredTransfers.map((cab) => (
-                              <Col key={cab.cabid} lg={10} xl={9} className="mx-auto">
-                                <Card className="mb-4 shadow-sm" style={{ borderRadius: "12px" }}>
-                                  <Card.Body>
-                                    <Row className="mb-3">
-                                      <Col md={3} sm={4} xs={12} className="mb-3 mb-md-0">
-                                        <div
-                                          style={{
-                                            width: "100%",
-                                            height: "200px",
-                                            borderRadius: "8px",
-                                            overflow: "hidden",
-                                            backgroundColor: "#f5f5f5",
-                                          }}
-                                        >
-                                          <LazyImage src={cab.cabpic} alt={cab.cabname} />
-                                        </div>
-                                      </Col>
-                                      <Col
-                                        md={9}
-                                        sm={8}
-                                        xs={12}
-                                        className="d-flex align-items-center"
-                                      >
-                                        <div>
-                                          <h5
-                                            className="fw-bold mb-2"
-                                            style={{ fontSize: "1.5rem", color: "#333" }}
-                                          >
-                                            {cab.cabname || "Transfer Vehicle"}
-                                          </h5>
-                                          {cab.cityName && (
-                                            <span
-                                              className="d-inline-flex align-items-center bg-light text-dark border rounded-pill px-2 py-1 mb-2"
-                                              style={{ fontSize: "0.72rem", fontWeight: 500 }}
-                                            >
-                                              <FaMapMarkerAlt
-                                                className="text-primary me-1"
-                                                style={{ fontSize: "0.7rem" }}
-                                              />
-                                              {cab.cityName}
-                                            </span>
-                                          )}
-                                          {cab.cabdetails && (
-                                            <p
-                                              className="text-muted mb-0"
-                                              style={{ fontSize: "0.9rem" }}
-                                            >
-                                              {cab.cabdetails}
-                                            </p>
-                                          )}
-                                        </div>
-                                      </Col>
-                                    </Row>
+                          {/* ── Loading-while-prefetch state ── */}
+                          {!hasSearched && !hasSearchResult && (
+                            <Card className="shadow-sm rounded-xl myop-v2-static-card">
+                              <Card.Body className="text-center text-muted py-5">
+                                <Spinner animation="border" className="mb-3" />
+                                <h4>Loading hotel results…</h4>
+                                <p>Fetching availability for the criteria you submitted.</p>
+                              </Card.Body>
+                            </Card>
+                          )}
 
-                                    {cab.searchCabDetailsDTO &&
-                                      cab.searchCabDetailsDTO.length > 0 && (
-                                        <div className="table-responsive">
-                                          <Table striped bordered hover className="mb-0">
-                                            <thead style={{ backgroundColor: "#f8f9fa" }}>
-                                              <tr>
-                                                <th style={{ fontWeight: "600", padding: "12px" }}>
-                                                  Transfer Option
-                                                </th>
-                                                <th style={{ fontWeight: "600", padding: "12px" }}>
-                                                  Share Type
-                                                </th>
-                                                <th style={{ fontWeight: "600", padding: "12px" }}>
-                                                  Total Price
-                                                </th>
-                                                <th
-                                                  style={{
-                                                    fontWeight: "600",
-                                                    padding: "12px",
-                                                    width: "150px",
-                                                  }}
-                                                >
-                                                  Action
-                                                </th>
-                                              </tr>
-                                            </thead>
-                                            <tbody>
-                                              {cab.searchCabDetailsDTO.map((detail, idx) => {
-                                                const rate =
-                                                  detail.types === "SIC"
-                                                    ? detail.sicRate
-                                                    : detail.privateRate;
-                                                const totalRate =
-                                                  detail.totalRateWithoutMrk || rate || 0;
-                                                const uniqueId = `${cab.cabid}-${detail.dropDetails}-${detail.paxDetails}-${detail.types}`;
-                                                const isAdding = addingTransferId === uniqueId;
+                          {/* ══════════════════════════════════════════════════
+                              RESULTS SECTION — two-column layout
+                          ══════════════════════════════════════════════════ */}
+                          {hasSearched && (
+                            <div ref={resultsRef}>
 
-                                                return (
-                                                  <tr key={idx}>
-                                                    <td
-                                                      style={{
-                                                        padding: "12px",
-                                                        verticalAlign: "middle",
-                                                      }}
-                                                    >
-                                                      {detail.location || "N/A"} -{" "}
-                                                      {detail.dropOff || "N/A"}
-                                                    </td>
-                                                    <td
-                                                      style={{
-                                                        padding: "12px",
-                                                        verticalAlign: "middle",
-                                                      }}
-                                                    >
-                                                      <span
-                                                        style={{
-                                                          fontSize: "0.9rem",
-                                                          fontWeight: 600,
-                                                          color: "#333",
-                                                        }}
-                                                      >
-                                                        {detail.types}
-                                                      </span>
-                                                    </td>
-                                                    <td
-                                                      style={{
-                                                        padding: "12px",
-                                                        verticalAlign: "middle",
-                                                      }}
-                                                    >
-                                                      <span
-                                                        style={{
-                                                          fontSize: "1rem",
-                                                          fontWeight: "600",
-                                                          color: "#333",
-                                                        }}
-                                                      >
-                                                        AED {totalRate.toLocaleString()}
-                                                      </span>
-                                                    </td>
-                                                    <td
-                                                      style={{
-                                                        padding: "12px",
-                                                        verticalAlign: "middle",
-                                                        textAlign: "center",
-                                                      }}
-                                                    >
-                                                      <OverlayTrigger
-                                                        placement="top"
-                                                        overlay={
-                                                          !hasHotelInCart ? (
-                                                            <Tooltip id={`tooltip-transfer-${idx}`}>
-                                                              Search and add hotels first, then only these will be enabled
-                                                            </Tooltip>
-                                                          ) : <></>
-                                                        }
-                                                      >
-                                                        <span className="d-inline-block">
-                                                          <Button
-                                                            // variant left off — inline red styling
-                                                            // takes over so this button matches the
-                                                            // brand-red View Rooms / Next / Rate
-                                                            // Available treatment elsewhere on this
-                                                            // page. Was variant="success" (green).
-                                                            size="sm"
-                                                            className="add-transfer-to-cart"
-                                                            onClick={() =>
-                                                              handleAddTransferToCart(cab, detail)
-                                                            }
-                                                            disabled={isAdding || !hasHotelInCart}
-                                                            style={{
-                                                              minWidth: "120px",
-                                                              pointerEvents: !hasHotelInCart ? 'none' : 'auto',
-                                                              background: "#EC0B43",
-                                                              borderColor: "#EC0B43",
-                                                              color: "#fff",
-                                                            }}
-                                                          >
-                                                            {isAdding ? (
-                                                              <>
-                                                                <Spinner
-                                                                  size="sm"
-                                                                  className="me-2"
-                                                                />
-                                                                Adding...
-                                                              </>
-                                                            ) : (
-                                                              "Add to cart"
-                                                            )}
-                                                          </Button>
-                                                        </span>
-                                                      </OverlayTrigger>
-                                                    </td>
-                                                  </tr>
-                                                );
-                                              })}
-                                            </tbody>
-                                          </Table>
-                                        </div>
-                                      )}
-                                  </Card.Body>
-                                </Card>
-                              </Col>
-                            ))}
-                          </Row>
-                        </div>
-                      )}
+                              {/* ── Progress bar (visible during loading) ── */}
+                              <SearchProgressBar
+                                isLoading={isLoading}
+                                pollStatus={pollStatus}
+                              />
 
-                      {hasTransferSearched && !transferLoading && transferResults.length === 0 && (
-                        <div className="text-center text-muted mt-5">
-                          <FaCar className="fs-1 mb-3 text-secondary" />
-                          <h6>No transfers found for the selected dates.</h6>
-                          <p className="small">
-                            Please try different dates or contact support.
-                          </p>
-                          {/* UI-test helper — populates the cab list with a
-                              handful of demo cars so the operator can step
-                              through the rest of the wizard end-to-end while
-                              the inhouse cab catalogue is being seeded.
-                              Click-only; nothing fires automatically. */}
-                          <Button
-                            variant="outline-secondary"
-                            size="sm"
-                            className="mt-2"
-                            onClick={() => {
-                              setTransferResults(SAMPLE_TRANSFER_RESULTS);
-                              toast.success(
-                                "Loaded sample cabs for UI testing. These are demo entries — replace with a real search before booking a live customer."
-                              );
+                              <div className="search-layout">
+                                <Row className="g-4" style={{ alignItems: "flex-start" }}>
+
+                                  {/* ────────────────────────────────────
+                                      LEFT SIDEBAR (mirrors HotelSearch) —
+                                      rendered at every width; below lg it
+                                      collapses behind a Filters toggle.
+                                  ──────────────────────────────────── */}
+                                 <Col xs={12} lg={4} xl={3} className="leftside myop-v2-filters">
+                      <div className="left-fixed">
+                        <button
+                          type="button"
+                          className="btn bg-light border text-dark myop-v2-filters__toggle"
+                          onClick={() => setHotelFiltersOpen((o) => !o)}
+                          aria-expanded={hotelFiltersOpen}
+                        >
+                          <span className="fw-semibold">
+                            <FaFilter className="me-2 text-primary" />
+                            Filters &amp; sort
+                            {hasActiveFilters && (
+                              <Badge bg="primary" pill className="ms-2">on</Badge>
+                            )}
+                          </span>
+                          <FaChevronDown
+                            style={{
+                              transition: "transform 0.3s ease",
+                              transform: hotelFiltersOpen ? "rotate(180deg)" : "rotate(0deg)",
                             }}
-                          >
-                            Load Sample Cabs (Demo)
-                          </Button>
-                        </div>
-                      )}
-                    </Card.Body>
-                  </Card>
-              )}
-
-              {/* ── TOURS & ACTIVITIES ── */}
-              {wizardSteps[currentStepIdx]?.key === "tours" && (
-                  <Card className="border-0 shadow-sm rounded-4">
-                    <Card.Body>
-                      {/* Search form removed — activities are pre-fetched
-                          with the criteria from the previous page. */}
-
-                      {tourLoading && (
-                        <Card className="shadow-sm rounded-xl mb-4 mt-4">
-                          <Card.Body className="text-center py-5">
-                            <div className="results-loader">
-                              <div className="loader-ring">
-                                <span></span><span></span><span></span><span></span>
+                          />
+                        </button>
+                        <div className={`myop-v2-filters__body ${hotelFiltersOpen ? "is-open" : ""}`}>
+                          <Card className="shadow-sm rounded-xl filtersection myop-v2-static-card">
+                            <Card.Body className="p-2">
+                              <div className="fw-semibold small text-dark d-none d-lg-flex align-items-center mb-2">
+                                <FaFilter className="me-2 text-primary" />
+                                Filters &amp; sort
                               </div>
-                              <h4 className="text-primary fw-bold mt-3 mb-1">
-                                Searching Activities...
-                              </h4>
-                              <p className="text-muted small mb-0">
-                                Finding available activity options
-                              </p>
-                            </div>
-                          </Card.Body>
-                        </Card>
-                      )}
 
-                      {!hasTourSearched && !tourLoading && (
-                        <div className="text-center text-muted mt-5">
-                          <Spinner animation="border" className="mb-3" />
-                          <h6>Loading available activities…</h6>
-                        </div>
-                      )}
+                              {/* Hotel name search */}
+                              <Form.Control
+                                type="text"
+                                placeholder="Search hotel name..."
+                                className="mb-3"
+                                value={hotelSearchTerm}
+                                onChange={(e) => setHotelSearchTerm(e.target.value)}
+                              />
 
-                      {hasTourSearched && !tourLoading && tourResults.length > 0 && (
-                        <div className="mt-4">
-                          <h6 className="fw-bold mb-3">
-                            Tour & Activity Results ({filteredTours.length})
-                          </h6>
-                          {filteredTours.length === 0 && (
-                            <div className="text-center text-muted py-4">
-                              No activities found for the selected city.
-                            </div>
-                          )}
-                          <Row xs={1} sm={2} md={3} lg={3} xl={3} className="g-4">
-                            {filteredTours.map((activity) => (
-                              <Col key={activity.id}>
-                                <div
-                                  style={{
-                                    backgroundColor: "white",
-                                    border: "1px solid #dee2e6",
-                                    borderRadius: "12px",
-                                    boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
-                                    overflow: "hidden",
+                              {/* Star Rating */}
+                              <Form.Group className="mb-3">
+                                <Form.Label className="fw-semibold small">Star Rating</Form.Label>
+                                <Select
+                                  options={starOptions}
+                                  value={starRating}
+                                  onChange={setStarRating}
+                                  placeholder="All Stars"
+                                  isClearable
+                                  className="modern-select-sm"
+                                  menuPortalTarget={document.body}
+                                  styles={{
+                                    control: (base) => ({
+                                      ...base,
+                                      height: "36px",
+                                      minHeight: "36px",
+                                      width: "100%",
+                                    }),
+                                    menuPortal: (base) => ({ ...base, zIndex: 9999 }),
+                                    menu: (base) => ({ ...base, zIndex: 9999 }),
                                   }}
-                                >
-                                  <div
-                                    style={{
-                                      position: "relative",
-                                      height: "200px",
-                                      overflow: "hidden",
-                                    }}
+                                />
+                              </Form.Group>
+
+                              <hr className="my-2" />
+
+                              {/* Sort */}
+                              <Form.Group className="mb-3">
+                                <Form.Label className="fw-semibold small">Sort By Price</Form.Label>
+                                <div className="d-flex gap-2">
+                                  <Button
+                                    size="sm"
+                                    className={`sort-pill w-50 ${sortBy === "priceAsc" ? "active" : ""}`}
+                                    onClick={() => setSortBy("priceAsc")}
                                   >
-                                    <LazyImage
-                                      src={activity.activityImage}
-                                      alt={activity.activityName}
-                                    />
-                                    <div
-                                      style={{
-                                        position: "absolute",
-                                        top: "10px",
-                                        right: "10px",
-                                        backgroundColor: "rgba(0,0,0,0.7)",
-                                        color: "white",
-                                        padding: "4px 8px",
-                                        borderRadius: "15px",
-                                        fontSize: "12px",
-                                        display: "flex",
-                                        alignItems: "center",
-                                        gap: "4px",
+                                    Price ↑
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    className={`sort-pill w-50 ${sortBy === "priceDesc" ? "active" : ""}`}
+                                    onClick={() => setSortBy("priceDesc")}
+                                  >
+                                    Price ↓
+                                  </Button>
+                                </div>
+                              </Form.Group>
+
+                              <hr className="my-2" />
+
+                              {/* Hotel Type */}
+                              <Form.Group className="mb-3">
+                                <Form.Label className="fw-semibold small">Hotel Type</Form.Label>
+                                <div className="filter-checkbox-list">
+                                  {hotelTypeOptions.map((item) => (
+                                    <Form.Check
+                                      key={item.value}
+                                      type="checkbox"
+                                      id={`pkg-hotel-type-${item.value}`}
+                                      label={item.label}
+                                      checked={hotelType.some((t) => t.value === item.value)}
+                                      onChange={(e) => {
+                                        if (e.target.checked)
+                                          setHotelType([...hotelType, item]);
+                                        else
+                                          setHotelType(hotelType.filter((t) => t.value !== item.value));
                                       }}
-                                    >
-                                      {activity.starRating > 0 && (
-                                        <>
-                                          <FaStar className="text-warning me-1" />
-                                          {activity.starRating}
-                                        </>
-                                      )}
-                                      {activity.apiType && (
-                                        <span
-                                          style={{
-                                            marginLeft: "4px",
-                                            backgroundColor: "#6c757d",
-                                            padding: "1px 6px",
-                                            borderRadius: "10px",
-                                          }}
-                                        >
-                                          {activity.apiType.toUpperCase()}
+                                    />
+                                  ))}
+                                </div>
+                              </Form.Group>
+
+                              <hr className="my-2" />
+
+                              {/* Channel
+                              <Form.Group className="mb-3">
+                                <Form.Label className="fw-semibold small">Channel</Form.Label>
+                                <div className="filter-checkbox-list">
+                                  {channelTypeOptions.map((item) => (
+                                    <Form.Check
+                                      key={item.value}
+                                      type="checkbox"
+                                      id={`pkg-channel-${item.value}`}
+                                      label={item.label}
+                                      checked={channelType.some((c) => c.value === item.value)}
+                                      onChange={(e) => {
+                                        if (e.target.checked)
+                                          setChannelType([...channelType, item]);
+                                        else
+                                          setChannelType(channelType.filter((c) => c.value !== item.value));
+                                      }}
+                                    />
+                                  ))}
+                                </div>
+                              </Form.Group> */}
+
+                              {/* Clear All */}
+                              <Button
+                                className="clear-pill w-100"
+                                variant="outline-primary"
+                                size="sm"
+                                onClick={clearAllFilters}
+                              >
+                                Clear All Filters
+                              </Button>
+
+                            </Card.Body>
+                          </Card>
+                        </div>
+                      </div>
+                    </Col>
+
+                                  {/* ────────────────────────────────────
+                                      RIGHT COLUMN
+                                  ──────────────────────────────────── */}
+                                  <Col xs={12} lg={8} xl={9}>
+
+                                    <div className="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+                                      <h6 className="fw-bold mb-0">
+                                        Hotel Results ({filteredResults.length})
+                                      </h6>
+                                      {hasActiveFilters && (
+                                        <span className="small text-muted">
+                                          Filters applied ·{" "}
+                                          <button
+                                            type="button"
+                                            className="btn p-0 border-0 bg-transparent text-primary small text-decoration-none"
+                                            onClick={clearAllFilters}
+                                          >
+                                            clear
+                                          </button>
                                         </span>
                                       )}
                                     </div>
+
+                                    {/* ── Skeleton cards — first load only ── */}
+                                    {isLoading && allResults.length === 0 && (
+                                      <Row xs={1} className="g-4">
+                                        {[1, 2, 3].map((i) => (
+                                          <SkeletonHotelCard key={i} />
+                                        ))}
+                                      </Row>
+                                    )}
+
+                                    {/* ── Hotel result cards ── */}
+                                    {(!isLoading || allResults.length > 0) && (
+                                      <Row xs={1} className="g-4">
+                                        {filteredResults.length > 0 ? (
+                                          filteredResults.map((hotel) => (
+                                            <Col key={hotel.id}>
+                                              <div
+                                                className={`myop-v2-result-card ${isHotelInPackage(hotel) ? "is-added" : ""}`.trim()}
+                                              >
+                                                <Row className="g-0">
+                                                  <Col md={4}>
+                                                    <div className="myop-v2-hotel-card__media">
+                                                      <LazyImage
+                                                        src={hotel.image}
+                                                        alt={hotel.name}
+                                                        style={{
+                                                          width: "100%",
+                                                          height: "100%",
+                                                          objectFit: "cover",
+                                                          borderRadius: "8px",
+                                                        }}
+                                                      />
+                                                      {/* Star + channel badge */}
+                                                      <div
+                                                        className="myop-v2-media-badge"
+                                                        style={{ top: "22px", left: "22px", fontSize: "12px" }}
+                                                      >
+                                                        <FaStar className="text-warning" />
+                                                        {hotel.rating}
+                                                        <span className="myop-v2-media-badge__api">
+                                                          {(
+                                                            hotel.channelType || ""
+                                                          ).toUpperCase()}
+                                                        </span>
+                                                      </div>
+                                                    </div>
+                                                  </Col>
+
+                                                  <Col md={8}>
+                                                    <div className="myop-v2-hotel-card__body">
+                                                      <div>
+                                                        <div className="d-flex align-items-center mb-1 gap-2 flex-wrap">
+                                                          <h6
+                                                            style={{
+                                                              fontSize: "1rem",
+                                                              fontWeight: "600",
+                                                              marginBottom: 0,
+                                                              color: "#333",
+                                                            }}
+                                                          >
+                                                            {hotel.name || "Hotel Name Not Available"}
+                                                          </h6>
+                                                          <div className="d-flex gap-1">
+                                                            {renderStars(hotel.rating)}
+                                                          </div>
+                                                          {isHotelInPackage(hotel) && <AddedPill />}
+                                                        </div>
+
+                                                        <p
+                                                          style={{
+                                                            fontSize: "0.85rem",
+                                                            color: "#666",
+                                                            marginBottom: "6px",
+                                                          }}
+                                                        >
+                                                          📍{" "}
+                                                          {hotel.address || "Address Not Available"}
+                                                        </p>
+
+                                                        {hotel.city && (
+                                                          <span
+                                                            className="d-inline-flex align-items-center bg-light text-dark border rounded-pill px-2 py-1 mb-2"
+                                                            style={{ fontSize: "0.72rem", fontWeight: 500 }}
+                                                          >
+                                                            <FaMapMarkerAlt
+                                                              className="text-primary me-1"
+                                                              style={{ fontSize: "0.7rem" }}
+                                                            />
+                                                            {hotel.city}
+                                                          </span>
+                                                        )}
+
+                                                        {hotel.badge && (
+                                                          <span
+                                                            style={{
+                                                              // Brand red — same
+                                                              // palette as the
+                                                              // wizard indicator
+                                                              // and Next button
+                                                              // above. Was
+                                                              // green #28a745.
+                                                              backgroundColor: "#EC0B43",
+                                                              color: "white",
+                                                              padding: "3px 8px",
+                                                              borderRadius: "4px",
+                                                              fontSize: "0.72rem",
+                                                              fontWeight: "500",
+                                                              display: "inline-block",
+                                                              marginBottom: "8px",
+                                                            }}
+                                                          >
+                                                            {hotel.badge}
+                                                          </span>
+                                                        )}
+                                                      </div>
+
+                                                      <div className="myop-v2-hotel-card__footer">
+                                                        <div>
+                                                          <div
+                                                            style={{
+                                                              fontSize: "1.1rem",
+                                                              fontWeight: "600",
+                                                              color: "#333",
+                                                            }}
+                                                          >
+                                                            {hotel.price
+                                                              ? `AED ${hotel.price.toLocaleString()}`
+                                                              : "Price on request"}
+                                                          </div>
+                                                          {hotel.price && stayNights > 0 ? (
+                                                            <div className="text-muted" style={{ fontSize: "0.72rem" }}>
+                                                              starting rate · {stayNightsLabel}
+                                                            </div>
+                                                          ) : null}
+                                                        </div>
+
+                                                        <Button
+                                                          className="btn-view-rooms"
+                                                          size="sm"
+                                                          // Inline red override —
+                                                          // scoped to this page
+                                                          // only so the shared
+                                                          // .btn-view-rooms rule
+                                                          // (used by Individual
+                                                          // Hotel Search + MYOP
+                                                          // v1) stays green.
+                                                          style={{
+                                                            background: "linear-gradient(135deg, #EC0B43 0%, #C90939 100%)",
+                                                            border: "none",
+                                                          }}
+                                                          onClick={() => handleViewRooms(hotel)}
+                                                        >
+                                                          {expandedHotels[hotel.id]
+                                                            ? "Hide Rooms"
+                                                            : "View Rooms"}
+                                                        </Button>
+                                                      </div>
+                                                    </div>
+                                                  </Col>
+                                                </Row>
+
+                                                {/* ── Inline Room List ── */}
+                                                {expandedHotels[hotel.id] && (
+                                                  <div className="border-top p-3 bg-light">
+                                                    {loadingRooms[hotel.id] ? (
+                                                      <div className="text-center py-4">
+                                                        <Spinner
+                                                          animation="border"
+                                                          variant="primary"
+                                                        />
+                                                        <p className="mt-2 text-muted">
+                                                          Fetching rooms...
+                                                        </p>
+                                                      </div>
+                                                    ) : hotelRooms[hotel.id] ? (
+                                                      <div className="room-categories-section">
+                                                        <div className="small text-muted mb-2">
+                                                          Prices are for the whole stay ({stayNightsLabel}). Open a
+                                                          category to see its rates.
+                                                        </div>
+                                                        {(
+                                                          hotelRooms[hotel.id].hotels[0]
+                                                            .roomCategories || []
+                                                        ).map((category, idx) => (
+                                                         <Accordion
+                      key={category.roomCategory || idx}
+                      activeKey={activeAccordion[hotel.id + "-" + idx] || null}
+                      onSelect={(eventKey) => {
+                        const key = hotel.id + "-" + idx;
+                        setActiveAccordion((prev) => ({
+                          ...prev,
+                          [key]: prev[key] === eventKey ? null : eventKey,
+                        }));
+                      }}
+                      className="mb-3"
+                    >
+                      <Accordion.Item
+                        eventKey="0"
+                        className="room-category-item border-0 shadow-sm"
+                      >
+                        <Accordion.Header className="room-category-header">
+                          <div className="d-flex justify-content-between align-items-center w-100">
+
+                            {/* LEFT CONTENT */}
+                            <div>
+                              <h6 className="mb-1 fw-bold">{category.roomCategory}</h6>
+                              <p className="mb-0 text-muted small">
+                                {category.baseRoomType}
+                              </p>
+                            </div>
+
+                            {/* RIGHT CONTENT WITH ARROW */}
+                            <div className="d-flex align-items-center gap-3">
+                              <div className="text-end">
+                                <span className="fw-bold text-primary">
+                                  From {formatPrice(Math.min(...category.availableRates.map(r => r.rate)))}
+                                </span>
+                                <div className="small text-muted">
+                                  {category.availableRates.length} rates · {stayNightsLabel}
+                                </div>
+                              </div>
+
+                              {/* 🔥 ARROW ICON */}
+                              <FaChevronDown
+                                style={{
+                                  transition: "transform 0.3s ease",
+                                  transform:
+                                    activeAccordion[hotel.id + "-" + idx] === "0"
+                                      ? "rotate(180deg)"
+                                      : "rotate(0deg)",
+                                }}
+                              />
+                            </div>
+                          </div>
+                        </Accordion.Header>
+                                                              <Accordion.Body className="room-rates-section p-3">
+                                                                <Row className="g-3">
+                                                                  {category.availableRates.map(
+                                                                    (rate, rIdx) => (
+                                                                      <Col
+                                                                        key={rIdx}
+                                                                        xs={12} md={6}
+                                                                      >
+                                                                        <Card className="rate-card h-100 border-0 shadow-sm">
+                                                                          <Card.Body className="p-3">
+                                                                            <div className="rate-header mb-3 pb-2 border-bottom">
+                                                                              <div className="d-flex align-items-center gap-2 mb-2">
+                                                                                {getMealPlanIcon(
+                                                                                  rate.mealPlan
+                                                                                )}
+                                                                                <span className="fw-semibold small">
+                                                                                  {rate.mealPlan}
+                                                                                </span>
+                                                                              </div>
+                                                                              <div className="mb-1">
+                                                                                {getRoomStatusBadge(
+                                                                                  rate.roomStatus
+                                                                                )}
+                                                                              </div>
+                                                                              <div>
+                                                                                {getRefundStatusBadge(
+                                                                                  rate.nonRefundable
+                                                                                )}
+                                                                              </div>
+                                                                            </div>
+
+                                                                            <div className="rate-pricing mb-3 text-center">
+                                                                              {/* Room-rate price — black instead of the
+                                                                                  default Bootstrap text-success green
+                                                                                  (per request). Kept fs-4 + fw-bold so
+                                                                                  the price still reads as the visual
+                                                                                  anchor of the rate card. */}
+                                                                              <div className="current-price fs-4 fw-bold text-dark">
+                                                                                {formatPrice(
+                                                                                  rate.totalRate
+                                                                                )}
+                                                                              </div>
+                                                                              {rate.recommendedRetailPrice >
+                                                                                rate.totalRate && (
+                                                                                <div className="original-price text-muted text-decoration-line-through small">
+                                                                                  {formatPrice(
+                                                                                    rate.recommendedRetailPrice
+                                                                                  )}
+                                                                                </div>
+                                                                              )}
+                                                                              {/* The rate returned by the room search is
+                                                                                  the total for the whole stay (the booking
+                                                                                  page divides it by nights for its date-
+                                                                                  wise table), so label it as such instead
+                                                                                  of the misleading "per night". */}
+                                                                              <div className="price-per-night text-muted small myop-v2-stay-basis">
+                                                                                {stayNights > 0
+                                                                                  ? `total for ${stayNightsLabel}`
+                                                                                  : "total for the stay"}
+                                                                              </div>
+                                                                            </div>
+
+                                                                            <div className="rate-features mb-3">
+                                                                              <div className="feature-item d-flex align-items-start gap-2 mb-1">
+                                                                                <FaInfoCircle
+                                                                                  className="text-muted mt-1"
+                                                                                  size={12}
+                                                                                />
+                                                                                <span className="small">
+                                                                                  {rate.contractLabel}
+                                                                                </span>
+                                                                              </div>
+                                                                              {rate.cancellationPolicies &&
+                                                                                rate.cancellationPolicies
+                                                                                  .length > 0 &&
+                                                                                typeof rate
+                                                                                  .cancellationPolicies[0] ===
+                                                                                  "object" && (
+                                                                                  <div className="feature-item d-flex align-items-start gap-2">
+                                                                                    <FaShieldAlt
+                                                                                      className="text-muted mt-1"
+                                                                                      size={12}
+                                                                                    />
+                                                                                    <span
+                                                                                      className="small"
+                                                                                      title={
+                                                                                        rate
+                                                                                          .cancellationPolicies[0]
+                                                                                          .policyText
+                                                                                      }
+                                                                                    >
+                                                                                      Cancellation Policy
+                                                                                      Applies
+                                                                                    </span>
+                                                                                  </div>
+                                                                                )}
+                                                                            </div>
+
+                                                                            <div className="d-grid gap-2">
+                                                                              <Button
+                                                                                variant="primary"
+                                                                                size="sm"
+                                                                                onClick={() =>
+                                                                                  handleAddToCart(
+                                                                                    hotel.id,
+                                                                                    rate
+                                                                                  )
+                                                                                }
+                                                                              >
+                                                                                Add to Package
+                                                                              </Button>
+                                                                            </div>
+                                                                          </Card.Body>
+                                                                        </Card>
+                                                                      </Col>
+                                                                    )
+                                                                  )}
+                                                                </Row>
+                                                              </Accordion.Body>
+                                                            </Accordion.Item>
+                                                          </Accordion>
+                                                        ))}
+                                                      </div>
+                                                    ) : (
+                                                      <div className="text-center py-3 text-muted">
+                                                        No rooms available.
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                )}
+                                              </div>
+                                            </Col>
+                                          ))
+                                        ) : (
+                                          <Col xs={12}>
+                                            <Card className="shadow-sm rounded-xl myop-v2-static-card">
+                                              <Card.Body className="text-center text-muted py-5">
+                                                <FaSearch className="display-4 text-muted mb-3" />
+                                                <h5>No results found</h5>
+                                                <p>
+                                                  {channelType.length > 0
+                                                    ? `No hotels found for selected channel(s): ${channelType
+                                                        .map((c) => c.label)
+                                                        .join(", ")}`
+                                                    : hasActiveFilters
+                                                    ? "No hotels match your current filters. Try adjusting or clearing some filters."
+                                                    : "Try adjusting your search criteria."}
+                                                </p>
+                                                {hasActiveFilters && (
+                                                  <Button
+                                                    variant="outline-primary"
+                                                    size="sm"
+                                                    onClick={clearAllFilters}
+                                                  >
+                                                    Clear All Filters
+                                                  </Button>
+                                                )}
+                                              </Card.Body>
+                                            </Card>
+                                          </Col>
+                                        )}
+                                      </Row>
+                                    )}
+
+                                    {/* ── Bottom pagination ── */}
+                                    {filteredResults.length > 0 && !hasActiveFilters && !(isMultiCity && cityFilter !== "ALL") && (
+                                      <div className="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-4">
+                                        <small className="text-muted fw-semibold">
+                                          Showing {startEntry}–{endEntry} of {totalElements}{" "}
+                                          results
+                                        </small>
+                                        <Pagination className="mb-0 pagination-modern">
+                                          <Pagination.Prev
+                                            disabled={pageIndex === 0}
+                                            onClick={() => goToPage(pageIndex - 1)}
+                                          />
+                                          {pageNumbers.map((n) => (
+                                            <Pagination.Item
+                                              key={n}
+                                              active={n === pageIndex + 1}
+                                              onClick={() => goToPage(n - 1)}
+                                            >
+                                              {n}
+                                            </Pagination.Item>
+                                          ))}
+                                          <Pagination.Next
+                                            disabled={pageIndex >= effectiveTotalPages - 1}
+                                            onClick={() => goToPage(pageIndex + 1)}
+                                          />
+                                        </Pagination>
+                                      </div>
+                                    )}
+
+                                  </Col>
+                                  {/* end right Col */}
+                                </Row>
+                              </div>
+                            </div>
+                          )}
+                        </Card.Body>
+                      </Card>
+                  )}
+
+                  {/* ── TRANSFER ── */}
+                  {wizardSteps[currentStepIdx]?.key === "transfer" && (
+                      <Card className="border-0 shadow-sm rounded-4 myop-v2-step">
+                        <Card.Body>
+                          <div className="myop-v2-step-intro">
+                            <div className="myop-v2-step-intro__title">
+                              <span className="myop-v2-step-intro__icon">
+                                <FaCar />
+                              </span>
+                              <div>
+                                <h5 className="fw-bold mb-0">Transfer</h5>
+                                <div className="text-muted small">
+                                  Set the pickup and drop-off locations, then use{" "}
+                                  <span className="fw-semibold">Add to Package</span> on the transfer
+                                  option you want. Adding a transfer is optional, but pickup &amp;
+                                  drop-off must be set before you can continue.
+                                </div>
+                              </div>
+                            </div>
+                            <div className="text-end small">
+                              <div className="text-muted">Transfers in package</div>
+                              <div className="fw-bold text-dark">{packageCabs.length}</div>
+                            </div>
+                          </div>
+
+                          {hotelGateLocked && (
+                            <div className="myop-v2-hint myop-v2-hint--warning small">
+                              <FaInfoCircle className="mt-1 flex-shrink-0" />
+                              <span>
+                                No hotel room is in your package yet, so the{" "}
+                                <span className="fw-semibold">Add to Package</span> buttons below are
+                                disabled.{" "}
+                                {wizardSteps.findIndex((s) => s.key === "accommodation") >= 0 && (
+                                  <button
+                                    type="button"
+                                    className="btn p-0 border-0 bg-transparent text-primary small text-decoration-none fw-semibold align-baseline"
+                                    onClick={() =>
+                                      setCurrentStepIdx(
+                                        wizardSteps.findIndex((s) => s.key === "accommodation")
+                                      )
+                                    }
+                                  >
+                                    Go back to the Hotel step
+                                  </button>
+                                )}{" "}
+                                and add a room first.
+                              </span>
+                            </div>
+                          )}
+
+                          {/* ── Pickup / Dropoff selectors ──
+                              Always visible on the transfer step (even when the
+                              cab list comes back empty) — the operator needs
+                              them to satisfy the wizard's pickup+dropoff
+                              requirement, and they're populated independently
+                              from the cab list (via /cab-search/lookup-by-
+                              destination). Selections persist to sessionStorage
+                              and are stamped onto each cab DTO at booking save.
+                              Pairs with a manual "Refresh results" button so
+                              the operator can retry the search after picking
+                              locations / when the prefetch returned empty. */}
+                          <div className="myop-v2-selector-card">
+                            <div className="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-2">
+                              <span className="fw-semibold text-dark">
+                                <FaMapMarkerAlt className="me-2 text-primary" />
+                                Pickup &amp; drop-off locations
+                              </span>
+                              <span className="text-muted small">
+                                Needed to continue · used for every transfer added on this step
+                              </span>
+                            </div>
+                            {isMultiCity && (
+                              <div
+                                className="d-flex align-items-center bg-light border rounded-2 px-3 py-2 mb-3"
+                                style={{ fontSize: "0.85rem" }}
+                              >
+                                <FaMapMarkerAlt className="text-primary me-2" />
+                                {isCitySelectable ? (
+                                  <span>
+                                    Setting pickup &amp; drop-off for{" "}
+                                    <strong>
+                                      {searchedCities.find((c) => c.id === cityFilter)?.label ||
+                                        "this city"}
+                                    </strong>
+                                    . Each city keeps its own selection.
+                                  </span>
+                                ) : (
+                                  <span>
+                                    Select a city tab above to set its pickup &amp; drop-off.
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                            <Row className="g-3 align-items-end">
+                              <Col md={5}>
+                                <Form.Label className="fw-semibold">
+                                  Pickup <span className="text-danger">*</span>
+                                </Form.Label>
+                                <Select
+                                  classNamePrefix="rs"
+                                  isClearable
+                                  isDisabled={!isCitySelectable}
+                                  isLoading={cabLookupLoading}
+                                  options={cabLookupOptions}
+                                  value={transferPickupZone}
+                                  placeholder="Select pickup location"
+                                  onChange={handlePickupChange}
+                                  formatOptionLabel={(opt) => (
+                                    <div>
+                                      <div>{opt.label}</div>
+                                      {opt.subtitle && (
+                                        <small className="text-muted">{opt.subtitle}</small>
+                                      )}
+                                    </div>
+                                  )}
+                                  menuPortalTarget={document.body}
+                                  menuPosition="fixed"
+                                  styles={{
+                                    menuPortal: (base) => ({ ...base, zIndex: 9999 }),
+                                    menu: (base) => ({ ...base, zIndex: 9999 }),
+                                  }}
+                                  noOptionsMessage={() =>
+                                    cabLookupLoading ? "Loading…" : "No locations found"
+                                  }
+                                />
+                              </Col>
+                              <Col md={5}>
+                                <Form.Label className="fw-semibold">
+                                  Dropoff <span className="text-danger">*</span>
+                                </Form.Label>
+                                <Select
+                                  classNamePrefix="rs"
+                                  isClearable
+                                  isDisabled={!isCitySelectable}
+                                  isLoading={cabLookupLoading}
+                                  options={cabLookupOptions}
+                                  value={transferDropoffZone}
+                                  placeholder="Select dropoff location"
+                                  onChange={handleDropoffChange}
+                                  formatOptionLabel={(opt) => (
+                                    <div>
+                                      <div>{opt.label}</div>
+                                      {opt.subtitle && (
+                                        <small className="text-muted">{opt.subtitle}</small>
+                                      )}
+                                    </div>
+                                  )}
+                                  menuPortalTarget={document.body}
+                                  menuPosition="fixed"
+                                  styles={{
+                                    menuPortal: (base) => ({ ...base, zIndex: 9999 }),
+                                    menu: (base) => ({ ...base, zIndex: 9999 }),
+                                  }}
+                                  noOptionsMessage={() =>
+                                    cabLookupLoading ? "Loading…" : "No locations found"
+                                  }
+                                />
+                              </Col>
+                              <Col md={2} className="d-grid">
+                                <Button
+                                  variant="primary"
+                                  onClick={handleTransferSearchSubmit}
+                                  disabled={transferLoading}
+                                  title="Re-run the transfer search with the current criteria"
+                                >
+                                  {transferLoading ? (
+                                    <>
+                                      <Spinner animation="border" size="sm" className="me-2" />
+                                      Searching…
+                                    </>
+                                  ) : (
+                                    <>
+                                      <FaSearch className="me-2" />
+                                      Refresh
+                                    </>
+                                  )}
+                                </Button>
+                              </Col>
+                            </Row>
+                            {/* Field errors live in their own row so the
+                                controls above stay level with each other. */}
+                            {(transferZoneErrors.pickup || transferZoneErrors.dropoff) && (
+                              <Row className="g-3">
+                                <Col md={5}>
+                                  {transferZoneErrors.pickup && (
+                                    <div className="text-danger small mt-1">
+                                      {transferZoneErrors.pickup}
+                                    </div>
+                                  )}
+                                </Col>
+                                <Col md={5}>
+                                  {transferZoneErrors.dropoff && (
+                                    <div className="text-danger small mt-1">
+                                      {transferZoneErrors.dropoff}
+                                    </div>
+                                  )}
+                                </Col>
+                              </Row>
+                            )}
+                            <div className="text-muted small mt-2">
+                              Results below are already loaded for your trip dates — use{" "}
+                              <span className="fw-semibold">Refresh</span> only if you need to run the
+                              search again.
+                            </div>
+                          </div>
+
+                          {transferLoading && (
+                            <Card className="shadow-sm rounded-xl mb-4 myop-v2-static-card">
+                              <Card.Body className="text-center py-5">
+                                <div className="results-loader">
+                                  <div className="loader-ring">
+                                    <span></span><span></span><span></span><span></span>
                                   </div>
+                                  <h4 className="text-primary fw-bold mt-3 mb-1">
+                                    Searching Transfers...
+                                  </h4>
+                                  <p className="text-muted small mb-0">
+                                    Finding available transfer options
+                                  </p>
+                                </div>
+                              </Card.Body>
+                            </Card>
+                          )}
 
-                                  <div style={{ padding: "16px", backgroundColor: "white" }}>
-                                    <h6
-                                      style={{
-                                        fontSize: "1rem",
-                                        fontWeight: "600",
-                                        marginBottom: "8px",
-                                        color: "#333",
-                                        lineHeight: "1.3",
-                                      }}
+                          {!hasTransferSearched && !transferLoading && (
+                            <div className="text-center text-muted py-4">
+                              <Spinner animation="border" className="mb-3" />
+                              <h6>Loading available transfers…</h6>
+                            </div>
+                          )}
+
+                          {hasTransferSearched && !transferLoading && transferResults.length > 0 && (
+                            <div>
+                              <h6 className="fw-bold mb-3">
+                                Transfer Results ({filteredTransfers.length})
+                              </h6>
+
+                              {filteredTransfers.length === 0 && (
+                                <div className="text-center text-muted py-4">
+                                  No transfers found for the selected city.
+                                </div>
+                              )}
+
+                              <Row className="g-4">
+                                {filteredTransfers.map((cab) => (
+                                  <Col key={cab.cabid} xs={12}>
+                                    <Card
+                                      className={`shadow-sm myop-v2-static-card myop-v2-result-card ${isCabInPackage(cab) ? "is-added" : ""}`.trim()}
+                                      style={{ borderRadius: "12px" }}
                                     >
-                                      {activity.activityName || "Activity Name Not Available"}
-                                    </h6>
-
-                                    {activity.cityName && (
-                                      <span
-                                        className="d-inline-flex align-items-center bg-light text-dark border rounded-pill px-2 py-1 mb-2"
-                                        style={{ fontSize: "0.72rem", fontWeight: 500 }}
-                                      >
-                                        <FaMapMarkerAlt
-                                          className="text-primary me-1"
-                                          style={{ fontSize: "0.7rem" }}
-                                        />
-                                        {activity.cityName}
-                                      </span>
-                                    )}
-
-                                    {activity.duration && (
-                                      <div
-                                        style={{
-                                          fontSize: "0.875rem",
-                                          color: "#666",
-                                          marginBottom: "10px",
-                                        }}
-                                      >
-                                        <FaTicketAlt className="text-info me-2" />
-                                        Duration: {activity.duration}
-                                      </div>
-                                    )}
-
-                                    {/* "Rate Available" badge dropped — the
-                                        actual price ("AED …") is rendered
-                                        right below, so the affirmative label
-                                        was redundant noise. The "Rate on
-                                        Request" case is kept because it
-                                        surfaces real info for the operator
-                                        (no bookable price on this activity
-                                        yet). */}
-                                    {activity.totalRate > 0 ? null : (
-                                      <div
-                                        style={{
-                                          backgroundColor: "#6c757d",
-                                          color: "white",
-                                          padding: "3px 8px",
-                                          borderRadius: "4px",
-                                          fontSize: "0.72rem",
-                                          fontWeight: "500",
-                                          display: "inline-block",
-                                          marginBottom: "10px",
-                                        }}
-                                      >
-                                        Rate on Request
-                                      </div>
-                                    )}
-
-                                    <div
-                                      style={{
-                                        display: "flex",
-                                        justifyContent: "space-between",
-                                        alignItems: "center",
-                                        marginTop: "10px",
-                                        paddingTop: "10px",
-                                        borderTop: "1px solid #eee",
-                                      }}
-                                    >
-                                      <div
-                                        style={{
-                                          fontSize: "1.2rem",
-                                          fontWeight: "600",
-                                          color: "#333",
-                                        }}
-                                      >
-                                        {activity.totalRate > 0
-                                          ? `${activity.currency} ${activity.totalRate.toLocaleString()}`
-                                          : "-"}
-                                      </div>
-
-                                      <div className="d-flex gap-2 align-items-center">
-                                        <Button
-                                          variant="info"
-                                          size="sm"
-                                          onClick={() => {
-                                            setSelectedActivity(activity);
-                                            setShowActivityModal(true);
-                                          }}
-                                          style={{
-                                            minWidth: "36px",
-                                            padding: "5px 7px",
-                                            display: "flex",
-                                            alignItems: "center",
-                                            justifyContent: "center",
-                                          }}
-                                          title="View Details"
-                                        >
-                                          <FaEye size={13} />
-                                        </Button>
-                                          <OverlayTrigger
-                                            placement="top"
-                                            overlay={
-                                              !hasHotelInCart ? (
-                                                <Tooltip id={`tooltip-activity-${activity.id}`}>
-                                                  Search and add hotels first, then only these will be enabled
-                                                </Tooltip>
-                                              ) : <></>
-                                            }
+                                      <Card.Body>
+                                        <Row className="mb-3">
+                                          <Col md={4} sm={5} xs={12} className="mb-3 mb-md-0">
+                                            <div
+                                              className="myop-v2-ratio-16x9"
+                                              style={{ borderRadius: "8px" }}
+                                            >
+                                              <LazyImage src={cab.cabpic} alt={cab.cabname} />
+                                            </div>
+                                          </Col>
+                                          <Col
+                                            md={8}
+                                            sm={7}
+                                            xs={12}
+                                            className="d-flex align-items-center"
                                           >
-                                            <span className="d-inline-block">
-                                              <Button
-                                          variant="primary"
-                                          size="sm"
-                                          className="activity-add-to-cart"
-                                          disabled={
-                                            addingActivityId ===
-                                              (activity.id || activity.activityId) ||
-                                            !hasHotelInCart
-                                          }
-                                          title={!hasHotelInCart ? "Search and add hotels first, then only these will be enabled" : ""}
-                                          onClick={() => handleAddActivityToCart(activity)}
-                                        >
-                                          {addingActivityId ===
-                                          (activity.id || activity.activityId) ? (
-                                            <>
-                                              <Spinner
-                                                animation="border"
-                                                size="sm"
-                                                className="me-2"
-                                              />
-                                              Adding...
-                                            </>
-                                          ) : (
-                                            "Add to Cart"
+                                            <div>
+                                              <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
+                                                <h5
+                                                  className="fw-bold mb-0"
+                                                  style={{ fontSize: "1.5rem", color: "#333" }}
+                                                >
+                                                  {cab.cabname || "Transfer Vehicle"}
+                                                </h5>
+                                                {isCabInPackage(cab) && <AddedPill />}
+                                              </div>
+                                              {cab.cityName && (
+                                                <span
+                                                  className="d-inline-flex align-items-center bg-light text-dark border rounded-pill px-2 py-1 mb-2"
+                                                  style={{ fontSize: "0.72rem", fontWeight: 500 }}
+                                                >
+                                                  <FaMapMarkerAlt
+                                                    className="text-primary me-1"
+                                                    style={{ fontSize: "0.7rem" }}
+                                                  />
+                                                  {cab.cityName}
+                                                </span>
+                                              )}
+                                              {cab.cabdetails && (
+                                                <p
+                                                  className="text-muted mb-0"
+                                                  style={{ fontSize: "0.9rem" }}
+                                                >
+                                                  {cab.cabdetails}
+                                                </p>
+                                              )}
+                                            </div>
+                                          </Col>
+                                        </Row>
+
+                                        {cab.searchCabDetailsDTO &&
+                                          cab.searchCabDetailsDTO.length > 0 && (
+                                            <div className="table-responsive">
+                                              <Table striped bordered hover className="mb-0 myop-v2-transfer-table">
+                                                <thead>
+                                                  <tr>
+                                                    <th>
+                                                      Transfer Option
+                                                    </th>
+                                                    <th>
+                                                      Share Type
+                                                    </th>
+                                                    <th>
+                                                      Total Price
+                                                    </th>
+                                                    <th className="myop-v2-col-action">
+                                                      Action
+                                                    </th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody>
+                                                  {cab.searchCabDetailsDTO.map((detail, idx) => {
+                                                    const rate =
+                                                      detail.types === "SIC"
+                                                        ? detail.sicRate
+                                                        : detail.privateRate;
+                                                    const totalRate =
+                                                      detail.totalRateWithoutMrk || rate || 0;
+                                                    const uniqueId = `${cab.cabid}-${detail.dropDetails}-${detail.paxDetails}-${detail.types}`;
+                                                    const isAdding = addingTransferId === uniqueId;
+
+                                                    return (
+                                                      <tr key={idx}>
+                                                        <td data-label="Transfer Option">
+                                                          {detail.location || "N/A"} -{" "}
+                                                          {detail.dropOff || "N/A"}
+                                                        </td>
+                                                        <td data-label="Share Type">
+                                                          <span
+                                                            style={{
+                                                              fontSize: "0.9rem",
+                                                              fontWeight: 600,
+                                                              color: "#333",
+                                                            }}
+                                                          >
+                                                            {detail.types}
+                                                          </span>
+                                                        </td>
+                                                        <td data-label="Total Price">
+                                                          <span
+                                                            style={{
+                                                              fontSize: "1rem",
+                                                              fontWeight: "600",
+                                                              color: "#333",
+                                                            }}
+                                                          >
+                                                            AED {totalRate.toLocaleString()}
+                                                          </span>
+                                                        </td>
+                                                        <td data-label="Action" className="myop-v2-col-action">
+                                                          <OverlayTrigger
+                                                            placement="top"
+                                                            overlay={
+                                                              !hasHotelInCart ? (
+                                                                <Tooltip id={`tooltip-transfer-${idx}`}>
+                                                                  Add a hotel room on the Hotel step first — transfers unlock once a room is in your package
+                                                                </Tooltip>
+                                                              ) : <></>
+                                                            }
+                                                          >
+                                                            <span className="d-inline-block">
+                                                              <Button
+                                                                // variant left off — inline red styling
+                                                                // takes over so this button matches the
+                                                                // brand-red View Rooms / Next / Rate
+                                                                // Available treatment elsewhere on this
+                                                                // page. Was variant="success" (green).
+                                                                size="sm"
+                                                                className="add-transfer-to-cart"
+                                                                onClick={() =>
+                                                                  handleAddTransferToCart(cab, detail)
+                                                                }
+                                                                disabled={isAdding || !hasHotelInCart}
+                                                                style={{
+                                                                  minWidth: "120px",
+                                                                  pointerEvents: !hasHotelInCart ? 'none' : 'auto',
+                                                                  background: "#EC0B43",
+                                                                  borderColor: "#EC0B43",
+                                                                  color: "#fff",
+                                                                }}
+                                                              >
+                                                                {isAdding ? (
+                                                                  <>
+                                                                    <Spinner
+                                                                      size="sm"
+                                                                      className="me-2"
+                                                                    />
+                                                                    Adding...
+                                                                  </>
+                                                                ) : (
+                                                                  "Add to Package"
+                                                                )}
+                                                              </Button>
+                                                            </span>
+                                                          </OverlayTrigger>
+                                                        </td>
+                                                      </tr>
+                                                    );
+                                                  })}
+                                                </tbody>
+                                              </Table>
+                                            </div>
                                           )}
-                                            </Button>
+                                      </Card.Body>
+                                    </Card>
+                                  </Col>
+                                ))}
+                              </Row>
+                            </div>
+                          )}
+
+                          {hasTransferSearched && !transferLoading && transferResults.length === 0 && (
+                            <div className="text-center text-muted py-4">
+                              <FaCar className="fs-1 mb-3 text-secondary" />
+                              <h6>No transfers found for the selected dates.</h6>
+                              <p className="small">
+                                Please try different dates or contact support. You can still continue
+                                without a transfer.
+                              </p>
+                              {/* UI-test helper — populates the cab list with a
+                                  handful of demo cars so the operator can step
+                                  through the rest of the wizard end-to-end while
+                                  the inhouse cab catalogue is being seeded.
+                                  Click-only; nothing fires automatically. Kept
+                                  behind a collapsed "Testing options" block so
+                                  it never reads as the primary action. */}
+                              <details className="mt-3 d-inline-block text-start">
+                                <summary className="small text-muted" style={{ cursor: "pointer" }}>
+                                  Testing options
+                                </summary>
+                                <div className="mt-2">
+                                  <Button
+                                    variant="outline-secondary"
+                                    size="sm"
+                                    onClick={() => {
+                                      setTransferResults(SAMPLE_TRANSFER_RESULTS);
+                                      toast.success(
+                                        "Loaded sample cabs for UI testing. These are demo entries — replace with a real search before booking a live customer."
+                                      );
+                                    }}
+                                  >
+                                    Load Sample Cabs (Demo)
+                                  </Button>
+                                </div>
+                              </details>
+                            </div>
+                          )}
+                        </Card.Body>
+                      </Card>
+                  )}
+
+                  {/* ── TOURS & ACTIVITIES ── */}
+                  {wizardSteps[currentStepIdx]?.key === "tours" && (
+                      <Card className="border-0 shadow-sm rounded-4 myop-v2-step">
+                        <Card.Body>
+                          {/* Search form removed — activities are pre-fetched
+                              with the criteria from the previous page. */}
+                          <div className="myop-v2-step-intro">
+                            <div className="myop-v2-step-intro__title">
+                              <span className="myop-v2-step-intro__icon">
+                                <FaTicketAlt />
+                              </span>
+                              <div>
+                                <h5 className="fw-bold mb-0">Tours &amp; Activities</h5>
+                                <div className="text-muted small">
+                                  Use <span className="fw-semibold">Add to Package</span> on each
+                                  activity you want. All activities are booked for{" "}
+                                  <span className="fw-semibold text-dark">
+                                    {formatDateToDDMMYYYY(tourDate) || formatDateToDDMMYYYY(travelDate) || "the travel date"}
+                                  </span>
+                                  ; the day-wise itinerary is arranged on the booking page.
+                                </div>
+                              </div>
+                            </div>
+                            <div className="text-end small">
+                              <div className="text-muted">Activities in package</div>
+                              <div className="fw-bold text-dark">{packageActivities.length}</div>
+                            </div>
+                          </div>
+
+                          {hotelGateLocked && (
+                            <div className="myop-v2-hint myop-v2-hint--warning small">
+                              <FaInfoCircle className="mt-1 flex-shrink-0" />
+                              <span>
+                                No hotel room is in your package yet, so the{" "}
+                                <span className="fw-semibold">Add to Package</span> buttons below are
+                                disabled.{" "}
+                                {wizardSteps.findIndex((s) => s.key === "accommodation") >= 0 && (
+                                  <button
+                                    type="button"
+                                    className="btn p-0 border-0 bg-transparent text-primary small text-decoration-none fw-semibold align-baseline"
+                                    onClick={() =>
+                                      setCurrentStepIdx(
+                                        wizardSteps.findIndex((s) => s.key === "accommodation")
+                                      )
+                                    }
+                                  >
+                                    Go back to the Hotel step
+                                  </button>
+                                )}{" "}
+                                and add a room first.
+                              </span>
+                            </div>
+                          )}
+
+                          {tourLoading && (
+                            <Card className="shadow-sm rounded-xl mb-4 myop-v2-static-card">
+                              <Card.Body className="text-center py-5">
+                                <div className="results-loader">
+                                  <div className="loader-ring">
+                                    <span></span><span></span><span></span><span></span>
+                                  </div>
+                                  <h4 className="text-primary fw-bold mt-3 mb-1">
+                                    Searching Activities...
+                                  </h4>
+                                  <p className="text-muted small mb-0">
+                                    Finding available activity options
+                                  </p>
+                                </div>
+                              </Card.Body>
+                            </Card>
+                          )}
+
+                          {!hasTourSearched && !tourLoading && (
+                            <div className="text-center text-muted py-4">
+                              <Spinner animation="border" className="mb-3" />
+                              <h6>Loading available activities…</h6>
+                            </div>
+                          )}
+
+                          {hasTourSearched && !tourLoading && tourResults.length > 0 && (
+                            <div>
+                              <h6 className="fw-bold mb-3">
+                                Tour &amp; Activity Results ({filteredTours.length})
+                              </h6>
+                              {filteredTours.length === 0 && (
+                                <div className="text-center text-muted py-4">
+                                  No activities found for the selected city.
+                                </div>
+                              )}
+                              <Row xs={1} md={2} xxl={3} className="g-4">
+                                {filteredTours.map((activity) => (
+                                  <Col key={activity.id}>
+                                    <div
+                                      className={`myop-v2-result-card h-100 d-flex flex-column ${isActivityInPackage(activity) ? "is-added" : ""}`.trim()}
+                                    >
+                                      <div className="myop-v2-ratio-16x9">
+                                        <LazyImage
+                                          src={activity.activityImage}
+                                          alt={activity.activityName}
+                                        />
+                                        <div
+                                          className="myop-v2-media-badge"
+                                          style={{ top: "10px", right: "10px", fontSize: "12px" }}
+                                        >
+                                          {activity.starRating > 0 && (
+                                            <>
+                                              <FaStar className="text-warning me-1" />
+                                              {activity.starRating}
+                                            </>
+                                          )}
+                                          {activity.apiType && (
+                                            <span className="myop-v2-media-badge__api">
+                                              {activity.apiType.toUpperCase()}
+                                            </span>
+                                          )}
+                                        </div>
+                                        {isActivityInPackage(activity) && (
+                                          <div style={{ position: "absolute", top: "10px", left: "10px" }}>
+                                            <AddedPill />
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      <div className="d-flex flex-column flex-grow-1" style={{ padding: "16px", backgroundColor: "white" }}>
+                                        <h6
+                                          style={{
+                                            fontSize: "1rem",
+                                            fontWeight: "600",
+                                            marginBottom: "8px",
+                                            color: "#333",
+                                            lineHeight: "1.3",
+                                          }}
+                                        >
+                                          {activity.activityName || "Activity Name Not Available"}
+                                        </h6>
+
+                                        {activity.cityName && (
+                                          <span
+                                            className="d-inline-flex align-items-center bg-light text-dark border rounded-pill px-2 py-1 mb-2 align-self-start"
+                                            style={{ fontSize: "0.72rem", fontWeight: 500 }}
+                                          >
+                                            <FaMapMarkerAlt
+                                              className="text-primary me-1"
+                                              style={{ fontSize: "0.7rem" }}
+                                            />
+                                            {activity.cityName}
                                           </span>
-                                        </OverlayTrigger>
+                                        )}
+
+                                        {activity.duration && (
+                                          <div
+                                            style={{
+                                              fontSize: "0.875rem",
+                                              color: "#666",
+                                              marginBottom: "10px",
+                                            }}
+                                          >
+                                            <FaTicketAlt className="text-info me-2" />
+                                            Duration: {activity.duration}
+                                          </div>
+                                        )}
+
+                                        {/* "Rate Available" badge dropped — the
+                                            actual price ("AED …") is rendered
+                                            right below, so the affirmative label
+                                            was redundant noise. The "Rate on
+                                            Request" case is kept because it
+                                            surfaces real info for the operator
+                                            (no bookable price on this activity
+                                            yet). */}
+                                        {activity.totalRate > 0 ? null : (
+                                          <div
+                                            className="align-self-start"
+                                            style={{
+                                              backgroundColor: "#6c757d",
+                                              color: "white",
+                                              padding: "3px 8px",
+                                              borderRadius: "4px",
+                                              fontSize: "0.72rem",
+                                              fontWeight: "500",
+                                              display: "inline-block",
+                                              marginBottom: "10px",
+                                            }}
+                                          >
+                                            Rate on Request
+                                          </div>
+                                        )}
+
+                                        <div className="myop-v2-card-footer mt-auto">
+                                          <div
+                                            style={{
+                                              fontSize: "1.2rem",
+                                              fontWeight: "600",
+                                              color: "#333",
+                                            }}
+                                          >
+                                            {activity.totalRate > 0
+                                              ? `${activity.currency} ${activity.totalRate.toLocaleString()}`
+                                              : "-"}
+                                          </div>
+
+                                          <div className="d-flex gap-2 align-items-center">
+                                            <Button
+                                              variant="info"
+                                              size="sm"
+                                              onClick={() => {
+                                                setSelectedActivity(activity);
+                                                setShowActivityModal(true);
+                                              }}
+                                              style={{
+                                                minWidth: "36px",
+                                                padding: "5px 7px",
+                                                display: "flex",
+                                                alignItems: "center",
+                                                justifyContent: "center",
+                                              }}
+                                              title="View Details"
+                                            >
+                                              <FaEye size={13} />
+                                            </Button>
+                                              <OverlayTrigger
+                                                placement="top"
+                                                overlay={
+                                                  !hasHotelInCart ? (
+                                                    <Tooltip id={`tooltip-activity-${activity.id}`}>
+                                                      Add a hotel room on the Hotel step first — activities unlock once a room is in your package
+                                                    </Tooltip>
+                                                  ) : <></>
+                                                }
+                                              >
+                                                <span className="d-inline-block">
+                                                  <Button
+                                              variant="primary"
+                                              size="sm"
+                                              className="activity-add-to-cart"
+                                              disabled={
+                                                addingActivityId ===
+                                                  (activity.id || activity.activityId) ||
+                                                !hasHotelInCart
+                                              }
+                                              title={!hasHotelInCart ? "Add a hotel room on the Hotel step first — activities unlock once a room is in your package" : ""}
+                                              onClick={() => handleAddActivityToCart(activity)}
+                                            >
+                                              {addingActivityId ===
+                                              (activity.id || activity.activityId) ? (
+                                                <>
+                                                  <Spinner
+                                                    animation="border"
+                                                    size="sm"
+                                                    className="me-2"
+                                                  />
+                                                  Adding...
+                                                </>
+                                              ) : (
+                                                "Add to Package"
+                                              )}
+                                                </Button>
+                                              </span>
+                                            </OverlayTrigger>
+                                          </div>
+                                        </div>
                                       </div>
                                     </div>
-                                  </div>
-                                </div>
-                              </Col>
-                            ))}
-                          </Row>
-                        </div>
-                      )}
+                                  </Col>
+                                ))}
+                              </Row>
+                            </div>
+                          )}
 
-                      {hasTourSearched && !tourLoading && tourResults.length === 0 && (
-                        <div className="text-center text-muted mt-5">
-                          <FaTicketAlt className="fs-1 mb-3 text-secondary" />
-                          <h6>No activities found for the selected date.</h6>
-                          <p className="small">
-                            Please try different dates or contact support.
-                          </p>
-                        </div>
-                      )}
-                    </Card.Body>
-                  </Card>
-              )}
+                          {hasTourSearched && !tourLoading && tourResults.length === 0 && (
+                            <div className="text-center text-muted py-4">
+                              <FaTicketAlt className="fs-1 mb-3 text-secondary" />
+                              <h6>No activities found for the selected date.</h6>
+                              <p className="small">
+                                Please try different dates or contact support.
+                              </p>
+                            </div>
+                          )}
+                        </Card.Body>
+                      </Card>
+                  )}
 
-              {/* (Old "Add-ons" monolithic step removed — each service is
-                  now its own wizard step before the search steps.) */}
+                  {/* (Old "Add-ons" monolithic step removed — each service is
+                      now its own wizard step before the search steps.) */}
+                </Card.Body>
+              </Card>
 
               {/* ═══════════════════════════════════════
-                  WIZARD NAVIGATION BUTTONS
+                  RECOMMENDED EXISTING PACKAGES — read-only suggestions
+                  Rendered only after the wizard's own search has completed
+                  (hasSearched) and only when the Package Search rules match
+                  at least one ready-made package for the same criteria.
+                  Never touches the cart or the results above. Hidden on
+                  the add-on detail steps (pure forms) so it sits under
+                  results, not under a Yes/No questionnaire.
               ═══════════════════════════════════════ */}
-              <div className="d-flex justify-content-between mt-4">
+              {currentWizardStep?.type !== "addon" && (
+              <MyopV2PackageSuggestions
+                enabled={hasSearched}
+                criteria={searchCriteria}
+                checkIn={checkIn}
+                checkOut={checkOut}
+                nightsCount={nightsCount}
+                adultCount={adultCount}
+                childCount={childCount}
+                childAges={childAges}
+                agentId={suggestionAgentId}
+              />
+              )}
+
+              {/* ═══════════════════════════════════════
+                  WIZARD NAVIGATION — sticky bar below the wizard card
+                  (outside the card because the global .card rule clips
+                  overflow, which would make position:sticky inert).
+              ═══════════════════════════════════════ */}
+              <div className="myop-v2-wizard-nav">
                 <Button
                   variant="outline-secondary"
                   onClick={() => setCurrentStepIdx((i) => Math.max(0, i - 1))}
                   disabled={currentStepIdx === 0}
                 >
-                  ← Back
+                  <FaArrowLeft className="me-2" />
+                  Back
                 </Button>
+                <div className="myop-v2-wizard-nav__center small">
+                  {isTransferStepActive &&
+                  (transferZoneErrors.pickup || transferZoneErrors.dropoff) ? (
+                    <span className="text-danger fw-semibold">
+                      {[transferZoneErrors.pickup, transferZoneErrors.dropoff]
+                        .filter(Boolean)
+                        .join(" ")}
+                    </span>
+                  ) : (
+                    <span className="text-muted">
+                      {packageCount} item{packageCount === 1 ? "" : "s"} in your package
+                      {isLastWizardStep && hotelGateLocked ? " · add a hotel room to proceed" : ""}
+                    </span>
+                  )}
+                </div>
                 <Button
                   // Brand red — matches btn-search-modern and the step
                   // indicator above. Was indigo #6366f1.
                   style={{ background: "#EC0B43", borderColor: "#EC0B43", minWidth: 180 }}
                   disabled={isProceeding}
-                  onClick={async () => {
-                    // ── Transfer step: pickup + dropoff are required
-                    // before leaving this step (whether moving to the
-                    // next wizard step or proceeding to booking).
-                    // Single-city keeps the original hard requirement.
-                    // Multi-city validates pickup/dropoff per cab at
-                    // add-to-cart time (each city has its own selection),
-                    // so leaving the step doesn't force a global value.
-                    if (
-                      wizardSteps[currentStepIdx]?.key === "transfer" &&
-                      !isMultiCity
-                    ) {
-                      const nextErrors = {
-                        pickup: transferPickupZone ? "" : "Please select a pickup location.",
-                        dropoff: transferDropoffZone ? "" : "Please select a dropoff location.",
-                      };
-                      if (nextErrors.pickup || nextErrors.dropoff) {
-                        setTransferZoneErrors(nextErrors);
-                        toast.error("Please select both pickup and dropoff.");
-                        return;
-                      }
-                    }
-                    if (currentStepIdx < wizardSteps.length - 1) {
-                      setCurrentStepIdx((i) => i + 1);
-                      return;
-                    }
-                    // Last step → fetch the server-side cart, stash it
-                    // in sessionStorage (the booking page reads from
-                    // `makePkgCartData`), then navigate. Without this
-                    // the booking page sees no cart and bounces back to
-                    // the legacy entry route.
-                    setIsProceeding(true);
-                    try {
-                      const proceedAgentId =
-                        sessionStorage.getItem("makeYourOwnPackageAgentId") ||
-                        localStorage.getItem("makeYourOwnPackageAgentId") ||
-                        agent ||
-                        agentId ||
-                        "";
-                      if (!proceedAgentId) {
-                        toast.error("Select an agent before proceeding to checkout.");
-                        return;
-                      }
-                      const res = await axiosInstance.post(
-                        `/api/makeYourOwnPackageV2/cart/fetch?userId=${encodeURIComponent(proceedAgentId)}`
-                      );
-                      const cart = Array.isArray(res.data) ? res.data : [];
-                      if (cart.length === 0) {
-                        toast.error(
-                          "Your cart is empty. Add at least one hotel / transfer / activity before proceeding."
-                        );
-                        return;
-                      }
-                      if (v2Services.hotel && !cart.some((it) => !!it.hotel)) {
-                        toast.error(
-                          "Please add a hotel to your package before proceeding."
-                        );
-                        return;
-                      }
-                      sessionStorage.setItem(
-                        "makePkgCartData",
-                        JSON.stringify(cart)
-                      );
-                      sessionStorage.setItem("makePkgAgentId", String(proceedAgentId));
-                      navigate(
-                        "/new-booking/make-your-own-package-v2/booking-page",
-                        { state: searchCriteria }
-                      );
-                    } catch (err) {
-                      console.error("Proceed to booking failed:", err);
-                      toast.error("Failed to load cart data. Please try again.");
-                    } finally {
-                      setIsProceeding(false);
-                    }
-                  }}
+                  onClick={handleWizardNext}
                 >
                   {currentStepIdx < wizardSteps.length - 1 ? (
-                    "Next →"
+                    <>
+                      Next
+                      <FaArrowRight className="ms-2" />
+                    </>
                   ) : isProceeding ? (
                     <>
                       <Spinner animation="border" size="sm" className="me-2" />
                       Loading cart…
                     </>
                   ) : (
-                    "Proceed to Booking →"
+                    <>
+                      Proceed to Booking
+                      <FaArrowRight className="ms-2" />
+                    </>
                   )}
                 </Button>
               </div>
-            </Card.Body>
-          </Card>
+            </Col>
+          </Row>
 
           {/* ═══════════════════════════════════════
               ACTIVITY DETAILS MODAL
@@ -3959,6 +4596,7 @@ const [activeAccordion, setActiveAccordion] = useState({});
             }}
             size="lg"
             centered
+            scrollable
           >
             <Modal.Header closeButton>
               <Modal.Title>Activity Details</Modal.Title>
@@ -4082,6 +4720,23 @@ const [activeAccordion, setActiveAccordion] = useState({});
                       </Badge>
                     </div>
                   </div>
+
+                  {/* The add action stays on the activity card (it depends
+                      on the "hotel first" gate); tell the operator where to
+                      find it instead of offering a button that only closes
+                      the dialog. */}
+                  <div className="text-muted small mt-3">
+                    {isActivityInPackage(selectedActivity) ? (
+                      <span className="text-success fw-semibold">
+                        <FaCheck className="me-1" /> This activity is already in your package.
+                      </span>
+                    ) : (
+                      <>
+                        To include this activity, close this window and use{" "}
+                        <span className="fw-semibold">Add to Package</span> on its card.
+                      </>
+                    )}
+                  </div>
                 </>
               )}
             </Modal.Body>
@@ -4094,15 +4749,6 @@ const [activeAccordion, setActiveAccordion] = useState({});
                 }}
               >
                 Close
-              </Button>
-              <Button
-                variant="primary"
-                onClick={() => {
-                  setShowActivityModal(false);
-                  setSelectedActivity(null);
-                }}
-              >
-                Select Activity
               </Button>
             </Modal.Footer>
           </Modal>
