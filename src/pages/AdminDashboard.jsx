@@ -209,7 +209,7 @@ export default function AdminDashboard() {
               <h1 className="adm-title">Admin Dashboard</h1>
               <p className="adm-sub">A clear, real-time view of bookings, revenue and your partner network.</p>
             </div>
-            <RegionalClock />
+            <RegionalClock countryCode="AE" serverTimeUrl="/api/dashboard/uae-time" />
           </header>
 
           {/* ── Quick Actions (restored) ── */}
