@@ -18,6 +18,9 @@ import {
   FaMapMarkerAlt,
   FaMoon,
   FaUtensils,
+  FaFileInvoice,
+  FaFilePdf,
+  FaDownload,
 } from "react-icons/fa";
 import PaxInformation from "./tabs/PaxInformation";
 // Abandoned-package-search follow-up email — flags the history row as
@@ -324,6 +327,18 @@ const PackageCheckout = () => {
 
   const [showPolicyModal, setShowPolicyModal] = useState(false);
 
+  // ── Quotation PDF ───────────────────────────────────────────────────
+  // Pre-booking quotation the operator can share with the customer from the
+  // sidebar's Quotation card. Rendered server-side by
+  // POST /api/v1/package-booking/quotation-pdf from this page's selections
+  // and Total Price; nothing is booked, held or charged. The last result is
+  // kept so re-opening the preview with unchanged selections shows the same
+  // quotation instead of issuing a new number.
+  const [showQuotationModal, setShowQuotationModal] = useState(false);
+  const [isGeneratingQuotation, setIsGeneratingQuotation] = useState(false);
+  const [quotation, setQuotation] = useState(null);
+  const lastQuotationRef = useRef(null);
+
   const handlePrev = () => {
     navigate(`/new-booking/package-booking/${id}`, {
       state: {
@@ -488,6 +503,138 @@ const PackageCheckout = () => {
     }
     return parts;
   })();
+
+  // ── Quotation PDF handlers ──────────────────────────────────────────
+  // Everything the quotation prints about the trip comes from this page's
+  // own state: the selected hotel / room / meal plan, the Booking Summary's
+  // dates, guests and nationality, and the Total Price card's breakdown
+  // (computePackageTotal). The backend adds the package's itinerary,
+  // inclusions, exclusions, cancellation policy and terms from the master.
+  const buildQuotationPayload = () => {
+    const lead = paxInfoRef.current?.getLeadTraveller?.() || null;
+    const leadNames = lead
+      ? [lead.firstName, lead.middleName, lead.lastName]
+          .map((p) => (p ? String(p).trim() : ""))
+          .filter(Boolean)
+      : [];
+    // The quote is addressed to the Lead traveller only once a name has been
+    // typed in; until then the PDF prints "To be advised".
+    const leadName = leadNames.length
+      ? [lead.title ? String(lead.title).trim() : "", ...leadNames]
+          .filter(Boolean)
+          .join(" ")
+      : "";
+    const hotelNights = parseInt(selectedHotel?.noOfnight, 10);
+    return {
+      packageId: Number(id) || null,
+      agentId: Number(bookingData.searchParams?.agentId) || null,
+      packageName: packageData?.packageName || packageView?.packageName || null,
+      packageCategoryName: bookingData.searchParams?.packageCategoryName || null,
+      travelDate: bookingData.searchParams?.travelDate || null,
+      adultCount: Number(bookingData.searchParams?.adultCount) || 0,
+      childCount: Number(bookingData.searchParams?.childCount) || 0,
+      infantCount: Number(bookingData.searchParams?.infantCount) || 0,
+      childAge: bookingData.searchParams?.childAge || "",
+      nationality: heroNationality !== "—" ? heroNationality : null,
+      customerName: leadName || null,
+      customerEmail: leadName ? lead?.email?.trim() || null : null,
+      customerMobile: leadName ? lead?.mobile?.trim() || null : null,
+      currency: "AED",
+      hotelId: selectedHotel?.hotelId ?? null,
+      hotelName: selectedHotel?.hotelName || null,
+      hotelCity: selectedHotel?.stateName || null,
+      roomType: selectedHotel?.roomTypeName || null,
+      hotelNights: Number.isFinite(hotelNights) ? hotelNights : null,
+      mealPlan: bookingData.selections?.selectedMealPlan?.label || null,
+      cabName:
+        bookingData.selections?.selectedCab?.cabName ||
+        bookingData.selections?.selectedCab?.name ||
+        null,
+      activityName:
+        bookingData.selections?.selectedActivity?.activityName ||
+        bookingData.selections?.selectedActivity?.name ||
+        null,
+      accommodationAmount: priceBreakdown.accommodation,
+      mealPlanAmount: priceBreakdown.mealPlan,
+      cabAmount: priceBreakdown.cab,
+      activityAmount: priceBreakdown.activity,
+      totalAmount: totalPrice,
+    };
+  };
+
+  const openQuotation = async () => {
+    if (!selectedHotel) {
+      toast.error("Please select a hotel before generating a quotation.");
+      return;
+    }
+    const payload = buildQuotationPayload();
+    // Same selections on the same day → same quotation. Any change (meal
+    // plan, lead traveller, price, date) generates a fresh one.
+    const cacheKey = JSON.stringify({
+      payload,
+      day: new Date().toDateString(),
+    });
+    setShowQuotationModal(true);
+    if (lastQuotationRef.current?.key === cacheKey) {
+      setQuotation(lastQuotationRef.current.data);
+      return;
+    }
+    setQuotation(null);
+    setIsGeneratingQuotation(true);
+    try {
+      const res = await axiosInstance.post(
+        "/api/v1/package-booking/quotation-pdf",
+        payload,
+      );
+      const body = res?.data || {};
+      if (body.status === "SUCCESS" && body.pdfUrl) {
+        const data = {
+          pdfUrl: body.pdfUrl,
+          quotationNumber: body.quotationNumber || "",
+          quotationDate: body.quotationDate || "",
+          validUntil: body.validUntil || "",
+        };
+        lastQuotationRef.current = { key: cacheKey, data };
+        setQuotation(data);
+      } else {
+        toast.error(body.message || "Failed to generate quotation PDF");
+      }
+    } catch (err) {
+      console.error("Quotation generation failed:", err);
+      toast.error(
+        err?.response?.data?.message || "Failed to generate quotation PDF",
+      );
+    } finally {
+      setIsGeneratingQuotation(false);
+    }
+  };
+
+  const closeQuotation = () => setShowQuotationModal(false);
+
+  // Downloads through a blob so the file keeps its Quotation_<number>.pdf
+  // name: browsers ignore `download` on the cross-origin /files URL and would
+  // navigate this tab away from checkout. If the fetch is blocked, the PDF
+  // opens in a new tab instead so the operator can still save it.
+  const handleDownloadQuotation = async () => {
+    if (!quotation?.pdfUrl) return;
+    const fileName = `Quotation_${quotation.quotationNumber || id}.pdf`;
+    try {
+      const res = await fetch(quotation.pdfUrl);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Quotation download failed:", err);
+      window.open(quotation.pdfUrl, "_blank", "noopener,noreferrer");
+    }
+  };
 
   return (
     <div className="min-vh-100 bg-light d-flex flex-column hotel-booking-container room-list-container">
@@ -702,6 +849,49 @@ const PackageCheckout = () => {
                     )}
                   </div>
 
+                  {/* Quotation — pre-booking price quote for the customer,
+                      placed under the Total Price it quotes and above the
+                      booking decision. Same card shell as the Package
+                      Actions card on the Package Details page. Only offered
+                      once a hotel is selected, and not while amending an
+                      existing booking (a quotation precedes a booking). */}
+                  {selectedHotel && !editingBookingId && (
+                    <div className="sidebar-actions-card">
+                      <div className="sidebar-actions-title">
+                        <FaFileInvoice className="me-2" />
+                        Quotation
+                      </div>
+                      <div className="sidebar-actions-note">
+                        Share this package and price with your customer before
+                        confirming. No booking is made.
+                      </div>
+                      <div className="d-grid gap-2 mt-2">
+                        <Button
+                          size="sm"
+                          variant="outline-primary"
+                          onClick={openQuotation}
+                          disabled={isGeneratingQuotation}
+                        >
+                          {isGeneratingQuotation ? (
+                            <>
+                              <Spinner
+                                animation="border"
+                                size="sm"
+                                className="me-2"
+                              />
+                              Generating…
+                            </>
+                          ) : (
+                            <>
+                              <FaFilePdf className="me-2" />
+                              Quotation PDF
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Cancellation Policies link — same button + class as the
                       Package Details page's sidebar so the popup styling is
                       inherited. */}
@@ -821,6 +1011,43 @@ const PackageCheckout = () => {
                     display: block;
                     width: 100%;
                     margin-top: 16px;
+                  }
+                  /* Quotation card — same shell as the Package Actions card
+                     on the Package Details page (PackageBooking.jsx) so the
+                     two steps' sidebars match. */
+                  .sidebar-actions-card {
+                    border: 1px solid var(--rl-border, #e2e8f0);
+                    border-radius: 14px;
+                    padding: 14px 16px;
+                    background: var(--rl-card, #ffffff);
+                    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+                    margin-top: 16px;
+                  }
+                  .sidebar-actions-title {
+                    display: flex;
+                    align-items: center;
+                    font-weight: 600;
+                    font-size: 0.85rem;
+                    color: #1e293b;
+                    margin-bottom: 4px;
+                  }
+                  .sidebar-actions-note {
+                    font-size: 0.78rem;
+                    line-height: 1.35;
+                    color: #64748b;
+                  }
+                  /* Quotation preview frame — same neutral backdrop and
+                     height as the voucher / invoice previews on the booking
+                     detail page. */
+                  .pkg-quote-preview {
+                    background: #f8fafc;
+                    min-height: 520px;
+                  }
+                  .pkg-quote-preview iframe {
+                    display: block;
+                    width: 100%;
+                    height: 520px;
+                    border: none;
                   }
                   .sidebar-policy-card {
                     border: 1px solid var(--rl-border, #e2e8f0);
@@ -1044,6 +1271,74 @@ const PackageCheckout = () => {
             variant="outline-secondary"
             onClick={() => setShowPolicyModal(false)}
           >
+            Close
+          </Button>
+        </Modal.Footer>
+      </Modal>
+
+      {/* Quotation PDF preview — same iframe + Download layout as the
+          Voucher / Tax Invoice modals on the package booking detail page. */}
+      <Modal
+        show={showQuotationModal}
+        onHide={closeQuotation}
+        centered
+        size="xl"
+        backdrop="static"
+      >
+        <Modal.Header closeButton>
+          <Modal.Title className="d-flex align-items-center gap-2">
+            <FaFileInvoice />
+            <span className="fw-bold">Package Quotation</span>
+          </Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <div className="mb-3 d-flex justify-content-between align-items-start flex-wrap gap-2">
+            <div className="text-muted small">
+              <div className="fw-bold text-dark">
+                {quotation?.quotationNumber ||
+                  (isGeneratingQuotation ? "Generating quotation…" : "Quotation")}
+              </div>
+              <div>
+                {packageData?.packageName || packageView?.packageName || ""}
+                {quotation?.validUntil
+                  ? ` · Valid until ${quotation.validUntil}`
+                  : ""}
+              </div>
+            </div>
+            <Button
+              variant="outline-primary"
+              size="sm"
+              onClick={handleDownloadQuotation}
+              disabled={isGeneratingQuotation || !quotation?.pdfUrl}
+            >
+              <FaDownload className="me-2" /> Download PDF
+            </Button>
+          </div>
+
+          <div className="border rounded mb-2 pkg-quote-preview">
+            {isGeneratingQuotation && (
+              <div className="text-center text-muted py-5">
+                <Spinner animation="border" size="sm" className="me-2" />
+                Generating quotation PDF...
+              </div>
+            )}
+            {!isGeneratingQuotation && quotation?.pdfUrl && (
+              <iframe src={quotation.pdfUrl} title="Package Quotation" />
+            )}
+            {!isGeneratingQuotation && !quotation?.pdfUrl && (
+              <div className="text-center text-muted py-5">
+                Quotation preview unavailable. Close this window and try
+                again.
+              </div>
+            )}
+          </div>
+          <div className="small text-muted">
+            A quotation does not create a booking or hold the package. Prices
+            and availability are confirmed only when the booking is made.
+          </div>
+        </Modal.Body>
+        <Modal.Footer className="border-0">
+          <Button variant="secondary" onClick={closeQuotation}>
             Close
           </Button>
         </Modal.Footer>

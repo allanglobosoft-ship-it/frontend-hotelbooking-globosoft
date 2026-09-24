@@ -827,7 +827,13 @@ const PaxInformation = forwardRef(({
     setShowTermsModal(true);
   };
 
-  useImperativeHandle(ref, () => ({ triggerConfirmClick }));
+  // getLeadTraveller lets PackageCheckout's Quotation PDF address the quote
+  // to the Lead-marked traveller (the same row /book uses as contactInfo).
+  // Read-only: returns the current row and changes no state.
+  useImperativeHandle(ref, () => ({
+    triggerConfirmClick,
+    getLeadTraveller: () => primary || null,
+  }));
 
   return (
     <div className="tab-pane-active">
