@@ -1,0 +1,328 @@
+/* Booking-code search pinned above the sidebar menu (BookingCodeSearch.jsx).
+   Only the sidebar's existing palette: brand red #EC0B43 + tint #FDE7ED
+   (custom.scss), slate text #111827 / #6b7280 / #9ca3af, #e5e7eb borders,
+   and the booking lists' status colours. Every rule is scoped under .bcs
+   because CRA bundles all page stylesheets globally. */
+
+/* RoomList.css ships an unscoped `* { transition: all .3s }`; opt out so
+   keyboard highlighting is instant, then opt back in where it helps. */
+.bcs,
+.bcs * {
+  transition: none;
+}
+
+.bcs {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ── Field ─────────────────────────────────────────────────────────── */
+
+.bcs-field {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f9fafb;
+  transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
+}
+
+.bcs-field:hover {
+  border-color: #d1d5db;
+}
+
+.bcs-field:focus-within {
+  border-color: #EC0B43;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(236, 11, 67, .12);
+}
+
+.bcs-icon {
+  flex: none;
+  margin-left: 9px;
+  color: #9ca3af;
+}
+
+.bcs-field:focus-within .bcs-icon {
+  color: #EC0B43;
+}
+
+.bcs .bcs-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0 6px 0 7px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  box-shadow: none;
+  color: #111827;
+  font-size: .8rem;
+}
+
+.bcs .bcs-input::placeholder {
+  color: #9ca3af;
+  opacity: 1;
+}
+
+.bcs-trailing {
+  flex: none;
+  margin-right: 9px;
+  color: #9ca3af;
+}
+
+/* Overrides Bootstrap's dark <kbd>. */
+.bcs .bcs-kbd {
+  flex: none;
+  min-width: 18px;
+  height: 18px;
+  margin-right: 7px;
+  padding: 0 5px;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  background: #fff;
+  color: #6b7280;
+  font-size: .68rem;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+
+.bcs-clear {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 5px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #9ca3af;
+  cursor: pointer;
+}
+
+.bcs-clear:hover {
+  background: #f3f4f6;
+  color: #111827;
+}
+
+.bcs-spin {
+  animation: bcs-spin .8s linear infinite;
+}
+
+@keyframes bcs-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Suggestions panel ─────────────────────────────────────────────── */
+
+/* Wider than the sidebar and dropped over the page, like the menu's
+   flyout submenus (same border, radius and shadow). */
+.bcs-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 1060;
+  width: 23rem;
+  max-width: calc(100vw - 2rem);
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  border-radius: .75rem;
+  background: #fff;
+  box-shadow: 0 20px 25px rgba(0, 0, 0, .1);
+}
+
+.bcs-list {
+  max-height: min(24rem, calc(100vh - 12rem));
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-width: thin;
+}
+
+/* Previous suggestions stay visible, dimmed, while the next ones load. */
+.bcs-list.is-stale {
+  opacity: .55;
+}
+
+.bcs-option {
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color .12s ease;
+}
+
+.bcs-option + .bcs-option {
+  margin-top: 2px;
+}
+
+.bcs-option.is-active {
+  background: #FDE7ED;
+}
+
+.bcs-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.bcs-code {
+  min-width: 0;
+  overflow: hidden;
+  color: #111827;
+  font-size: .82rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The typed part of the code, in brand red. */
+.bcs .bcs-code mark {
+  padding: 0;
+  background: transparent;
+  color: #EC0B43;
+  font-weight: 700;
+}
+
+.bcs-type {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #6b7280;
+  font-size: .66rem;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.bcs-option.is-active .bcs-type {
+  background: #fff;
+}
+
+.bcs-status {
+  flex: none;
+  margin-left: auto;
+  padding-left: 4px;
+  font-size: .72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.bcs-status.is-ok {
+  color: #06a301;
+}
+
+.bcs-status.is-danger {
+  color: #dc3545;
+}
+
+.bcs-status.is-pending {
+  color: #e67e22;
+}
+
+.bcs-status.is-muted {
+  color: #6c757d;
+}
+
+.bcs-meta {
+  margin-top: 2px;
+  overflow: hidden;
+  color: #6b7280;
+  font-size: .74rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Loading / empty / error / hint messages. */
+.bcs-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px;
+  color: #6b7280;
+  font-size: .78rem;
+  line-height: 1.45;
+}
+
+.bcs-state.is-error {
+  color: #dc3545;
+}
+
+.bcs-state-icon {
+  flex: none;
+  margin-top: 1px;
+  color: #9ca3af;
+}
+
+.bcs-state-title {
+  margin-bottom: 2px;
+  color: #111827;
+  font-weight: 600;
+}
+
+.bcs-footer {
+  display: flex;
+  gap: 14px;
+  padding: 7px 12px;
+  border-top: 1px solid #f3f4f6;
+  background: #f9fafb;
+  color: #9ca3af;
+  font-size: .68rem;
+}
+
+/* Overrides Bootstrap's dark <kbd>. */
+.bcs .bcs-panel kbd {
+  display: inline-block;
+  min-width: 16px;
+  margin-right: 3px;
+  padding: 0 4px;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  background: #fff;
+  color: #6b7280;
+  font-size: .64rem;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+}
+
+/* ── Mobile offcanvas: suggestions flow under the field ────────────── */
+
+.bcs--inline {
+  margin-bottom: .75rem;
+}
+
+.bcs--inline .bcs-panel {
+  position: static;
+  width: auto;
+  max-width: none;
+  margin-top: 6px;
+  box-shadow: none;
+}
+
+.bcs--inline .bcs-list {
+  max-height: none;
+}
+
+.bcs--inline .bcs-row {
+  flex-wrap: wrap;
+  row-gap: 3px;
+}
+
+/* Too narrow for code + type + status on one line: status gets its own. */
+.bcs--inline .bcs-status {
+  flex-basis: 100%;
+  margin-left: 0;
+  padding-left: 0;
+}

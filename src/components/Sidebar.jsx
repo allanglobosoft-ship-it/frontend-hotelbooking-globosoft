@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { FaAd, FaBrain, FaBullhorn, FaBullseye, FaFileAlt, FaImages, FaRobot, FaTags, FaUser } from "react-icons/fa";
 import axiosInstance from "./AxiosInstance";
+import BookingCodeSearch from "./BookingCodeSearch";
 
 
 let labelForDashboard = " ";
@@ -895,6 +896,51 @@ export default function Sidebar() {
     return next;
   });
 
+  // Booking-code search pinned above the menu. Same audience as Booking
+  // List (super_admin inherits it via roleAllows) and hideable per role from
+  // Assign Menu through its code.
+  const showBookingSearch = roleAllows({
+    code: "top_booking_search",
+    roles: ["admin", "agent", "staff"],
+  });
+  const bookingSearchInputRef = useRef(null);
+  const focusBookingSearchOnExpand = useRef(false);
+
+  // "/" (outside text fields) or Ctrl/⌘+K jumps to the booking search,
+  // re-opening a collapsed desktop sidebar first.
+  useEffect(() => {
+    if (!showBookingSearch) return undefined;
+    const handleShortcut = (event) => {
+      const key = String(event.key || "");
+      const isSlash = key === "/" && !event.ctrlKey && !event.metaKey && !event.altKey;
+      const isCtrlK = (event.ctrlKey || event.metaKey) && !event.altKey && key.toLowerCase() === "k";
+      if (!isSlash && !isCtrlK) return;
+      const target = event.target;
+      const isTyping =
+        target instanceof HTMLElement &&
+        (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
+      if (isSlash && isTyping) return;
+      if (window.innerWidth <= 991) return; // desktop sidebar only
+      event.preventDefault();
+      if (collapsed) {
+        focusBookingSearchOnExpand.current = true;
+        setCollapsed(false);
+        localStorage.setItem("sidebarCollapsed", "false");
+      } else {
+        bookingSearchInputRef.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", handleShortcut);
+    return () => document.removeEventListener("keydown", handleShortcut);
+  }, [showBookingSearch, collapsed]);
+
+  useEffect(() => {
+    if (!collapsed && focusBookingSearchOnExpand.current) {
+      focusBookingSearchOnExpand.current = false;
+      bookingSearchInputRef.current?.focus();
+    }
+  }, [collapsed]);
+
   const toggleGroup = (groupKey, isTopLevelItem = false) => {
     console.log("Toggling group:", groupKey, "isTopLevelItem:", isTopLevelItem); // Debug log
     setOpenGroups((prev) => {
@@ -966,6 +1012,39 @@ export default function Sidebar() {
     });
   };
 
+  // Collapse control — pinned to the top-right corner of the sidebar
+  // (previous UI). Closing the sidebar hands the toggle back to the button
+  // next to the Globosoft logo in TopBar. When the booking search is shown,
+  // the two share the first row instead.
+  const collapseButton = (
+    <button
+      type="button"
+      onClick={toggleCollapsed}
+      aria-label="Collapse sidebar"
+      title="Collapse sidebar"
+      style={{
+        ...(showBookingSearch
+          ? { flex: "none" }
+          : { position: "absolute", top: 8, right: 8, zIndex: 5 }),
+        border: "1px solid var(--color-border, #e5e7eb)",
+        background: "#fff",
+        color: "#EC0B43",
+        width: showBookingSearch ? 32 : 30,
+        height: showBookingSearch ? 32 : 30,
+        borderRadius: 8,
+        cursor: "pointer",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: 18,
+        fontWeight: 700,
+        lineHeight: 1,
+      }}
+    >
+      «
+    </button>
+  );
+
   return (
     <>
       {/* Sidebar for large screens */}
@@ -983,36 +1062,18 @@ export default function Sidebar() {
           // zIndex: 100,
         }}
       >
-        {/* Collapse control — pinned to the top-right corner of the sidebar
-            (previous UI). Closing the sidebar hands the toggle back to the
-            button next to the Globosoft logo in TopBar. */}
-        <button
-          type="button"
-          onClick={toggleCollapsed}
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar"
-          style={{
-            position: "absolute",
-            top: 8,
-            right: 8,
-            zIndex: 5,
-            border: "1px solid var(--color-border, #e5e7eb)",
-            background: "#fff",
-            color: "#EC0B43",
-            width: 30,
-            height: 30,
-            borderRadius: 8,
-            cursor: "pointer",
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 18,
-            fontWeight: 700,
-            lineHeight: 1,
-          }}
-        >
-          «
-        </button>
+        {showBookingSearch ? (
+          <div className="sidebar-search-row">
+            <BookingCodeSearch
+              inputRef={bookingSearchInputRef}
+              showAgent={currentRole !== "agent"}
+              onActivate={() => setOpenGroups({})}
+            />
+            {collapseButton}
+          </div>
+        ) : (
+          collapseButton
+        )}
         <Nav className="flex-column" style={{ paddingTop: 6 }}>
           {filteredItems.map((item) => {
             const hasChildren =
@@ -1254,6 +1315,14 @@ export default function Sidebar() {
           <Offcanvas.Title>Globosoft</Offcanvas.Title>
         </Offcanvas.Header>
         <Offcanvas.Body ref={offcanvasRef}>
+          {showBookingSearch && (
+            <BookingCodeSearch
+              inline
+              showAgent={currentRole !== "agent"}
+              onActivate={() => setOpenGroups({})}
+              onNavigate={handleClose}
+            />
+          )}
           <Nav className="flex-column">
             {filteredItems.map((item) => {
               const hasChildren =

@@ -38,3 +38,29 @@ aside.sidebar .nav-item-custom > .nav-link {
   margin: 0 !important;
   line-height: 1.8 !important;
 }
+
+/* Booking-code search (BookingCodeSearch.jsx) and the collapse button
+   share the first row above the menu. */
+aside.sidebar .sidebar-search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+/* That row costs ~38px of height, and the aside can't scroll (its flyout
+   submenus would be clipped), so on short desktop viewports tighten the
+   rows to keep the last group (Marketing) reachable. Tall screens are
+   unchanged. */
+@media (min-width: 992px) and (max-height: 720px) {
+  aside.sidebar .nav-item-custom > .nav-link {
+    line-height: 1.5 !important;
+  }
+}
+
+@media (min-width: 992px) and (max-height: 640px) {
+  aside.sidebar .nav-item-custom > .nav-link {
+    padding-top: 0.2rem !important;
+    padding-bottom: 0.2rem !important;
+  }
+}
