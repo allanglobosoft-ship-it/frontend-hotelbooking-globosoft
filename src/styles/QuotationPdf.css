@@ -1,0 +1,50 @@
+/* Quotation PDF action (components/quotation/QuotationPdfCard.jsx), shared by
+   the New Booking flows' booking pages. Every class is prefixed "qpdf-"
+   because CRA bundles all stylesheets globally. The card shell matches the
+   Quotation card on the Package Checkout page. */
+.qpdf-card {
+  border: 1px solid var(--rl-border, #e2e8f0);
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: var(--rl-card, #ffffff);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+  margin-top: 16px;
+}
+
+.qpdf-title {
+  display: flex;
+  align-items: center;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #1e293b;
+  margin-bottom: 4px;
+}
+
+.qpdf-note {
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: #64748b;
+}
+
+/* The preview can open on top of a page's own modal (e.g. a booking summary
+   modal), so it stacks one level above Bootstrap's default modal layer. */
+.qpdf-modal {
+  z-index: 1065;
+}
+
+.qpdf-modal-backdrop {
+  z-index: 1060;
+}
+
+/* Same neutral backdrop and height as the voucher / invoice previews. */
+.qpdf-preview {
+  background: #f8fafc;
+  min-height: 520px;
+}
+
+.qpdf-preview iframe {
+  display: block;
+  width: 100%;
+  height: 520px;
+  border: none;
+}

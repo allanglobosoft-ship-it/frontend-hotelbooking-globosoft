@@ -29,6 +29,7 @@ import { toast } from "react-hot-toast";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import AgentBalanceDisplay from "../../components/AgentBalanceDisplay";
+import QuotationPdfCard from "../../components/quotation/QuotationPdfCard";
 import "../../styles/HotelBookingPage.css";
 
 const emptyCabPolicies = {
@@ -1151,6 +1152,116 @@ const CabBookingPage = () => {
   const cardHeaderStyle = { backgroundColor: "#ffffff" };
   const routeArrow = " → ";
 
+  // ── Quotation PDF ─────────────────────────────────────────────────────
+  // Quotes what this page shows: the vehicle and trip rows of the Booking
+  // Summary and the Price Details (Selling Price, Tourism Dirhams, the HQ
+  // adjustment, Total) in AED, like formatPrice. Policy lines are the
+  // cab's own cancellations / terms loaded on this page.
+  const buildTransferQuotationPayload = () => {
+    if (!hasValidState) return null;
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const tdNum =
+      tourismDirham !== "" && !isNaN(Number(tourismDirham))
+        ? Number(tourismDirham)
+        : 0;
+    const hqNum =
+      hqAmount !== "" && !isNaN(Number(hqAmount)) ? Number(hqAmount) : 0;
+    const grandTotal = Number(totalRate || 0) + tdNum + hqNum;
+    const typeLabel =
+      selectedOption.types === "SIC"
+        ? "Shared (SIC)"
+        : selectedOption.types === "Private"
+          ? "Private Transfer"
+          : selectedOption.types || "";
+    const adults = Number(searchCriteria.adults) || 0;
+    const children = Number(searchCriteria.children) || 0;
+    const ages = Array.isArray(searchCriteria.childAges)
+      ? searchCriteria.childAges.filter((a) => a !== "" && a != null)
+      : [];
+    const route = [searchCriteria.pickupName, searchCriteria.dropoffName]
+      .filter(Boolean)
+      .join(" to ");
+
+    const leadNames = [leadGuest.firstName, leadGuest.middleName, leadGuest.lastName]
+      .map((p) => (p ? String(p).trim() : ""))
+      .filter(Boolean);
+    const leadName = leadNames.length
+      ? [leadGuest.salutation ? String(leadGuest.salutation).trim() : "", ...leadNames]
+          .filter(Boolean)
+          .join(" ")
+      : "";
+
+    const priceItems = [
+      {
+        description: `Transfer - ${cab.cabname || "Vehicle"}`,
+        details: [route, typeLabel].filter(Boolean).join(", "),
+        amount: round2(totalRate),
+      },
+    ];
+    if (tdNum > 0) {
+      priceItems.push({ description: "Tourism Dirhams", details: "", amount: round2(tdNum) });
+    }
+    if (hqNum !== 0) {
+      priceItems.push({ description: "Adjustment", details: "", amount: round2(hqNum) });
+    }
+
+    return {
+      bookingType: "TRANSFER",
+      agentId: Number(selectedAgentId) || null,
+      currency: "AED",
+      serviceName: cab.cabname || "Transfer",
+      serviceSubtitle: [
+        typeLabel,
+        cab.capacityMax != null ? `${cab.capacityMax} Seats` : "",
+      ]
+        .filter(Boolean)
+        .join(", "),
+      customerName: leadName || null,
+      customerEmail: leadName ? leadGuest.emailId || null : null,
+      customerMobile: leadName ? leadGuest.contactNumber || null : null,
+      details: [
+        { label: "Pickup", value: searchCriteria.pickupName || "" },
+        { label: "Drop Off", value: searchCriteria.dropoffName || "" },
+        {
+          label: "Transfer Date",
+          value: searchCriteria.pickupDate
+            ? formatTransferDate(searchCriteria.pickupDate)
+            : "",
+        },
+        {
+          label: "Pickup Time",
+          value: searchCriteria.pickupTime || searchCriteria.arrivalTime || "",
+        },
+        {
+          label: "Drop Time",
+          value: searchCriteria.dropoffTime
+            ? `${searchCriteria.dropoffTime} (Est.)`
+            : "",
+        },
+        { label: "Vehicle Type", value: typeLabel },
+        { label: "Adults", value: String(adults) },
+        {
+          label: "Children",
+          value: children
+            ? `${children}${ages.length ? ` (Ages ${ages.join(", ")})` : ""}`
+            : "0",
+        },
+        { label: "Nationality", value: searchCriteria.nationality?.label || "" },
+        { label: "Arrival Flight", value: pickupDetails.flightNo || "" },
+        { label: "Departure Flight", value: dropoffDetails.flightNo || "" },
+      ],
+      priceItems,
+      totalAmount: round2(grandTotal),
+      cancellationPolicy: Array.isArray(cabPolicies.cancellations)
+        ? cabPolicies.cancellations
+        : [],
+      notes: [
+        "Please arrive at the pickup point 10 minutes before the scheduled time.",
+        ...(Array.isArray(cabPolicies.terms) ? cabPolicies.terms : []),
+      ],
+    };
+  };
+
   return (
     <div className="min-vh-100 bg-light d-flex flex-column">
       <TopBar />
@@ -1920,6 +2031,13 @@ const CabBookingPage = () => {
                       })()}
                     </Card.Body>
                   </Card>
+
+                  {/* Quotation — under the Price Details it quotes, above
+                      the Confirm action bar. */}
+                  <QuotationPdfCard
+                    buildPayload={buildTransferQuotationPayload}
+                    disabled={isSubmitting}
+                  />
 
                   <div className="hbp-action-bar mt-3 d-flex gap-2">
                     <Button

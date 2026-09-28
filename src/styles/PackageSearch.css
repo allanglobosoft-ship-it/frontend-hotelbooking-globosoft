@@ -809,6 +809,46 @@
     }
 }
 
+/* "View All Packages" — top-right action in the search card's heading row
+   and in the collapsed summary strip. Outline twin of "Modify Search" (same
+   height, radius and type) in the page's existing red / white. Colours are
+   pinned via Bootstrap's button variables: its contrast check would
+   otherwise give #EC0B43 black hover text. */
+.btn.pkg-view-all-btn {
+    --bs-btn-color: #EC0B43;
+    --bs-btn-bg: #fff;
+    --bs-btn-border-color: #EC0B43;
+    --bs-btn-hover-color: #fff;
+    --bs-btn-hover-bg: #EC0B43;
+    --bs-btn-hover-border-color: #EC0B43;
+    --bs-btn-active-color: #fff;
+    --bs-btn-active-bg: #C90939;
+    --bs-btn-active-border-color: #C90939;
+    --bs-btn-disabled-color: #EC0B43;
+    --bs-btn-disabled-bg: #fff;
+    --bs-btn-disabled-border-color: #EC0B43;
+    --bs-btn-focus-shadow-rgb: 236, 11, 67;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    font-weight: 600;
+    font-size: .9rem;
+    padding: 7px 15px; /* + 1px border = the 8px 16px of "Modify Search" */
+    border-radius: 10px;
+    white-space: nowrap;
+}
+/* In the strip, follow "Modify Search" (order 2, pushed right by its
+   margin-left: auto) so this button sits at the far right. */
+.hs-summary-bar .pkg-view-all-btn {
+    order: 3;
+}
+@media (max-width: 575.98px) {
+    .hs-summary-bar .pkg-view-all-btn {
+        width: 100%;
+        justify-content: center;
+    }
+}
+
 /* ============================================================
    ROOMS & GUESTS FILTER
    Ported from /new-booking/hotel (HotelSearch.css) so the Package

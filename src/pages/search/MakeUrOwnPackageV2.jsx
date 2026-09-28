@@ -28,6 +28,7 @@ import {
 
 import { useNavigate } from "react-router-dom";
 import MyopV2JourneyStepper from "../../components/myopv2/MyopV2JourneyStepper";
+import MyopV2PackageSuggestions from "../../components/myopv2/MyopV2PackageSuggestions";
 import "../../styles/MakeYourOwnPackageV2.css";
 
 // ── v2 prefetch ────────────────────────────────────────────────────────
@@ -708,6 +709,9 @@ export default function MakeUrOwnPackageV2() {
     0
   );
   const hasFormErrors = Object.keys(errors).length > 0;
+  // Same rules as the Continue button — the recommended packages appear
+  // only once every mandatory field passes them.
+  const isCriteriaComplete = Object.keys(validateForm()).length === 0;
 
   return (
     <div className="min-vh-100 bg-light d-flex flex-column">
@@ -1124,6 +1128,29 @@ export default function MakeUrOwnPackageV2() {
                     </Button>
                   </div>
                 </div>
+
+                {/* ── Recommended existing packages ──
+                    Shown once every mandatory field above is filled, and
+                    kept in step with the form as it changes: ready-made
+                    packages the operator can book instead of building one.
+                    Read-only — it never changes this form or the build
+                    flow. Values match the criteria payload the Continue
+                    button hands to the search page. */}
+                <MyopV2PackageSuggestions
+                  enabled={isCriteriaComplete}
+                  criteria={{
+                    itinerary,
+                    nationality: selectedNationality,
+                    destination: itinerary[0]?.selectedDestination || null,
+                  }}
+                  checkIn={travelDate}
+                  checkOut={computeCheckOutIso(travelDate, totalNights)}
+                  nightsCount={totalNights}
+                  adultCount={adults}
+                  childCount={children}
+                  childAges={childAges.map((age) => parseInt(age) || 0)}
+                  agentId={agent}
+                />
 
                 <Row className="mt-4">
                   <Col className="d-flex flex-column align-items-center gap-2">

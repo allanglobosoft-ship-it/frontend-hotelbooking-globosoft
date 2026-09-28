@@ -25,6 +25,7 @@ import { createAmendmentLink } from "../../utils/amendmentLink";
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/TopBar";
 import AgentBalanceDisplay from "../../components/AgentBalanceDisplay";
+import QuotationPdfCard from "../../components/quotation/QuotationPdfCard";
 import { toast } from "react-hot-toast";
 import { toLocalDateTime, formatDateTime } from "../../utils/dateUtils";
 // Reuse the hotel-booking-page styles so the long-stay page renders
@@ -929,6 +930,119 @@ export default function LongStayBookingPage() {
     draft.room.roomTypeName ||
     (draft.room.meal ? "Meal included" : "Room only");
 
+  // ── Quotation PDF ─────────────────────────────────────────────────────
+  // Quotes what this page shows: the Booking Summary and the customer-
+  // facing Selling Price / New Total from Price Details (never the agent's
+  // pre-markup rate or markup), in the display currency like formatPrice.
+  // Policy lines use the same formatter as the Policies modal.
+  const buildLongStayQuotationPayload = () => {
+    if (!quote || quoteError) return null;
+    const toDisplay = (aed) =>
+      Math.round((Number(aed) || 0) * curFactor * 100) / 100;
+    const stayNights = quote.totalNights;
+    const describeGuests = (r) => {
+      const adults = Number(r?.adults) || 0;
+      const children = Number(r?.children) || 0;
+      return `${adults} Adult${adults === 1 ? "" : "s"}${
+        children ? `, ${children} Child${children === 1 ? "" : "ren"}` : ""
+      }`;
+    };
+    const categoryName =
+      draft.room.roomCategoryName ||
+      (draft.room.hotelRoomCategoryId
+        ? `Category #${draft.room.hotelRoomCategoryId}`
+        : "Room");
+    const billing =
+      draft.contract.additionalCostType === "WEEKLY"
+        ? "Weekly billing"
+        : "Day-wise billing";
+
+    const lead = rooms?.[leadIndex.roomIdx]?.guests?.[leadIndex.guestIdx];
+    const leadNames = [lead?.firstName, lead?.middleName, lead?.lastName]
+      .map((p) => (p ? String(p).trim() : ""))
+      .filter(Boolean);
+    const leadName = leadNames.length
+      ? [lead?.salutation ? String(lead.salutation).trim() : "", ...leadNames]
+          .filter(Boolean)
+          .join(" ")
+      : "";
+
+    const priceItems = [
+      {
+        description: `Long Stay - ${categoryName}`,
+        details: [
+          mealPlanLabel,
+          `${rooms.length} Room${rooms.length === 1 ? "" : "s"}`,
+          stayNights != null
+            ? `${stayNights} Night${Number(stayNights) === 1 ? "" : "s"}`
+            : "",
+          billing,
+        ]
+          .filter(Boolean)
+          .join(", "),
+        amount: toDisplay(sellingPrice),
+      },
+    ];
+    if (tdAmount > 0) {
+      priceItems.push({
+        description: "Tourism Dirham",
+        details: "",
+        amount: toDisplay(tdAmount),
+      });
+    }
+
+    return {
+      bookingType: "LONG_STAY",
+      agentId: Number(agentId) || null,
+      currency: curCode,
+      serviceName: draft.hotelName || "",
+      serviceSubtitle: draft.address || "",
+      customerName: leadName || null,
+      details: [
+        { label: "Check-in", value: formatDateTime(draft.checkIn) },
+        { label: "Check-out", value: formatDateTime(draft.checkOut) },
+        { label: "Nights", value: stayNights != null ? String(stayNights) : "" },
+        { label: "Rooms", value: String(rooms.length) },
+        {
+          label: "Guests",
+          value: rooms
+            .map((r, i) => `Room ${i + 1}: ${describeGuests(r)}`)
+            .join("\n"),
+        },
+        {
+          label: "Room",
+          value: rooms
+            .map((r, i) => `Room ${i + 1}: ${r.roomCategoryName || categoryName}`)
+            .join("\n"),
+        },
+        { label: "Meal Plan", value: mealPlanLabel },
+        { label: "Billing", value: billing },
+        { label: "Room Status", value: draft.room.roomStatus || "Available" },
+        {
+          label: "Refund Status",
+          value: draft.room.refundable ? "Flexible" : "Non-Refundable",
+        },
+      ],
+      priceItems,
+      totalAmount: toDisplay(newTotal),
+      cancellationPolicy: [
+        ...(Array.isArray(draft.contract.cancellationPolicy)
+          ? draft.contract.cancellationPolicy
+              .map((p) => formatCancellationPolicyLine(p))
+              .filter(Boolean)
+          : []),
+        ...(draft.contract.cancellationPolicyNotes
+          ? [String(draft.contract.cancellationPolicyNotes)]
+          : []),
+      ],
+      notes: Array.isArray(draft.contract.termsAndConditions)
+        ? draft.contract.termsAndConditions.filter(
+            (t) => typeof t === "string" && t.trim(),
+          )
+        : [],
+    };
+  };
+
   return (
     <div className="min-vh-100 bg-light d-flex flex-column hotel-booking-container">
       <Topbar />
@@ -1470,6 +1584,14 @@ export default function LongStayBookingPage() {
                         )}
                       </Card.Body>
                     </Card>
+
+                    {/* Quotation — under the Price Details it quotes, above
+                        the booking decision and Confirm Booking; available
+                        once the long-stay quote has been computed. */}
+                    <QuotationPdfCard
+                      buildPayload={buildLongStayQuotationPayload}
+                      disabled={!quote || !!quoteError}
+                    />
 
                     {/* Voucher-choice card — mirrors HotelBookingPage.
                         Shown for every Flexible/Refundable room whose

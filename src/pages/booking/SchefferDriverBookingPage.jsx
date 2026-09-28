@@ -19,6 +19,7 @@ import { toast } from "react-hot-toast";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import AgentBalanceDisplay from "../../components/AgentBalanceDisplay";
+import QuotationPdfCard from "../../components/quotation/QuotationPdfCard";
 import "../../styles/SchefferDriverBookingPage.css";
 
 const formatDateToDDMMYYYY = (dateString) => {
@@ -676,6 +677,135 @@ const SchefferDriverBookingPage = () => {
     }).format(price || 0);
   };
 
+  // ── Quotation PDF ─────────────────────────────────────────────────────
+  // Quotes what this page shows: the Booking Summary rows and the Price
+  // Details (Package Fare, Intercity Surcharge, Tourism Dirham, New Total)
+  // in AED, like formatPrice. The rate's cancellation policies / terms are
+  // the ones the Policies modal shows — loaded here if Confirm hasn't
+  // loaded them yet.
+  const buildChauffeurQuotationPayload = async () => {
+    if (!hasValidState) return null;
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    let cancellations = rateCancellationPolicies;
+    let terms = rateTerms;
+    const rateId = selectedOption?.rentalRateId;
+    if (rateId && !cancellations.length && !terms.length) {
+      try {
+        const res = await axiosInstance.get(`/api/scheffer-rental-rates/${rateId}`);
+        const d = res?.data || {};
+        terms = Array.isArray(d.termsAndConditions) ? d.termsAndConditions : [];
+        cancellations = Array.isArray(d.cancellationPolicies)
+          ? d.cancellationPolicies
+          : [];
+      } catch {
+        // Quote without the policy text rather than failing the quotation.
+      }
+    }
+    const textLines = (list) =>
+      (Array.isArray(list) ? list : []).filter(
+        (t) => typeof t === "string" && t.trim(),
+      );
+
+    const tdNum =
+      tourismDirham !== "" && !isNaN(Number(tourismDirham))
+        ? Number(tourismDirham)
+        : 0;
+    const grandTotal = Number(totalRate || 0) + tdNum;
+    const packageFare = totalRate - intercitySurcharge;
+    const packageText = [
+      selectedOption.packageName,
+      selectedOption.hoursIncluded != null
+        ? `${selectedOption.hoursIncluded} hrs`
+        : "",
+      selectedOption.kmIncluded != null
+        ? `${selectedOption.kmIncluded} km included`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(", ");
+    const pickup =
+      searchCriteria.pickupName ||
+      selectedOption?.cityName ||
+      searchCriteria.cityName ||
+      "";
+    const dropoff =
+      searchCriteria.dropoffName ||
+      searchCriteria.pickupName ||
+      selectedOption?.cityName ||
+      searchCriteria.cityName ||
+      "";
+    const adults = Number(searchCriteria.adults) || 0;
+    const children = Number(searchCriteria.children) || 0;
+
+    const lead = guests[leadIndex] || {};
+    const leadNames = [lead.firstName, lead.middleName, lead.lastName]
+      .map((p) => (p ? String(p).trim() : ""))
+      .filter(Boolean);
+    const leadName = leadNames.length
+      ? [lead.salutation ? String(lead.salutation).trim() : "", ...leadNames]
+          .filter(Boolean)
+          .join(" ")
+      : "";
+
+    const priceItems = [
+      {
+        description: `Chauffeur - ${cab.cabname || "Vehicle"}`,
+        details: packageText,
+        amount: round2(packageFare),
+      },
+    ];
+    if (intercitySurcharge > 0) {
+      priceItems.push({
+        description: "Intercity Surcharge",
+        details: selectedRoute
+          ? [selectedRoute.fromCityName, selectedRoute.toCityName]
+              .filter(Boolean)
+              .join(" to ")
+          : "",
+        amount: round2(intercitySurcharge),
+      });
+    }
+    if (tdNum > 0) {
+      priceItems.push({ description: "Tourism Dirham", details: "", amount: round2(tdNum) });
+    }
+
+    return {
+      bookingType: "CHAUFFEUR",
+      agentId: Number(resolvedAgentId) || null,
+      currency: "AED",
+      serviceName: cab.cabname || "Chauffeur Service",
+      serviceSubtitle: [selectedOption.cabType, selectedOption.cityName]
+        .filter(Boolean)
+        .join(", "),
+      customerName: leadName || null,
+      customerEmail: leadName ? contactDetails.emailId || null : null,
+      customerMobile: leadName ? contactDetails.contactNumber || null : null,
+      details: [
+        { label: "Pickup Date", value: searchCriteria.pickupDate || "" },
+        { label: "Pickup Time", value: searchCriteria.pickupTime || "" },
+        { label: "Rental Package", value: packageText },
+        { label: "Pickup", value: pickup },
+        { label: "Pickup Landmark", value: contactDetails.pickupLandmark || "" },
+        {
+          label: "Dropoff",
+          value: `${dropoff}${
+            searchCriteria.dropoffTime ? ` @ ${searchCriteria.dropoffTime}` : ""
+          }`,
+        },
+        {
+          label: "Passengers",
+          value: `${adults} Adult${adults !== 1 ? "s" : ""}${
+            children ? `, ${children} Child${children > 1 ? "ren" : ""}` : ""
+          }`,
+        },
+      ],
+      priceItems,
+      totalAmount: round2(grandTotal),
+      cancellationPolicy: textLines(cancellations),
+      notes: textLines(terms),
+    };
+  };
+
   return (
     <div className="min-vh-100 bg-light d-flex flex-column">
       <TopBar />
@@ -1296,6 +1426,14 @@ const SchefferDriverBookingPage = () => {
                     })()}
                   </Card.Body>
                 </Card>
+
+                {/* Quotation — under the Price Details it quotes, above the
+                    Back / Confirm buttons. */}
+                <QuotationPdfCard
+                  className="mt-0 mb-3"
+                  buildPayload={buildChauffeurQuotationPayload}
+                  disabled={isSubmitting}
+                />
 
                 {/* ── Back + Confirm Booking buttons ────────────────────
                      Back returns to the chauffeur search page; Confirm

@@ -50,6 +50,7 @@ import "../../../styles/HotelBookingPage.css";
 import "../../../styles/MakePkgBookingPage.css";
 import "../../../styles/MakeYourOwnPackageV2.css";
 import MyopV2JourneyStepper from "../../../components/myopv2/MyopV2JourneyStepper";
+import QuotationPdfCard from "../../../components/quotation/QuotationPdfCard";
 
 // v2 helpers — read the choice made on the /addons step. Visa is just
 // YES/NO in v2; the legacy adult/child/infant rate inputs are removed.
@@ -62,6 +63,114 @@ const readV2VisaRequired = () => {
 };
 const V2_SUPPORT_EMAIL = "support@yourdomain.com";
 const V2_SUPPORT_PHONE = "+971-XX-XXXXXXX";
+
+// Quotation PDF — the service-wise Terms & Conditions and Cancellation
+// Policies shown on the "Review & Accept Policies" modal (same endpoints and
+// text rules as the showPolicyModal effect in the component). That modal
+// loads them only after Review & Confirm, so the quotation fetches them on
+// demand. Returns { hotel, cab, activity } keyed by id, like servicePolicies.
+const loadQuotationServicePolicies = async (cartItems) => {
+  const out = { hotel: {}, cab: {}, activity: {} };
+  const idsOf = (kind, idField) =>
+    Array.from(
+      new Set(
+        (cartItems || [])
+          .filter((it) => it && it[kind])
+          .map((it) => it[kind]?.[idField])
+          .filter((v) => v !== undefined && v !== null && v !== "")
+          .map((v) => String(v))
+      )
+    );
+  const nonBlank = (list) =>
+    (Array.isArray(list) ? list : []).filter(
+      (s) => typeof s === "string" && s.trim().length > 0
+    );
+  const policyLine = (p, kind) => {
+    if (typeof p === "string") return p;
+    if (!p || typeof p !== "object") return "";
+    const text = p.policyText || p.text || p.description || "";
+    if (text && text.trim().length > 0) return text.trim();
+    const parts = [];
+    if (kind) parts.push(kind);
+    if (p.fromDate && p.toDate) {
+      parts.push(`from ${p.fromDate} to ${p.toDate}`);
+    } else if (p.fromDate) {
+      parts.push(`from ${p.fromDate}`);
+    }
+    if (p.value != null) {
+      parts.push(`${p.value}${p.percentOrAmount === "PERCENT" ? "%" : ""}`);
+    }
+    return parts.join(" — ");
+  };
+
+  await Promise.all([
+    ...idsOf("hotel", "hotelId").map(async (hotelId) => {
+      const slot = { terms: [], cancellations: [] };
+      try {
+        const tcRes = await axiosInstance.get(
+          `/api/hotels/${hotelId}/terms-and-conditions-package`
+        );
+        slot.terms = Array.isArray(tcRes.data)
+          ? nonBlank(
+              tcRes.data.map((r) => (r && (r.description || r.text)) || "")
+            )
+          : [];
+      } catch {
+        slot.terms = [];
+      }
+      try {
+        const polRes = await axiosInstance.get(`/api/hotels/${hotelId}/policies`);
+        const pol = polRes?.data?.policies || {};
+        const listOf = (v) => (Array.isArray(v) ? v : []);
+        const seen = new Set();
+        slot.cancellations = nonBlank([
+          ...listOf(pol.cancellationPolicy).map((p) => policyLine(p, "Cancellation charge")),
+          ...listOf(pol.amendmentPolicy).map((p) => policyLine(p, "Amendment charge")),
+          ...listOf(pol.childPolicy).map((p) => policyLine(p, "Child policy")),
+        ]).filter((line) => {
+          const key = line.toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      } catch {
+        slot.cancellations = [];
+      }
+      out.hotel[hotelId] = slot;
+    }),
+    ...idsOf("cab", "cabId").map(async (cabId) => {
+      const slot = { terms: [], cancellations: [] };
+      try {
+        const res = await axiosInstance.get(`/api/cabRates/cab/${cabId}/policies`);
+        slot.terms = nonBlank(res?.data?.termsAndConditions);
+        slot.cancellations = nonBlank(res?.data?.cancellationPolicies);
+      } catch {
+        /* keep empty */
+      }
+      out.cab[cabId] = slot;
+    }),
+    ...idsOf("activity", "activityId").map(async (activityId) => {
+      const slot = { terms: [], cancellations: [] };
+      try {
+        const res = await axiosInstance.get(
+          `/api/activityRate/inclutionAndTerms/${activityId}`
+        );
+        const rows = Array.isArray(res?.data) ? res.data : [];
+        const rowsOfType = (type) =>
+          rows
+            .filter((r) => r && Number(r.type) === type)
+            .map((r) => String(r.data || "").trim())
+            .filter((s) => s.length > 0);
+        slot.terms = rowsOfType(2);
+        slot.cancellations = rowsOfType(3);
+      } catch {
+        /* keep empty */
+      }
+      out.activity[activityId] = slot;
+    }),
+  ]);
+  return out;
+};
 
 const MakePkgBookingPageV2 = () => {
   const v2VisaRequired = readV2VisaRequired();
@@ -1998,6 +2107,369 @@ const MakePkgBookingPageV2 = () => {
         : new Date(d);
     return parse(a) - parse(b);
   });
+
+  // ── Quotation PDF (Build Your Own Package) ────────────────────────────
+  // Customer-facing quote of the package as it stands: one line per service
+  // at its selling price (the same `totalRate` figures as the Package
+  // Summary rows), each enabled add-on and the Tourism Dirham, so the lines
+  // add up to Selling Price + Tourism Dirham + add-ons — the figure saved as
+  // the booking's sellingPrice. Nothing is saved or booked.
+  const buildByopQuotationPayload = async () => {
+    if (!cartData || cartData.length === 0) return null;
+    const text = (v) =>
+      typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
+    const amountOf = (v) => {
+      const n = parseFloat(v || 0);
+      return Number.isFinite(n) ? n : 0;
+    };
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+    const childrenText = (n) => `${n} ${n === 1 ? "Child" : "Children"}`;
+    const toDate = (d) => {
+      if (!d) return null;
+      const s = String(d);
+      let date;
+      if (s.includes("/")) {
+        const [day, month, year] = s.split("/");
+        date = new Date(year, month - 1, day);
+      } else {
+        date = new Date(s);
+      }
+      return isNaN(date.getTime()) ? null : date;
+    };
+    const dayText = (date) =>
+      date.toLocaleDateString("en-GB", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      });
+
+    const rawItems = [];
+    let tripStart = null;
+    let tripEnd = null;
+    let maxAdults = 0;
+    let maxChildren = 0;
+
+    hotels.forEach((item) => {
+      const hotel = item.hotel || {};
+      const details = hotel.details || {};
+      const checkIn =
+        hotel.checkIn || hotel.checkInDate || details.checkInDate || "";
+      const checkOut =
+        hotel.checkOut || hotel.checkOutDate || details.checkOutDate || "";
+      const rooms = hotel.searchRoomDTOs || details.searchRoomDTOs || [];
+      const roomList = Array.isArray(rooms) ? rooms : [];
+      let adults = 0;
+      let children = 0;
+      roomList.forEach((room) => {
+        adults += parseInt(room?.adult || room?.adults || 0) || 0;
+        children += parseInt(room?.child || room?.children || 0) || 0;
+      });
+      maxAdults = Math.max(maxAdults, adults);
+      maxChildren = Math.max(maxChildren, children);
+      const start = toDate(checkIn);
+      const end = toDate(checkOut);
+      if (start && (!tripStart || start < tripStart)) tripStart = start;
+      if (end && (!tripEnd || end > tripEnd)) tripEnd = end;
+      const nights = calculateNights(checkIn, checkOut);
+      const onRequest =
+        hotel.available === false ||
+        hotel.available === "False" ||
+        hotel.available === "false";
+      rawItems.push({
+        description: text(hotel.hotelName) || "Hotel",
+        details: [
+          [text(hotel.roomCategory), text(hotel.roomType)]
+            .filter(Boolean)
+            .join(" - "),
+          roomList.length > 0 ? plural(roomList.length, "room") : "",
+          plural(nights, "night"),
+          start && end ? `${dayText(start)} - ${dayText(end)}` : "",
+          onRequest ? "On request" : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        amount: amountOf(hotel.totalRate),
+      });
+    });
+
+    activities.forEach((item) => {
+      const activity = item.activity || {};
+      const details = activity.details || {};
+      const date = toDate(activity.activityDate || details.activityDate);
+      const adult =
+        parseInt(
+          activity.adult || details.adult || activity.noOfAdult || 0,
+        ) || 0;
+      const child =
+        parseInt(
+          activity.child || details.child || activity.noOfChild || 0,
+        ) || 0;
+      rawItems.push({
+        description:
+          text(activity.activityName || details.activityName) || "Activity",
+        details: [
+          date ? dayText(date) : "",
+          adult > 0 ? plural(adult, "Adult") : "",
+          child > 0 ? childrenText(child) : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        amount: amountOf(activity.totalRate),
+      });
+    });
+
+    transfers.forEach((item) => {
+      const cab = item.cab || {};
+      const details = cab.details || {};
+      // travelType: "1" = Arrival & Departure, "2" = Arrival, "3" = Departure
+      const travelType = String(cab.travelType || details.travelType || "1");
+      const capacity = cab.capacity || details.capacity || "";
+      const vehicle = capacity
+        ? `${capacity} Seater`
+        : text(cab.vehicleName || details.vehicleName || cab.cabName);
+      const route =
+        cab.pickupName || cab.dropoffName
+          ? `${cab.pickupName || "—"} → ${cab.dropoffName || "—"}`
+          : "";
+      const pickup = toDate(cab.pickupDate);
+      const drop = toDate(cab.dropoffDate || cab.dropOffDate || cab.dropDate);
+      const dates =
+        travelType === "1"
+          ? [
+              pickup ? `Arrival ${dayText(pickup)}` : "",
+              drop ? `Departure ${dayText(drop)}` : "",
+            ]
+          : travelType === "3"
+            ? [drop ? dayText(drop) : ""]
+            : [pickup ? dayText(pickup) : ""];
+      rawItems.push({
+        description:
+          travelType === "1"
+            ? "Arrival & Departure Transfer"
+            : travelType === "2"
+              ? "Arrival Transfer"
+              : travelType === "3"
+                ? "Departure Transfer"
+                : "Transfer",
+        details: [vehicle, route, text(cab.shareType || details.shareType), ...dates]
+          .filter(Boolean)
+          .join(" · "),
+        amount: amountOf(cab.totalRate),
+      });
+    });
+
+    // Add-ons exactly as `addOnsTotal` prices them (the amount billed).
+    let addOnState = {};
+    try {
+      addOnState = readAddOnServices();
+    } catch {
+      addOnState = {};
+    }
+    let addOnCount = 0;
+    (Array.isArray(addOnCatalog) ? addOnCatalog : []).forEach((svc) => {
+      const slot = addOnState?.[svc.key];
+      if (!slot || slot.enabled !== true) return;
+      const unit = Number(svc.unitPrice) || 0;
+      const qty = Number(slot.quantity) > 0 ? Number(slot.quantity) : 1;
+      addOnCount += 1;
+      rawItems.push({
+        description: text(svc.label) || "Add-on service",
+        details: qty > 1 ? `${qty} x AED ${round2(unit).toFixed(2)}` : "",
+        amount: unit * qty,
+      });
+    });
+
+    const tourismDirhamAmount = Number(aggregateTourismDirham) || 0;
+    if (tourismDirhamAmount > 0) {
+      rawItems.push({
+        description: "Tourism Dirham",
+        details: "",
+        amount: tourismDirhamAmount,
+      });
+    }
+
+    // Lines at 2 decimals; any rounding cent goes on the largest line so
+    // the lines add up to the total.
+    const totalAmount = round2(
+      rawItems.reduce((sum, it) => sum + it.amount, 0),
+    );
+    const priceItems = rawItems.map((it) => ({
+      ...it,
+      amount: round2(it.amount),
+    }));
+    const residue = round2(
+      totalAmount - priceItems.reduce((sum, it) => sum + it.amount, 0),
+    );
+    if (residue !== 0 && priceItems.length > 0) {
+      let largest = 0;
+      priceItems.forEach((it, i) => {
+        if (it.amount > priceItems[largest].amount) largest = i;
+      });
+      priceItems[largest] = {
+        ...priceItems[largest],
+        amount: round2(priceItems[largest].amount + residue),
+      };
+    }
+
+    const nightsSpan =
+      tripStart && tripEnd
+        ? Math.round((tripEnd.getTime() - tripStart.getTime()) / 86400000)
+        : 0;
+
+    // Day numbers follow the Itinerary section (and the saved booking):
+    // one day per activity date, with the date shown alongside.
+    const itinerary = [];
+    uniqueActivityDates.forEach((dateString, index) => {
+      (selectedItineraries[dateString] || []).forEach((itineraryId) => {
+        const entry = itineraryList.find(
+          (it) => it.itineraryId === itineraryId,
+        );
+        if (!entry) return;
+        const date = toDate(dateString);
+        const dateLabel = date ? dayText(date) : text(dateString);
+        const heading = text(entry.itineraryHeading);
+        itinerary.push({
+          day: index + 1,
+          heading: heading ? `${dateLabel} — ${heading}` : dateLabel,
+          place: "",
+          activities: text(entry.itineraryDesc),
+        });
+      });
+    });
+
+    // Policies: the non-refundable rule from the Package Summary, then each
+    // service's cancellation policies and terms as the policy modal lists
+    // them.
+    let policies = { hotel: {}, cab: {}, activity: {} };
+    try {
+      policies = await loadQuotationServicePolicies(cartData);
+    } catch {
+      policies = { hotel: {}, cab: {}, activity: {} };
+    }
+    const services = [
+      ...hotels.map((it) => ({
+        label: `Hotel — ${it.hotel?.hotelName || "Hotel"}`,
+        slot: policies.hotel[String(it.hotel?.hotelId)],
+      })),
+      ...transfers.map((it) => ({
+        label: `Transfer — ${it.cab?.cabName || it.cab?.vehicleName || "Transfer"}`,
+        slot: policies.cab[String(it.cab?.cabId)],
+      })),
+      ...activities.map((it) => ({
+        label: `Activity — ${
+          it.activity?.activityName ||
+          it.activity?.details?.activityName ||
+          "Activity"
+        }`,
+        slot: policies.activity[String(it.activity?.activityId)],
+      })),
+    ];
+    const serviceLines = (key) => {
+      const out = [];
+      const seen = new Set();
+      services.forEach(({ label, slot }) => {
+        (slot?.[key] || []).forEach((line) => {
+          const entry =
+            services.length > 1 ? `${label}: ${line.trim()}` : line.trim();
+          const dedupeKey = entry.toLowerCase();
+          if (seen.has(dedupeKey)) return;
+          seen.add(dedupeKey);
+          out.push(entry);
+        });
+      });
+      return out;
+    };
+    const nonRefundable = (rec) =>
+      rec?.refundstatus === "N" ||
+      rec?.nonRefundable === true ||
+      rec?.nonRefundable === "true";
+    const isNonRefundable = cartData.some(
+      (it) =>
+        nonRefundable(it?.hotel) ||
+        nonRefundable(it?.cab) ||
+        nonRefundable(it?.activity),
+    );
+
+    const guestName = [
+      primaryGuest.firstName,
+      primaryGuest.middleName,
+      primaryGuest.lastName,
+    ]
+      .map(text)
+      .filter(Boolean)
+      .join(" ");
+    const hotelNames = hotels
+      .map((it) => text(it.hotel?.hotelName))
+      .filter(Boolean);
+    const agentId = sessionStorage.getItem("makePkgAgentId");
+
+    return {
+      bookingType: "BUILD_YOUR_OWN_PACKAGE",
+      agentId: Number(agentId) > 0 ? agentId : null,
+      currency: "AED",
+      serviceName:
+        hotelNames.length > 0 ? hotelNames.join(" + ") : "Custom Package",
+      serviceSubtitle: [
+        nightsSpan > 0 ? plural(nightsSpan, "night") : "",
+        hotels.length > 0 ? plural(hotels.length, "hotel") : "",
+        activities.length > 0
+          ? `${activities.length} ${activities.length === 1 ? "activity" : "activities"}`
+          : "",
+        transfers.length > 0 ? plural(transfers.length, "transfer") : "",
+        addOnCount > 0 ? plural(addOnCount, "add-on service") : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      customerName: guestName
+        ? [text(primaryGuest.salutation), guestName].filter(Boolean).join(" ")
+        : "",
+      customerEmail: text(primaryGuest.emailId),
+      customerMobile: text(primaryGuest.contactNumber),
+      details: [
+        {
+          label: "Travel Dates",
+          value:
+            tripStart && tripEnd
+              ? `${dayText(tripStart)} - ${dayText(tripEnd)}`
+              : "",
+        },
+        {
+          label: "Duration",
+          value:
+            nightsSpan > 0
+              ? `${plural(nightsSpan, "Night")} / ${plural(nightsSpan + 1, "Day")}`
+              : "",
+        },
+        {
+          label: "Guests",
+          value:
+            maxAdults > 0
+              ? [
+                  plural(maxAdults, "Adult"),
+                  maxChildren > 0 ? childrenText(maxChildren) : "",
+                ]
+                  .filter(Boolean)
+                  .join(", ")
+              : "",
+        },
+      ],
+      priceItems,
+      totalAmount,
+      itineraryTitle: "Itinerary",
+      itineraryDayLabel: "Day",
+      itinerary,
+      cancellationPolicy: [
+        ...(isNonRefundable
+          ? [
+              "Non-Refundable: One or more selected services are non-refundable, so the entire package is treated as non-refundable.",
+            ]
+          : []),
+        ...serviceLines("cancellations"),
+      ],
+      notes: serviceLines("terms"),
+    };
+  };
 
   return (
     <div className="make-pkg-booking-container d-flex flex-column myop-v2">
@@ -4322,6 +4794,10 @@ const MakePkgBookingPageV2 = () => {
                       })()}
                     </Card.Body>
                   </Card>
+                  <QuotationPdfCard
+                    buildPayload={buildByopQuotationPayload}
+                    disabled={isSubmitting}
+                  />
                 </div>
               </Col>
             </Row>

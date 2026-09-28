@@ -16,6 +16,7 @@ import axiosInstance from "../../components/AxiosInstance";
 import { toast } from "react-hot-toast";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
+import QuotationPdfCard from "../../components/quotation/QuotationPdfCard";
 import "../../styles/HotelBookingPage.css";
 
 const emptyActivityPolicies = {
@@ -454,6 +455,87 @@ const ActivityBookingPage = () => {
     }).format(price || 0);
   };
 
+  // ── Quotation PDF ─────────────────────────────────────────────────────
+  // Quotes what this page shows: the Booking Summary, the selected
+  // itinerary add-ons and the Activity Fare / New Total in AED, like
+  // formatPrice. Inclusions, terms and cancellation policies are the ones
+  // this page loads for the rate. The agent is the one the search priced
+  // the activity for.
+  const buildActivityQuotationPayload = () => {
+    if (!hasValidState) return null;
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const adults = Number(searchCriteria.adults) || 0;
+    const children = Number(searchCriteria.children) || 0;
+    const ages = (searchCriteria.childAges || []).filter(
+      (a) => a !== "" && a != null,
+    );
+    const guestsText = `${adults} Adult${adults !== 1 ? "s" : ""}${
+      children
+        ? `, ${children} Child${children > 1 ? "ren" : ""}${
+            ages.length ? ` (Ages ${ages.join(", ")})` : ""
+          }`
+        : ""
+    }`;
+    const agentId =
+      (searchCriteria.agent && String(searchCriteria.agent)) ||
+      sessionStorage.getItem("makeYourOwnPackageAgentId") ||
+      localStorage.getItem("makeYourOwnPackageAgentId") ||
+      "";
+
+    const lead = guests[leadIndex] || guests[0] || {};
+    const leadNames = [lead.firstName, lead.middleName, lead.lastName]
+      .map((p) => (p ? String(p).trim() : ""))
+      .filter(Boolean);
+    const leadName = leadNames.length
+      ? [lead.salutation ? String(lead.salutation).trim() : "", ...leadNames]
+          .filter(Boolean)
+          .join(" ")
+      : "";
+
+    const chosenItineraries = selectedItineraries
+      .map((id) => itineraryList.find((item) => item.itineraryId === id))
+      .filter(Boolean);
+
+    return {
+      bookingType: "TOUR_ACTIVITY",
+      agentId: Number(agentId) || null,
+      currency: "AED",
+      serviceName: activity.activityName || "Activity",
+      serviceSubtitle: searchCriteria.destination?.label || "",
+      customerName: leadName || null,
+      details: [
+        { label: "Tour Date", value: searchCriteria.tourDate || "" },
+        { label: "Destination", value: searchCriteria.destination?.label || "" },
+        {
+          label: "Duration",
+          value: activity.duration ? `${activity.duration} hrs` : "",
+        },
+        { label: "Guests", value: guestsText },
+      ],
+      priceItems: [
+        {
+          description: activity.activityName || "Activity",
+          details: [searchCriteria.tourDate, guestsText]
+            .filter(Boolean)
+            .join(", "),
+          amount: round2(totalRate),
+        },
+      ],
+      totalAmount: round2(totalRate),
+      itineraryTitle: "Selected Itinerary",
+      itineraryDayLabel: "#",
+      itinerary: chosenItineraries.map((item, i) => ({
+        day: i + 1,
+        heading: item.itineraryHeading || "",
+        place: "",
+        activities: item.itineraryDesc || "",
+      })),
+      inclusions: activityPolicies.inclusions || [],
+      cancellationPolicy: activityPolicies.cancellations || [],
+      notes: activityPolicies.terms || [],
+    };
+  };
+
   return (
     <div className="min-vh-100 bg-light d-flex flex-column">
       <TopBar />
@@ -772,6 +854,14 @@ const ActivityBookingPage = () => {
                       </div>
                     </Card.Body>
                   </Card>
+
+                  {/* Quotation — under the Price Details it quotes, above the
+                      Payment card and Confirm Booking. */}
+                  <QuotationPdfCard
+                    className="mb-3"
+                    buildPayload={buildActivityQuotationPayload}
+                    disabled={isSubmitting}
+                  />
 
                     {/* ── Payment Mode ─────────────────────────────── */}
                   <Card className="shadow-sm rounded-3 mb-3 border-0">

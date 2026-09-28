@@ -12,6 +12,9 @@ import "./BookingCodeSearch.css";
 // the booking's existing detail page. Suggestions appear while typing;
 // Enter opens the highlighted suggestion, or — when Enter beats the
 // suggestions — the booking whose code was typed in full.
+//
+// Currently hidden: its use in Sidebar.jsx is commented out (search there
+// for "Booking-code search (hidden)" to bring it back).
 
 const MIN_SUGGEST_CHARS = 2;
 const DEBOUNCE_MS = 250;

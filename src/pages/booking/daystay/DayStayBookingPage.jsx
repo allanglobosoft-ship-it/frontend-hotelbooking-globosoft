@@ -28,6 +28,7 @@ import axiosInstance from "../../../components/AxiosInstance";
 import toast from "react-hot-toast";
 import { formatDateTime } from "../../../utils/dateUtils";
 import { createAmendmentLink } from "../../../utils/amendmentLink";
+import QuotationPdfCard from "../../../components/quotation/QuotationPdfCard";
 
 // Mirrors HotelBookingPage — the sole online-payment gateway surfaced when
 // the agent's available credit falls short of the booking amount. CCAvenue
@@ -1360,6 +1361,121 @@ export default function DayStayBookingPage() {
     .toString()
     .slice(0, 5);
 
+  // ── Quotation PDF ─────────────────────────────────────────────────────
+  // Quotes what this page shows: the Booking Summary (date, check-in window,
+  // guests, meal plan) and Price Details (one line per room at its rate,
+  // New Total). Cancellation wording mirrors the Policies modal.
+  const buildDayStayQuotationPayload = () => {
+    if (!payload || !rooms.length) return null;
+    const toDisplay = (aed) =>
+      Math.round((Number(aed) || 0) * displayCurrency.factor * 100) / 100;
+    const describeGuests = (r) => {
+      const adults = Number(r?.adults) || 0;
+      const children = Number(r?.children) || 0;
+      return `${adults} Adult${adults === 1 ? "" : "s"}${
+        children ? `, ${children} Child${children === 1 ? "" : "ren"}` : ""
+      }`;
+    };
+
+    const lead = rooms?.[leadIndex.roomIdx]?.guests?.[leadIndex.guestIdx];
+    const leadNames = [lead?.firstName, lead?.middleName, lead?.lastName]
+      .map((p) => (p ? String(p).trim() : ""))
+      .filter(Boolean);
+    const leadName = leadNames.length
+      ? [lead?.salutation ? String(lead.salutation).trim() : "", ...leadNames]
+          .filter(Boolean)
+          .join(" ")
+      : "";
+
+    const cancellationPolicy = [];
+    if (isNonRefundableRate) {
+      cancellationPolicy.push(
+        "Non-refundable - no refund will be provided if this booking is cancelled.",
+        "100% cancellation charges apply from the time of booking.",
+      );
+    } else {
+      if (cancellationDeadline) {
+        cancellationPolicy.push(
+          `Cancellation deadline: ${cancellationDeadline.toLocaleDateString(
+            "en-GB",
+            { day: "2-digit", month: "short", year: "numeric" },
+          )}, 02:00 PM (UAE).`,
+        );
+      }
+      (Array.isArray(payload.cancellationPolicies)
+        ? payload.cancellationPolicies
+        : []
+      )
+        .map((item) =>
+          typeof item === "string" ? item : item?.policyText || "",
+        )
+        .filter((text) => text && String(text).trim())
+        .forEach((text) => cancellationPolicy.push(String(text)));
+    }
+
+    return {
+      bookingType: "DAY_STAY",
+      agentId: Number(payload.agentId) || null,
+      currency: displayCurrency.code,
+      serviceName: payload.hotelName || "",
+      serviceSubtitle: payload.hotelAddress || "",
+      customerName: leadName || null,
+      details: [
+        {
+          label: "Check-in",
+          value: formatCheckin(payload.checkInDate, payload.checkInTime),
+        },
+        {
+          label: "Check-out",
+          value: formatCheckin(payload.checkInDate, payload.checkOutTime),
+        },
+        {
+          label: "Check-in Window",
+          value: windowStart && windowEnd ? `${windowStart} - ${windowEnd}` : "",
+        },
+        { label: "Rooms", value: String(rooms.length) },
+        {
+          label: "Guests",
+          value: rooms
+            .map((r) => `Room ${r.roomNo}: ${describeGuests(r)}`)
+            .join("\n"),
+        },
+        { label: "Meal Plan", value: rooms[0]?.mealPlan || "Room Only" },
+        {
+          label: "Star Rating",
+          value: payload.starRating ? `${payload.starRating} Star` : "",
+        },
+        {
+          label: "Room Status",
+          value:
+            payload?.rateRow?.roomStatus || rooms[0]?.roomStatus || "Available",
+        },
+        {
+          label: "Refund Status",
+          value: isNonRefundableRate ? "Non-Refundable" : "Flexible",
+        },
+      ],
+      priceItems: rooms.map((r) => ({
+        description: `Room ${r.roomNo} - ${r.roomCategory || "Room"}`,
+        details: [r.mealPlan, describeGuests(r), "Day stay"]
+          .filter(Boolean)
+          .join(", "),
+        amount: toDisplay(r.rate),
+      })),
+      totalAmount: toDisplay(totalPayable),
+      cancellationPolicy,
+      notes: (Array.isArray(payload.termsAndConditions)
+        ? payload.termsAndConditions
+        : []
+      )
+        .map((item) =>
+          typeof item === "string" ? item : item?.description || item?.text || "",
+        )
+        .filter((text) => text && String(text).trim())
+        .map((text) => String(text)),
+    };
+  };
+
   return (
     <div className="min-vh-100 bg-light d-flex flex-column hotel-booking-container">
       <TopBar />
@@ -1913,6 +2029,10 @@ export default function DayStayBookingPage() {
                         )}
                       </Card.Body>
                     </Card>
+
+                    {/* Quotation — under the Price Details it quotes, above
+                        the booking decision and Confirm Booking. */}
+                    <QuotationPdfCard buildPayload={buildDayStayQuotationPayload} />
 
                     {/* Voucher choice card — same UX + copy as
                         HotelBookingPage. Only visible for a refundable

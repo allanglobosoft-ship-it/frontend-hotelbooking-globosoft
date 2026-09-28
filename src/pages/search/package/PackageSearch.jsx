@@ -42,6 +42,7 @@ import {
   FaFileContract,
   FaPlaneDeparture,
   FaExclamationTriangle,
+  FaThList,
 } from "react-icons/fa";
 import { toast } from "react-hot-toast";
 import { useNavigate } from "react-router-dom";
@@ -309,17 +310,22 @@ const PackageSearch = () => {
   const [errors, setErrors] = useState({});
   const [results, setResults] = useState([]);
   const [hasSearched, setHasSearched] = useState(false);
-  // Default listing — every active package, loaded automatically when the
-  // page opens (see loadDefaultPackages) so the operator can browse before
-  // searching. It fills the same `results` a search does, so the sidebar
-  // filters, sort bar, map and cards all work on it; `hasSearched` stays
-  // false while it is on screen, which keeps the search form expanded.
-  // Starts true because the load is kicked off on mount — avoids a one-frame
-  // flash of the "Ready to Search?" card before the request begins.
-  const [isDefaultLoading, setIsDefaultLoading] = useState(true);
-  // Latest package-list request wins. A search started while the default
-  // listing is still loading bumps this, so the late default response is
-  // dropped instead of overwriting the search results.
+  // Default listing disabled — the page no longer lists every active package
+  // when it opens; it opens on the "Ready to Search?" prompt. The on-open
+  // load is commented out, not deleted: search this file for "Default
+  // listing disabled" to find the spots to uncomment when bringing it back.
+  //
+  // All-packages listing — every active package, loaded on demand by the
+  // "View All Packages" button (see handleViewAllPackages) so the operator
+  // can browse before searching. (The "default" names below date from when
+  // it loaded on page open.) It fills the same `results` a search does, so
+  // the sidebar filters, sort bar, map and cards all work on it;
+  // `hasSearched` stays false while it is on screen, which keeps the search
+  // form expanded.
+  const [isDefaultLoading, setIsDefaultLoading] = useState(false);
+  // Latest package-list request wins. A search started while the listing is
+  // still loading bumps this, so the late listing response is dropped
+  // instead of overwriting the search results.
   const packageRequestIdRef = useRef(0);
   // When results are on screen the big search form collapses into a sticky
   // summary strip. Clicking "Modify Search" flips this true to re-expand it.
@@ -620,7 +626,9 @@ const PackageSearch = () => {
   };
 
   // ─────────────────────────────────────────────
-  // API: Default listing — all active packages
+  // API: All-packages listing — every active package
+  // Run by the "View All Packages" button (handleViewAllPackages); it no
+  // longer runs on page open (see the note by `hasSearched`).
   // Same /api/v1/package-booking/search endpoint the Search button uses, sent
   // with no criteria: the backend then skips every filter (destination,
   // nationality, travel window, occupancy) and returns each package whose
@@ -628,6 +636,8 @@ const PackageSearch = () => {
   // harmless here: the cards show no price, the Low/High sort order is the
   // same with or without markup, and booking always goes through a real
   // search (see handleBookFromDefaultList).
+  // Resolves to the loaded packages, or null when the request failed
+  // (already toasted) or was superseded by a newer package-list request.
   // ─────────────────────────────────────────────
   const loadDefaultPackages = async () => {
     const requestId = ++packageRequestIdRef.current;
@@ -637,16 +647,45 @@ const PackageSearch = () => {
         "/api/v1/package-booking/search",
         {},
       );
-      if (requestId !== packageRequestIdRef.current) return; // superseded
-      setResults(Array.isArray(response.data) ? response.data : []);
+      if (requestId !== packageRequestIdRef.current) return null; // superseded
+      const packages = Array.isArray(response.data) ? response.data : [];
+      setResults(packages);
+      return packages;
     } catch (error) {
-      if (requestId !== packageRequestIdRef.current) return;
+      if (requestId !== packageRequestIdRef.current) return null;
       console.error("Failed to load active packages:", error);
       toast.error(error.response?.data?.message || "Failed to load packages");
       setResults([]);
+      return null;
     } finally {
       if (requestId === packageRequestIdRef.current) setIsDefaultLoading(false);
     }
+  };
+
+  // "View All Packages" (top right of the page) — lists every active
+  // package. Replaces any search results on screen; the search form stays
+  // expanded above the listing so the operator can still narrow it down.
+  const handleViewAllPackages = async () => {
+    setHasSearched(false);
+    setResults([]);
+    // Drop sidebar-filter picks left over from the previous result set so a
+    // stale checkbox can't silently hide packages in the listing.
+    clearResultFilters();
+
+    const packages = await loadDefaultPackages();
+    if (!packages) return;
+    if (packages.length === 0) {
+      toast.error("No active packages found.");
+      return;
+    }
+    // The expanded search form can push the listing below the fold — bring
+    // it into view once rendered, clearing the 60px sticky TopBar.
+    window.setTimeout(() => {
+      if (!resultsRef.current) return;
+      const top =
+        resultsRef.current.getBoundingClientRect().top + window.scrollY - 76;
+      window.scrollTo({ top: Math.max(top, 0), behavior: "smooth" });
+    }, 50);
   };
 
   useEffect(() => {
@@ -654,7 +693,8 @@ const PackageSearch = () => {
     loadInitialDestinations();
     loadInitialNationalities();
     fetchEmployees();
-    loadDefaultPackages();
+    // Default listing disabled — don't list every active package on open.
+    // loadDefaultPackages();
   }, []);
 
   // Agent logins: resolve the agent's own id so the search still carries an
@@ -726,9 +766,9 @@ const PackageSearch = () => {
     }
 
     setErrors({});
-    // A search supersedes the automatic default listing — invalidate any
-    // default request still in flight so its late response can't replace
-    // these results (see loadDefaultPackages).
+    // A search supersedes the all-packages listing — invalidate any listing
+    // request still in flight so its late response can't replace these
+    // results (see loadDefaultPackages).
     packageRequestIdRef.current += 1;
     setIsDefaultLoading(false);
     setIsLoading(true);
@@ -883,13 +923,13 @@ const PackageSearch = () => {
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
-  // "Book" on a default-listing card. Those rows come from a criteria-free
-  // search, so they carry no matched package category and no agent,
-  // destination, nationality or travel window — all of which the booking
-  // page needs (its Hotels step cannot load without a category). Booking
-  // therefore still goes through a real search: missing details are flagged
-  // on the search form above, and a complete form runs the search so the
-  // operator books from results matched to those details, exactly as before.
+  // "Book" on an all-packages listing card. Those rows come from a
+  // criteria-free search, so they carry no matched package category and no
+  // agent, destination, nationality or travel window — all of which the
+  // booking page needs (its Hotels step cannot load without a category).
+  // Booking therefore still goes through a real search: missing details are
+  // flagged on the search form above, and a complete form runs the search so
+  // the operator books from results matched to those details.
   const handleBookFromDefaultList = () => {
     const formErrors = validateForm();
     if (Object.keys(formErrors).length > 0) {
@@ -946,12 +986,41 @@ const PackageSearch = () => {
   // Results are on screen once a search has run. Collapse the full form into
   // the sticky summary strip then, unless the user chose to modify the search.
   const collapseSearch = hasSearched && !isEditingSearch;
-  // Until a search runs, the results area holds the default listing (every
-  // active package) fetched on page open by loadDefaultPackages.
+  // Until a search runs, the results area holds the all-packages listing
+  // once "View All Packages" has loaded it. Default listing disabled —
+  // nothing is fetched on open, so until then `results` is empty and the
+  // "Ready to Search?" prompt shows.
   const isDefaultListing = !hasSearched;
   const selectedAgentName = agents.find(
     (a) => String(a.id) === String(agentId),
   )?.companyName;
+
+  // "View All Packages" — the page's top-right action, rendered at the right
+  // end of whichever header is showing: the search card's heading row, or the
+  // collapsed summary strip once search results are on screen. Disabled while
+  // a search runs, so the search's late response can't overwrite the listing.
+  const renderViewAllPackagesButton = () => (
+    <Button
+      type="button"
+      variant="outline-primary"
+      className="pkg-view-all-btn"
+      onClick={handleViewAllPackages}
+      disabled={isLoading || isDefaultLoading}
+    >
+      {isDefaultLoading ? (
+        <Spinner
+          as="span"
+          animation="border"
+          size="sm"
+          className="me-2"
+          aria-hidden="true"
+        />
+      ) : (
+        <FaThList className="me-2" />
+      )}
+      View All Packages
+    </Button>
+  );
 
   // ── Filter option lists ──
   // Package Includes filter — mirrors "Available Deals" on the hotel page.
@@ -1183,6 +1252,7 @@ const PackageSearch = () => {
                 <FaSearch className="me-2" />
                 Modify Search
               </Button>
+              {renderViewAllPackagesButton()}
             </div>
           )}
 
@@ -1196,10 +1266,13 @@ const PackageSearch = () => {
                     Find the best travel packages for your clients
                   </p>
                 </div>
-                {/* Agent logins see their available credit balance at the
-                    right end of the heading row (renders nothing for other
-                    roles). */}
-                <AgentCreditBalance />
+                {/* Right end of the heading row: agent logins see their
+                    available credit balance (renders nothing for other
+                    roles), with the "View All Packages" button below it. */}
+                <div className="d-flex flex-column align-items-end">
+                  <AgentCreditBalance />
+                  {renderViewAllPackagesButton()}
+                </div>
               </div>
 
               <Form onSubmit={handleSearchSubmit}>
@@ -1563,8 +1636,8 @@ const PackageSearch = () => {
           {/* Results / Empty State */}
           <div ref={resultsRef}>
           {isLoading || isDefaultLoading ? (
-            /* A package-list request is in flight — the default listing on
-               page open, or a search. Shown in place of the empty states so
+            /* A package-list request is in flight — the "View All Packages"
+               listing, or a search. Shown in place of the empty states so
                "No Packages Found" never flashes before the response lands. */
             <Card className="empty-state-card mt-5 text-center py-5">
               <Card.Body>
@@ -1577,8 +1650,9 @@ const PackageSearch = () => {
               </Card.Body>
             </Card>
           ) : isDefaultListing && results.length === 0 ? (
-            /* Default listing came back empty (or failed) — fall back to the
-               original search prompt. */
+            /* No search yet and no listing on screen — what the page opens
+               with (Default listing disabled), and what shows if the "View
+               All Packages" listing comes back empty or fails. */
             <Card className="empty-state-card mt-5 text-center py-5">
               <Card.Body>
                 <div className="empty-state-icon">
@@ -2011,8 +2085,10 @@ const PackageSearch = () => {
                   onClick={() => {
                     setHasSearched(false);
                     setResults([]);
+                    // Default listing disabled — Clear Search now returns to
+                    // the "Ready to Search?" prompt.
                     // Back to the default listing the page opens with.
-                    loadDefaultPackages();
+                    // loadDefaultPackages();
                   }}
                 >
                   Clear Search
