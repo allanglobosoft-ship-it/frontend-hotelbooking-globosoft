@@ -88,7 +88,7 @@ export default function LoginLogs() {
     const q = (searchTerm || "").trim().toLowerCase();
     if (!q) return rows;
     return rows.filter((r) =>
-      [r.name, r.userName, r.userType].some((v) =>
+      [r.name, r.userName, r.userType, r.ipAddress].some((v) =>
         (v || "").toString().toLowerCase().includes(q),
       ),
     );
@@ -145,7 +145,7 @@ export default function LoginLogs() {
               <Form.Group className="hotel-search-bar flex-grow-1 flex-sm-grow-0">
                 <Form.Control
                   type="text"
-                  placeholder="Search by name, username or type..."
+                  placeholder="Search by name, username, type or IP..."
                   className="form-control-modern-sm"
                   value={searchTerm}
                   onChange={(e) => {
@@ -186,19 +186,20 @@ export default function LoginLogs() {
                     <SortHeader label="User Type" k="userType" />
                     <SortHeader label="Login" k="loginDateTime" />
                     <SortHeader label="Logout" k="logoutDateTime" />
+                    <SortHeader label="IP Address" k="ipAddress" />
                   </tr>
                 </thead>
                 <tbody>
                   {loading ? (
                     <tr>
-                      <td colSpan={6} className="text-center text-muted py-4">
+                      <td colSpan={7} className="text-center text-muted py-4">
                         <Spinner animation="border" size="sm" className="me-2" />
                         Loading login records...
                       </td>
                     </tr>
                   ) : pageRows.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="text-center text-muted py-4">
+                      <td colSpan={7} className="text-center text-muted py-4">
                         No login records found.
                       </td>
                     </tr>
@@ -213,6 +214,7 @@ export default function LoginLogs() {
                         <td>{row.userType || "—"}</td>
                         <td>{formatAudit(row.loginDateTime)}</td>
                         <td>{formatAudit(row.logoutDateTime)}</td>
+                        <td>{row.ipAddress || "—"}</td>
                       </tr>
                     ))
                   )}
