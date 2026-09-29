@@ -39,6 +39,29 @@ const Policy = () => {
   const [page, setPage] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
   const [searchTimeout, setSearchTimeout] = useState(null);
+  const [marketTypes, setMarketTypes] = useState([]);
+
+  // ✅ Market type master — used to show names instead of raw ids
+  useEffect(() => {
+    axiosInstance
+      .get("/api/marketType")
+      .then((res) => setMarketTypes(Array.isArray(res.data) ? res.data : []))
+      .catch((error) => console.error("Error fetching market types:", error));
+  }, []);
+
+  // 100 is the "All Market" option on the create/edit pages
+  const getMarketTypeLabel = (marketTypeIds) => {
+    if (!Array.isArray(marketTypeIds) || marketTypeIds.length === 0) return "—";
+    return marketTypeIds
+      .map((mid) => {
+        if (Number(mid) === 100) return "All Market";
+        const match = marketTypes.find(
+          (m) => String(m.marketTypeId) === String(mid)
+        );
+        return match?.name || "—";
+      })
+      .join(", ");
+  };
 
   // View — reuses the existing edit page in read-only mode. Mirrors the
   // /occupancy-and-minimumlength view pattern.
@@ -297,11 +320,7 @@ const Policy = () => {
                       <tr key={policy.policyId}>
                         <td>{page * 10 + index + 1}</td>
                         <td>{policy.policyCode || "—"}</td>
-                        <td>
-                          {Array.isArray(policy.marketTypeId)
-                            ? "All Market"
-                            : "—"}
-                        </td>
+                        <td>{getMarketTypeLabel(policy.marketTypeId)}</td>
                         <td>
                           <Badge 
                             bg={policy.live ? "success" : "danger"}
@@ -427,11 +446,7 @@ const Policy = () => {
                       </tr>
                       <tr>
                         <td className="fw-semibold">Market Type:</td>
-                        <td>
-                          {Array.isArray(selectedPolicy.marketTypeId)
-                            ? "All Market"
-                            : "—"}
-                        </td>
+                        <td>{getMarketTypeLabel(selectedPolicy.marketTypeId)}</td>
                       </tr>
                       <tr>
                         <td className="fw-semibold">Status:</td>
