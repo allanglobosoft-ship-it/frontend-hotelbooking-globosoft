@@ -704,6 +704,28 @@ const Login = () => {
             </div>
           </form>
 
+          {/* Booking lookup for people without a login — FindBooking.jsx,
+              opened as its own page in a new tab. */}
+          <div className="lg-divider">
+            <span>or</span>
+          </div>
+          <Link
+            to="/find-booking"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="lg-find-booking"
+            title="Opens in a new tab"
+          >
+            <span className="lg-find-booking-icon">
+              <i className="fas fa-magnifying-glass"></i>
+            </span>
+            <span className="lg-find-booking-text">
+              <strong>Find a booking</strong>
+              <small>Check its status with the booking code — no sign-in needed</small>
+            </span>
+            <i className="fas fa-arrow-up-right-from-square lg-find-booking-arrow"></i>
+          </Link>
+
           <div className="lg-secure">
             <i className="fas fa-shield-alt"></i>
             <span>Protected with enterprise-grade security</span>

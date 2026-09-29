@@ -4,6 +4,8 @@ import Login from "./pages/Login";
 import SelectRole from "./pages/SelectRole";
 import Register from "./pages/Register";
 import HotelRegisterFromOut from "./pages/HotelRegisterFromOut";
+import FindBooking from "./pages/FindBooking";
+import FindBookingResults from "./pages/FindBookingResults";
 import HotelApproval from "./pages/HotelApproval";
 import HotelApprovalDetail from "./pages/HotelApprovalDetail";
 import AgentApproval from "./pages/AgentApproval";
@@ -367,7 +369,12 @@ export default function App() {
         <Route path="/select-userRole" element={<SelectRole />} />
         <Route path="/register" element={<Register />} />
         <Route path="/hotel-register" element={<HotelRegisterFromOut />} />
-        
+        {/* Booking lookup for people outside the system, no sign-in: booking
+            code + lead guest's last name, or a date. Linked from the login
+            screen; each search opens its results in a new tab. */}
+        <Route path="/find-booking" element={<FindBooking />} />
+        <Route path="/find-booking/results" element={<FindBookingResults />} />
+
        
      {/* Protected Routes */}
 <Route
