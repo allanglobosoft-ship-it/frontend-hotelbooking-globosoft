@@ -1,19 +1,15 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import {
-  Container,
   Table,
   Button,
-  Spinner,
   Badge,
   Card,
   Pagination,
   Modal,
   Form,
-  Row,
-  Col,
 } from "react-bootstrap";
-import { FaArrowLeft, FaPlus, FaEdit, FaTrash, FaEye } from "react-icons/fa";
+import { FaArrowLeft, FaEdit, FaTrash, FaEye } from "react-icons/fa";
 import axiosInstance from "../../../components/AxiosInstance";
 import { toast } from "react-hot-toast";
 import Sidebar from "../../../components/Sidebar";
@@ -38,7 +34,6 @@ const Policy = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [page, setPage] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
-  const [searchTimeout, setSearchTimeout] = useState(null);
   const [marketTypes, setMarketTypes] = useState([]);
 
   // ✅ Market type master — used to show names instead of raw ids
@@ -69,7 +64,7 @@ const Policy = () => {
     navigate(`${navBase}/${id}/hotel-policy/${policyId}/edit?mode=view`);
 
   // ✅ Fetch hotel policies with search and pagination
-  const fetchPolicies = async (pageNum = 0, searchQuery = searchTerm) => {
+  const fetchPolicies = useCallback(async (pageNum = 0, searchQuery = "") => {
     setLoading(true);
     try {
       const params = new URLSearchParams({
@@ -107,7 +102,7 @@ const Policy = () => {
       if (filteredPolicies.length < 10) {
         setTotalPages(pageNum + 1);
       } else {
-        setTotalPages(Math.max(totalPages, pageNum + 2));
+        setTotalPages((prev) => Math.max(prev, pageNum + 2));
       }
 
       setPage(pageNum);
@@ -120,37 +115,18 @@ const Policy = () => {
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchPolicies();
   }, [id]);
 
-  // ✅ Debounced search effect (similar to Bank.jsx)
+  // ✅ Single loader: runs on open / hotel change, immediately when the
+  // search is empty, and 500ms after the user stops typing otherwise.
   useEffect(() => {
-    // Clear previous timeout
-    if (searchTimeout) {
-      clearTimeout(searchTimeout);
-    }
-
-    // Set new timeout for search
-    if (searchTerm !== "") {
-      const timeout = setTimeout(() => {
-        fetchPolicies(0, searchTerm);
-      }, 500); // 500ms delay
-      setSearchTimeout(timeout);
-    } else if (searchTerm === "") {
-      // If search is cleared, fetch all data
+    if (searchTerm === "") {
       fetchPolicies(0, "");
+      return;
     }
-
-    // Cleanup timeout on unmount
-    return () => {
-      if (searchTimeout) {
-        clearTimeout(searchTimeout);
-      }
-    };
-  }, [searchTerm]);
+    const timeout = setTimeout(() => fetchPolicies(0, searchTerm), 500);
+    return () => clearTimeout(timeout);
+  }, [searchTerm, fetchPolicies]);
 
   // ✅ Delete policy
   const handleDelete = (policy) => {
@@ -172,7 +148,7 @@ const Policy = () => {
           .delete(`/api/hotelPolicy/${policy.policyId}`)
           .then(() => {
             toast.success("Policy deleted successfully");
-            fetchPolicies();
+            fetchPolicies(0, searchTerm);
           })
           .catch((error) => {
             console.error("❌ Delete Error:", error.response || error);
@@ -205,8 +181,8 @@ const Policy = () => {
      }else{
       toast.success("Policy deactivated successfully");
      }
-     
-      fetchPolicies();
+
+      fetchPolicies(0, searchTerm);
       setShowStatusModal(false);
     } catch (error) {
       console.error("❌ Status Update Error:", error.response || error);
@@ -263,8 +239,7 @@ const Policy = () => {
                       value={searchTerm}
                       onChange={(e) => {
                         const value = e.target.value;
-                        setSearchTerm(value);
-                        fetchPolicies(0, value); // pass value to API
+                        setSearchTerm(value); // the loader effect fetches
                       }}
                       className="border-1  bg-light"
                     />
@@ -280,8 +255,7 @@ const Policy = () => {
                           zIndex: 10,
                         }}
                         onClick={() => {
-                          setSearchTerm("");
-                          fetchPolicies(0, ""); // fetch all data
+                          setSearchTerm(""); // the loader effect refetches all
                         }}
                         title="Clear search"
                       >
