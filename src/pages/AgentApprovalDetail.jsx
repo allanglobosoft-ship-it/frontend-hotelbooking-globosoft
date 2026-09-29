@@ -24,6 +24,15 @@ const STATUS_META = {
   PENDING: { label: "Pending", bg: "#fff7e6", color: "#b76e00", dot: "#f59e0b" },
   APPROVED: { label: "Approved", bg: "#e7f6ec", color: "#1b7f3a", dot: "#22c55e" },
   REJECTED: { label: "Rejected", bg: "#fdecec", color: "#b42318", dot: "#ef4444" },
+  CANCELLED: { label: "Cancelled", bg: "#f2f4f7", color: "#475467", dot: "#98a2b3" },
+};
+
+// reviewedDate/reviewedBy carry the approve, reject AND cancel stamp, so the
+// label has to follow the status. Anything not listed keeps the original
+// "Approved" wording (PENDING shows it with an em-dash value, as before).
+const REVIEWED_DATE_LABEL = {
+  REJECTED: "Rejected Date & Time",
+  CANCELLED: "Cancelled Date & Time",
 };
 
 const StatusPill = ({ status }) => {
@@ -169,16 +178,17 @@ export default function AgentApprovalDetail() {
     }
   };
 
-  // "Cancel" — discards a Rejected request entirely (removes it from the
-  // approval list) without approving the agent.
+  // "Cancel" — closes off a Rejected request without approving the agent. The
+  // row is kept and marked Cancelled, so it stays on the approval list under
+  // that status instead of disappearing.
   const handleCancelRejected = async () => {
     try {
       setActionLoading("cancel");
       await axiosInstance.put(`/api/agent-external-register/${id}/cancel`);
-      toast.success("Rejected request removed from the approval list.");
+      toast.success("Registration request cancelled.");
       navigate("/admin/approval/agents");
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to remove request.");
+      toast.error(err?.response?.data?.message || "Failed to cancel request.");
     } finally {
       setActionLoading(null);
     }
@@ -303,9 +313,7 @@ export default function AgentApprovalDetail() {
                     <DetailItem
                       icon={<FaClock />}
                       label={
-                        reg.status === "REJECTED"
-                          ? "Rejected Date & Time"
-                          : "Approved Date & Time"
+                        REVIEWED_DATE_LABEL[reg.status] || "Approved Date & Time"
                       }
                       value={reg.reviewedDate ? formatDateTimeDisplay(reg.reviewedDate) : "—"}
                     />

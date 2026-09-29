@@ -14,6 +14,7 @@ import TopBar from "../../components/TopBar";
 import Select from "react-select";
 import AgentSelect from "../../components/AgentSelect";
 import axiosInstance from "../../components/AxiosInstance";
+import { logAgentSearch } from "../../utils/agentSearchLog";
 import AgentBalanceDisplay from "../../components/AgentBalanceDisplay";
 import AdvertisementCarousel from "../../components/AdvertisementCarousel";
 import AgentCreditBalance from "../../components/AgentCreditBalance";
@@ -485,11 +486,17 @@ export default function LastMinuteBookingPage() {
   }, [currencyOptions]);
 
   // {code, factor} threaded downstream. factor = AED→target multiplier.
+  // master_currency.value is "AED per 1 unit" of the target, so the multiplier
+  // is aedBaseRate / value (= 1/value when AED itself has value 1),
+  // NOT value / aedBaseRate.
   const displayCurrency = useMemo(() => ({
     code: selectedCurrency?.code || "AED",
     factor:
-      selectedCurrency && Number.isFinite(selectedCurrency.rate) && aedBaseRate
-        ? selectedCurrency.rate / aedBaseRate
+      selectedCurrency &&
+      Number.isFinite(selectedCurrency.rate) &&
+      selectedCurrency.rate > 0 &&
+      aedBaseRate
+        ? aedBaseRate / selectedCurrency.rate
         : 1,
   }), [selectedCurrency, aedBaseRate]);
 
@@ -560,6 +567,24 @@ export default function LastMinuteBookingPage() {
     try {
       setSearching(true);
       setResults(null);
+
+      // ── Agent search log (Unbooked Opportunities → Searches tab) ──────
+      // Fire-and-forget snapshot of the Last Minute search context so
+      // admins see it in the Unbooked Opportunities report even when the
+      // agent never picks a hotel. Shared with HotelSearch — see
+      // utils/agentSearchLog.js. Runs BEFORE the inhouse search so it
+      // gets on the wire even if the inhouse call fails.
+      logAgentSearch({
+        agentId: (isAgentRole ? selfAgentId : agent) || 1,
+        agentName: loggedInAgentName,
+        destinationId: selectedDestination?.value,
+        destinationLabel: selectedDestination?.label,
+        nationalityLabel: selectedNationality?.label,
+        checkIn,
+        checkOut,
+        rooms,
+        source: "last-minute-booking",
+      });
 
       // ── Source 1: inhouse last-minute contract rates (unchanged) ──────────
       // Awaited first so the page paints as soon as these land. This request,

@@ -36,6 +36,16 @@ const SelectRole = () => {
         description = "Operational tasks and support functions";
         color = "#2ecc71";
         break;
+      case "supplier":
+        icon = "fas fa-truck";
+        description = "Manage the services enabled for your supplier account";
+        color = "#f39c12";
+        break;
+      case "dmc":
+        icon = "fas fa-map-marked-alt";
+        description = "Manage the services enabled for your DMC account";
+        color = "#8e44ad";
+        break;
       default:
         icon = "fas fa-user";
         description = "Custom role with specific permissions";

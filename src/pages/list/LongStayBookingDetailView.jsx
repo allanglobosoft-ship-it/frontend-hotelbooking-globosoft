@@ -509,6 +509,19 @@ export default function LongStayBookingDetailView() {
     priorStatus.includes("COMPLETED") ||
     isConfirmedOrLater;
 
+  // Mirrors the docs-vs-proforma rule used across the app for the resend-mail
+  // preview: a still-tentative long-stay booking (On Request pending / just
+  // Confirmed) resends the Proforma Voucher; once ReConfirmed / Completed —
+  // or Cancelled — it resends the real Voucher. Kept as derived values so the
+  // modal title, loading copy, iframe title, and the /pdf?type= request all
+  // stay in sync automatically.
+  const resendUsesFinalDoc =
+    isCancelled || isReconfirmed || normalizedConf === "COMPLETED";
+  const resendDocLabel = resendUsesFinalDoc
+    ? "Voucher"
+    : "Long Stay Booking Proforma Voucher";
+  const resendDocType = resendUsesFinalDoc ? "VOUCHER" : "PROFORMA_VOUCHER";
+
   // Status label fed to the badge. When cancelled, surface the prior progression
   // so e.g. a confirmed booking shows "Confirmed/Cancelled" and an on-request
   // one shows "OnRequest/Confirmed/Reconfirmed/Cancelled". cancelledFromStatus
@@ -922,7 +935,7 @@ export default function LongStayBookingDetailView() {
       const [docRes, agentRes] = await Promise.all([
         axiosInstance
           .get(`/api/longStayBooking/${bookingId}/pdf`, {
-            params: { type: "VOUCHER" },
+            params: { type: resendDocType },
           })
           .catch(() => null),
         agentId
@@ -3102,7 +3115,7 @@ export default function LongStayBookingDetailView() {
       >
         <Modal.Header closeButton={!resendingMail}>
           <Modal.Title style={{ fontSize: "1rem", fontWeight: 700 }}>
-            Resend Voucher to Agent
+            Resend {resendDocLabel} to Agent
             {detail?.bookingCode ? ` — ${detail.bookingCode}` : ""}
           </Modal.Title>
         </Modal.Header>
@@ -3111,14 +3124,14 @@ export default function LongStayBookingDetailView() {
             <div className="d-flex align-items-center justify-content-center h-100">
               <Spinner animation="border" variant="primary" />
               <span className="ms-2 text-muted">
-                Preparing voucher attachment…
+                Preparing {resendDocLabel.toLowerCase()} attachment…
               </span>
             </div>
           ) : resendMailPdfUrl ? (
             <iframe
               key={resendMailPdfUrl}
               src={resendMailPdfUrl}
-              title="Voucher preview"
+              title={`${resendDocLabel} preview`}
               style={{
                 width: "100%",
                 height: "100%",

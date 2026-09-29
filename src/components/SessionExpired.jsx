@@ -6,6 +6,12 @@ const AUTH_KEYS = [
   "UserName",
   "currentActiveRole",
   "makeYourOwnPackageAgentId",
+  // Supplier / DMC approved-feature snapshot (hooks/usePartnerAccess.js).
+  "partnerAccess",
+  // RegionalClock country cache (components/RegionalClock.jsx). Cleared so
+  // the next login re-fetches its own countryCode instead of inheriting
+  // the previous user's timezone.
+  "regionalClockProfile",
 ];
 
 export const clearAuthStorage = () => {

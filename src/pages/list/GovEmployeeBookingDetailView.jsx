@@ -415,6 +415,19 @@ export default function GovEmployeeBookingDetailView() {
   // Final docs available once the booking is reconfirmed/completed.
   const showsFinalDocs = normalizedStatus === "RECONFIRMED" || normalizedStatus === "COMPLETED";
 
+  // Mirrors the docs-vs-proforma rule used across the app for the resend-mail
+  // preview: a still-tentative gov-employee booking (CONFIRMED / On Request)
+  // resends the Proforma Voucher; once ReConfirmed / Completed — or Cancelled
+  // — it resends the real Voucher.
+  const resendUsesFinalDoc =
+    isCancelled ||
+    normalizedStatus === "RECONFIRMED" ||
+    normalizedStatus === "COMPLETED";
+  const resendDocLabel = resendUsesFinalDoc
+    ? "Voucher"
+    : "Gov Employee Booking Proforma Voucher";
+  const resendDocType = resendUsesFinalDoc ? "VOUCHER" : "PROFORMA_VOUCHER";
+
   // On-Request flow mirror (degrades gracefully — gov-employee backend
   // does not currently expose roomStatus="On Request" or
   // onRequestConfirmed, so both flags evaluate false and the page behaves
@@ -999,7 +1012,7 @@ export default function GovEmployeeBookingDetailView() {
       const [docRes, agentRes] = await Promise.all([
         axiosInstance
           .get(`/api/gov-employee-booking/${id}/document`, {
-            params: { type: "VOUCHER" },
+            params: { type: resendDocType },
           })
           .catch(() => null),
         agentId
@@ -2718,7 +2731,7 @@ export default function GovEmployeeBookingDetailView() {
       >
         <Modal.Header closeButton={!resendingMail}>
           <Modal.Title style={{ fontSize: "1rem", fontWeight: 700 }}>
-            Resend Voucher to Agent
+            Resend {resendDocLabel} to Agent
             {booking?.bookingCode ? ` — ${booking.bookingCode}` : ""}
           </Modal.Title>
         </Modal.Header>
@@ -2727,14 +2740,14 @@ export default function GovEmployeeBookingDetailView() {
             <div className="d-flex align-items-center justify-content-center h-100">
               <Spinner animation="border" variant="primary" />
               <span className="ms-2 text-muted">
-                Preparing voucher attachment…
+                Preparing {resendDocLabel.toLowerCase()} attachment…
               </span>
             </div>
           ) : resendMailPdfUrl ? (
             <iframe
               key={resendMailPdfUrl}
               src={resendMailPdfUrl}
-              title="Voucher preview"
+              title={`${resendDocLabel} preview`}
               style={{
                 width: "100%",
                 height: "100%",

@@ -15,6 +15,7 @@ import Select from "react-select";
 import AgentSelect from "../components/AgentSelect";
 import AgentCreditBalance from "../components/AgentCreditBalance";
 import axiosInstance from "../components/AxiosInstance";
+import { logAgentSearch } from "../utils/agentSearchLog";
 import AdvertisementCarousel from "../components/AdvertisementCarousel";
 import TimeApplyPicker from "../components/TimeApplyPicker";
 import DateInput from "../components/DateInput";
@@ -41,7 +42,7 @@ const DEFAULT_PROGRESS_CHANNELS = [
   "grn",
 ];
 
-function SearchProgressBar({ pollStatus, completedChannels, channels }) {
+function SearchProgressBar({ pollStatus, completedChannels, channels, isLoading }) {
   const effectiveChannels =
     Array.isArray(channels) && channels.length > 0
       ? channels
@@ -50,7 +51,15 @@ function SearchProgressBar({ pollStatus, completedChannels, channels }) {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
-    if (pollStatus === "IN_PROGRESS") {
+    // isLoading covers the tiny window between the user's Search click and
+    // pollStatus flipping to IN_PROGRESS (handleSearchSubmit resets pollStatus
+    // to IDLE first). Without it, a Modify Search briefly hides the bar
+    // because the previous COMPLETED state is wiped before the new poll has
+    // started — the exact "accidentally hides" case the spec warns about.
+    const isActive =
+      pollStatus === "IN_PROGRESS" ||
+      (!!isLoading && pollStatus !== "COMPLETED");
+    if (isActive) {
       setVisible(true);
       const done = completedChannels.size;
       const target =
@@ -66,7 +75,7 @@ function SearchProgressBar({ pollStatus, completedChannels, channels }) {
       setVisible(false);
       setProgress(0);
     }
-  }, [pollStatus, completedChannels]);
+  }, [pollStatus, completedChannels, isLoading]);
 
   if (!visible) return null;
 
@@ -317,23 +326,77 @@ function RoomGuestSelector({ value, onChange }) {
 // ─────────────────────────────────────────────
 // Lazy Image
 // ─────────────────────────────────────────────
+// Local placeholder the rest of the app already uses for missing photos.
+const NO_IMAGE_SRC = "/images/not-available.jpg";
+
+// Returns the image URL unchanged, or null when it can never load. Several
+// supplier search legs send "https://details/…" or "https://deatails/…" to
+// mean "no photo". A dotless host like that never resolves, yet the browser
+// spent ~3s failing its DNS lookup for every such card.
+function usableImageUrl(url) {
+  if (!url || typeof url !== "string") return null;
+  try {
+    const { protocol, hostname } = new URL(url, window.location.origin);
+    if (protocol !== "http:" && protocol !== "https:") return null;
+    if (hostname !== "localhost" && !hostname.includes(".")) return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+// One <link rel="preconnect"> per image host, so DNS + TLS setup for a
+// supplier's image server is already done when a card lower down the page
+// requests its photo.
+const preconnectedImageOrigins = new Set();
+function preconnectImageOrigin(url) {
+  try {
+    const { origin } = new URL(url, window.location.origin);
+    if (
+      origin === window.location.origin ||
+      preconnectedImageOrigins.has(origin)
+    ) {
+      return;
+    }
+    preconnectedImageOrigins.add(origin);
+    const link = document.createElement("link");
+    link.rel = "preconnect";
+    link.href = origin;
+    document.head.appendChild(link);
+  } catch {
+    // Unparseable URL — nothing to warm up.
+  }
+}
+
 function LazyImage({ src, alt, className }) {
   const containerRef = useRef(null);
   const [inView, setInView] = useState(false);
-  const [loaded, setLoaded] = useState(false);
+  // Keyed by URL instead of plain booleans, so a card whose photo changes
+  // starts over rather than keeping a stale loaded/failed flag.
+  const [loadedSrc, setLoadedSrc] = useState(null);
+  const [failedSrc, setFailedSrc] = useState(null);
+
+  const supplierSrc = usableImageUrl(src);
+  const imageSrc =
+    supplierSrc && failedSrc !== supplierSrc ? supplierSrc : NO_IMAGE_SRC;
+  const loaded = loadedSrc === imageSrc;
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     if ("IntersectionObserver" in window) {
-      const observer = new IntersectionObserver((entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            setInView(true);
-            observer.disconnect();
-          }
-        });
-      });
+      const observer = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) {
+              setInView(true);
+              observer.disconnect();
+            }
+          });
+        },
+        // Start the request a little before the card scrolls into view.
+        { rootMargin: "300px 0px" },
+      );
       observer.observe(el);
       return () => observer.disconnect();
     } else {
@@ -341,27 +404,25 @@ function LazyImage({ src, alt, className }) {
     }
   }, []);
 
-  const buildSrcSet = (url) => {
-    try {
-      const safeUrl = url || "https://via.placeholder.com/480x270";
-      const pattern = /\/(\d+)\/(\d+)$/;
-      const small = pattern.test(safeUrl)
-        ? safeUrl.replace(pattern, "/320/180")
-        : `${safeUrl}?w=320&h=180`;
-      const medium = pattern.test(safeUrl)
-        ? safeUrl.replace(pattern, "/480/270")
-        : `${safeUrl}?w=480&h=270`;
-      const large = pattern.test(safeUrl)
-        ? safeUrl.replace(pattern, "/640/360")
-        : `${safeUrl}?w=640&h=360`;
-      return `${small} 320w, ${medium} 480w, ${large} 640w`;
-    } catch {
-      return undefined;
-    }
+  useEffect(() => {
+    if (supplierSrc) preconnectImageOrigin(supplierSrc);
+  }, [supplierSrc]);
+
+  // A broken supplier photo falls back to the placeholder; if even that
+  // fails, drop the skeleton instead of letting it shimmer forever.
+  const handleError = () => {
+    if (imageSrc === NO_IMAGE_SRC) setLoadedSrc(imageSrc);
+    else setFailedSrc(imageSrc);
   };
 
-  const imageSrc = src || "https://via.placeholder.com/480x270";
-
+  // The supplier URL is requested exactly as sent. The old srcSet appended
+  // ?w=&h= to it, which sent Akamai-hosted photos through Akamai's resizer
+  // (3–4s cold, 5-minute browser cache instead of ~10 days) and mangled URLs
+  // that already carry a query string, such as Darina's
+  // ShowImg.aspx?params=…. loading="lazy" and fetchpriority="low" are gone
+  // too: the IntersectionObserver already holds the <img> back until the
+  // card is near the viewport, and low priority let other requests jump
+  // ahead of photos that were already on screen.
   return (
     <div
       ref={containerRef}
@@ -372,13 +433,10 @@ function LazyImage({ src, alt, className }) {
       {inView && (
         <img
           src={imageSrc}
-          srcSet={buildSrcSet(imageSrc)}
-          sizes="(min-width:1200px) 33vw, (min-width:768px) 50vw, 100vw"
-          loading="lazy"
           decoding="async"
-          fetchpriority="low"
           alt={alt}
-          onLoad={() => setLoaded(true)}
+          onLoad={() => setLoadedSrc(imageSrc)}
+          onError={handleError}
           className={`img-cover ${loaded ? "img-loaded" : "img-loading"}`}
         />
       )}
@@ -465,6 +523,13 @@ export default function HotelSearch({
   // so it's persisted on the new HotelBooking row.
   const [employees, setEmployees] = useState([]);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
+  // Agent-side staff for the "Booking Done On Behalf Of Agent Staff"
+  // dropdown — separate from the admin-side employees above. Populated
+  // from GET /api/sub-user/by-agent/{agentId} whenever the picked agent
+  // changes. Empty list until an agent is chosen; the dropdown is hidden
+  // when there are no sub-users for the picked agent.
+  const [agentStaffOptions, setAgentStaffOptions] = useState([]);
+  const [selectedAgentStaff, setSelectedAgentStaff] = useState(null);
 
   useEffect(() => {
     const fetchEmployees = async () => {
@@ -513,11 +578,17 @@ export default function HotelSearch({
   const isAutoCorrectingNights = useRef(false);
   const [agent, setAgent] = useState("");
   const [agentBalance, setAgentBalance] = useState(null);
+  // Currency the balance is expressed in — populated from the same
+  // /agent-credit-limit response now that the backend returns already-
+  // converted balances alongside the raw AED number. Defaults to "AED" so
+  // an older backend (before this fix) still renders correctly.
+  const [agentBalanceCurrency, setAgentBalanceCurrency] = useState("AED");
   const [agentBalanceLoading, setAgentBalanceLoading] = useState(false);
 
   useEffect(() => {
     if (!agent) {
       setAgentBalance(null);
+      setAgentBalanceCurrency("AED");
       return;
     }
     let cancelled = false;
@@ -525,10 +596,23 @@ export default function HotelSearch({
     axiosInstance
       .get(`/api/agent-credit-limit/agent/${agent}`)
       .then((res) => {
-        if (!cancelled) setAgentBalance(res?.data?.availableCreditLimit ?? null);
+        if (cancelled) return;
+        // Prefer the agent-currency-converted figure; the backend returns
+        // it alongside the raw AED field. Falls back to the AED value when
+        // the backend is older than this fix (both fields will be null in
+        // that case, so `??` chains land on the AED number).
+        const converted =
+          res?.data?.availableCreditLimitInAgentCurrency ??
+          res?.data?.availableCreditLimit ??
+          null;
+        setAgentBalance(converted);
+        setAgentBalanceCurrency(res?.data?.currencyCode || "AED");
       })
       .catch(() => {
-        if (!cancelled) setAgentBalance(null);
+        if (!cancelled) {
+          setAgentBalance(null);
+          setAgentBalanceCurrency("AED");
+        }
       })
       .finally(() => {
         if (!cancelled) setAgentBalanceLoading(false);
@@ -556,6 +640,20 @@ export default function HotelSearch({
   // still the authoritative gate on which suppliers are queried.
   const [allowedChannels, setAllowedChannels] = useState(new Set());
   const [channelsUnrestricted, setChannelsUnrestricted] = useState(true);
+  // Every supplier super_admin has enabled for this company — the same
+  // list the /admin/api-access grid renders. Drives which rows appear
+  // in the Channel filter sidebar (both admin-enabled AND admin-disabled
+  // ones show, so the operator sees the same list as the admin page).
+  // The LIVE/OFF badge on each row is separately driven by
+  // `channelHasResults` (see below).
+  const [registeredChannels, setRegisteredChannels] = useState(new Set());
+  // Suppliers that contributed at least one hotel to the CURRENT search,
+  // as reported by the backend's `channelCounts` (counted over the whole
+  // deduplicated result set, before the apiType filter and before
+  // pagination). This is what the LIVE/OFF badge reads — allResults only
+  // ever holds the current page, so a supplier whose hotels sit on page
+  // 3+ would otherwise wrongly read OFF.
+  const [channelsWithResults, setChannelsWithResults] = useState(new Set());
   // Available Deals multi-select filter (array of option values).
   // Empty array = no filter. Matching is OR across selected options.
   const [availableDeals, setAvailableDeals] = useState([]);
@@ -567,17 +665,44 @@ export default function HotelSearch({
   const [showMapModal, setShowMapModal] = useState(false);
 
   // ── Currency conversion (display only) ────────────────────────────────
-  // Search rates come back in AED (the base currency). The currency dropdown
-  // lets the operator view the same rates in another currency: each option
-  // carries the master_currency `value` (multiplier relative to AED), so the
-  // displayed price is baseRate(AED) × (target.value / AED.value). This is a
-  // pure display transform — hotel.price (AED) and every downstream payload
-  // stay in AED, so no other flow is affected.
+  // Conversion is done in the BACKEND now — HotelSearchController resolves
+  // the agent's configured currency (or the `displayCurrencyCode` request
+  // override) and returns every card with `displayBaseRate` +
+  // `displayCurrencyCode`, plus envelope-level `displayCurrencyCode` /
+  // `displayCurrencyFactor` for the sessionStorage handoff to RoomList /
+  // booking pages. The FE never picks a direction or looks up a rate — it
+  // just renders the numbers the backend sent.
+  //
+  // The dropdown still exists for admin previews; its selection is passed
+  // back to the search endpoint as `?displayCurrencyCode=` so the backend
+  // re-runs the conversion against that override.
   const [currencyOptions, setCurrencyOptions] = useState([]);
   const [selectedCurrency, setSelectedCurrency] = useState(null);
   // Once the operator picks a currency manually we stop auto-defaulting it to
   // the agent's currency (so their choice sticks).
   const currencyTouchedRef = useRef(false);
+  // Latest selected code, readable synchronously from async callbacks
+  // (handleSearchSubmit after its POST await, the agent-default lookup).
+  const selectedCurrencyCodeRef = useRef(null);
+  // Envelope-level {code, factor} from the last backend response — used by
+  // the sessionStorage handoff to RoomList / booking pages. `factor` is
+  // "target-per-1-AED" (backend divides master_currency.value into 1), so
+  // downstream `formatPrice(aed) = code + " " + aed * factor` renders the
+  // correct amount with no direction guessing.
+  const backendDisplayCurrencyRef = useRef({ code: "AED", factor: 1 });
+  // Live target for the running poll's `displayCurrencyCode` param. The
+  // pollUntilComplete closure re-reads this on every tick, so a picker
+  // change flows into subsequent poll requests without restarting the
+  // search. Setter also mutates the closed-over params object in place.
+  const pollCurrencyCodeRef = useRef(null);
+  const pollParamsRef = useRef(null);
+  // Currency-version counter, bumped on every picker change. Any in-flight
+  // request captures the version at send-time; if by the time the response
+  // arrives the counter has advanced (user picked a new currency in the
+  // interim), the response is DROPPED instead of merged — otherwise a
+  // stale poll tick would overwrite freshly-fetched rows with old-currency
+  // data. That was the "mixed AED/GBP cards" symptom in the screenshot.
+  const currencyVersionRef = useRef(0);
   // For agent logins, the agent's own id (resolved below) used to default the
   // display currency to that agent's configured currency.
   const [selfAgentId, setSelfAgentId] = useState("");
@@ -629,14 +754,21 @@ export default function HotelSearch({
         if (cancelled) return;
         const unrestricted = res?.data?.unrestricted !== false;
         const codes = Array.isArray(res?.data?.codes) ? res.data.codes : [];
+        const registered = Array.isArray(res?.data?.registered)
+          ? res.data.registered
+          : [];
         setChannelsUnrestricted(unrestricted);
         setAllowedChannels(
           new Set(codes.map((c) => String(c || "").toLowerCase())),
+        );
+        setRegisteredChannels(
+          new Set(registered.map((c) => String(c || "").toLowerCase())),
         );
       } catch (_) {
         if (!cancelled) {
           setChannelsUnrestricted(true);
           setAllowedChannels(new Set());
+          setRegisteredChannels(new Set());
         }
       }
     })();
@@ -663,7 +795,25 @@ export default function HotelSearch({
   const [pollStatus, setPollStatus] = useState("IDLE");
   const completedChannelsRef = useRef(new Set());
   const [completedChannels, setCompletedChannels] = useState(new Set());
+  // Set of every supplier the backend has confirmed it fan-out'd to,
+  // built from data.status keys as poll results arrive. Used as the
+  // DENOMINATOR by SearchProgressBar so the "%" reflects the real
+  // dispatched list (which varies by market/agent restrictions) —
+  // previously the bar divided by a hardcoded 8-supplier default and
+  // stalled at ~25% because only a subset ever reported back.
+  const dispatchedChannelsRef = useRef(new Set());
+  const [dispatchedChannels, setDispatchedChannels] = useState(new Set());
   const [searchId, setSearchId] = useState(null);
+  // Bumped at the start of every search. fetchHotels and the currency
+  // picker's /resultsOut refetch capture it at send time and drop their
+  // response if another search has started since, so a slow reply that
+  // belongs to the PREVIOUS search can never write that destination's rows
+  // back into allResults after Modify Search → Search cleared them.
+  const searchGenRef = useRef(0);
+  // Bumped by every fetchHotels call that REPLACES allResults, so a slower
+  // full-list /resultsOut reply (currency picker) can't overwrite a newer
+  // page or hotel-name result.
+  const replaceGenRef = useRef(0);
   const [isDestinationLoading, setIsDestinationLoading] = useState(false);
   const resultsRef = useRef(null);
   const [isInitialResultsLoaded, setIsInitialResultsLoaded] = useState(false);
@@ -679,9 +829,9 @@ export default function HotelSearch({
 
   const hotelTypeOptions = [
     { value: "hotel", label: "Hotel" },
-    { value: "villa", label: "Villa" },
-    { value: "resort", label: "Resort" },
-    { value: "apartment", label: "Apartment" },
+    // { value: "villa", label: "Villa" },
+    // { value: "resort", label: "Resort" },
+    // { value: "apartment", label: "Apartment" },
   ];
 
   const channelTypeOptions = [
@@ -696,18 +846,34 @@ export default function HotelSearch({
      { value: "goglobal", label: "GoGlobal" },
   ];
 
-  // Narrows the Channel sidebar filter (and the SearchProgressBar pills)
-  // to the suppliers this caller's company has enabled. When the caller
-  // is unrestricted — no company assignment, or the allow-list is empty —
-  // every option stays visible, so no existing flow is affected.
+  // Channel sidebar filter — every supplier super_admin has registered
+  // for this caller's company (the exact rows the /admin/api-access page
+  // renders) shows here, whether or not admin has enabled it. Each row
+  // is then LIVE/OFF-badged below. When the caller is unrestricted (no
+  // company, no allow-list, or auth failed) every hardcoded option
+  // stays visible so no existing flow is affected.
   const visibleChannelTypeOptions = channelsUnrestricted
     ? channelTypeOptions
-    : channelTypeOptions.filter((o) => allowedChannels.has(o.value));
-  const visibleProgressChannels = channelsUnrestricted
-    ? undefined // let SearchProgressBar keep its own default
-    : channelTypeOptions
-        .filter((o) => allowedChannels.has(o.value))
-        .map((o) => o.value);
+    : channelTypeOptions.filter((o) => registeredChannels.has(o.value));
+  // SearchProgressBar's denominator — the list of suppliers we KNOW
+  // the backend actually dispatched to. Comes from data.status keys
+  // observed on the live poll (dispatchedChannels), with two fallbacks
+  // so the bar still renders sensibly before the first poll returns:
+  //   1. live dispatched list (arrives after the first successful poll)
+  //   2. explicit allow-list when the caller has one (super_admin ∩
+  //      admin-enabled) — same restriction the pill row used to use
+  //   3. SearchProgressBar's own DEFAULT_PROGRESS_CHANNELS fallback
+  const visibleProgressChannels = dispatchedChannels.size > 0
+    ? Array.from(dispatchedChannels)
+    : channelsUnrestricted
+      ? undefined
+      : channelTypeOptions
+          .filter((o) => allowedChannels.has(o.value))
+          .map((o) => o.value);
+
+  // (channelHasResults is defined further down, right after
+  // filteredResults, so the LIVE/OFF badge reflects what is actually
+  // visible on screen instead of the full unfiltered result set.)
 
   // Available Deals filter options. Each option maps to a per-hotel
   // predicate evaluated against the feature-flag map and the search
@@ -779,11 +945,68 @@ export default function HotelSearch({
       }
       setIsDestinationLoading(true);
       try {
+        // Tokenize on whitespace/commas so multi-word queries like
+        // "van turkey" or "Van, Turkey" actually work. The backend's
+        // /api/province?search= does a whole-string contains match and
+        // returns 0 rows for either of those, but returns 165 rows for
+        // just "van" (with "Van, Turkey" buried at index 162). We hit
+        // the backend with the LONGEST token — the most specific one,
+        // less likely to over-match a common prefix — then filter and
+        // rank client-side so exact/starts-with city matches surface
+        // above hits that only contain the token as a substring.
+        const tokens = searchText
+          .trim()
+          .toLowerCase()
+          .split(/[\s,]+/)
+          .filter(Boolean);
+        if (tokens.length === 0) {
+          setDestinationOptions([]);
+          return;
+        }
+        const backendQuery = tokens.reduce(
+          (a, b) => (b.length > a.length ? b : a),
+          tokens[0],
+        );
+
         const response = await axiosInstance.get(
-          `/api/province?search=${searchText}`,
+          `/api/province?search=${encodeURIComponent(backendQuery)}`,
         );
         const cityApiRes = Array.isArray(response.data) ? response.data : [];
-        const options = cityApiRes.slice(0, 50).map((city) => ({
+
+        // Rank each row by how well it matches the FULL query. Rows
+        // that don't contain every token in stateName + country are
+        // dropped so a two-word query behaves like AND (matches "Van
+        // + Turkey" but not "Vannes + France").
+        const query = tokens.join(" ");
+        const scored = [];
+        for (const city of cityApiRes) {
+          const sn = String(city.stateName || "").toLowerCase();
+          const cn = String(city.country || "").toLowerCase();
+          const combined = `${sn} ${cn}`;
+          if (!tokens.every((t) => combined.includes(t))) continue;
+
+          let score = 0;
+          if (sn === query) score += 1000;
+          if (tokens.some((t) => sn === t)) score += 800;
+          if (sn.startsWith(tokens[0])) score += 500;
+          if (tokens.length > 1 && cn === tokens[tokens.length - 1])
+            score += 400;
+          if (
+            tokens.length > 1 &&
+            tokens.slice(1).every((t) => cn.includes(t))
+          )
+            score += 300;
+          if (sn.includes(query)) score += 200;
+          if (sn.includes(tokens[0])) score += 100;
+          // Slight tiebreaker so a shorter, tighter name wins over a
+          // long incidental substring match.
+          score -= Math.min(50, sn.length * 0.5);
+
+          scored.push({ city, score });
+        }
+        scored.sort((a, b) => b.score - a.score);
+
+        const options = scored.slice(0, 50).map(({ city }) => ({
           value: city.id,
           label: `${city.stateName}, ${city.country}`,
           countryId: city.countryId,
@@ -940,6 +1163,22 @@ export default function HotelSearch({
   const filteredResults = useMemo(() => {
     let results = allResults;
 
+    // Hotel Name filter (client-side): case-insensitive, whitespace-
+    // tokenized substring match — ALL tokens must appear somewhere in
+    // hotel.name. Handles the "smart hyde" → "Smart Hyde Park Inn" case
+    // that the backend's whole-string /filter-by-name endpoint rejects,
+    // and normalizes redundant whitespace between tokens ("smart   hyde").
+    const rawNameQuery = String(hotelSearchTerm || "").trim();
+    if (rawNameQuery) {
+      const tokens = rawNameQuery.toLowerCase().split(/\s+/).filter(Boolean);
+      if (tokens.length > 0) {
+        results = results.filter((hotel) => {
+          const name = String(hotel?.name || "").toLowerCase();
+          return tokens.every((t) => name.includes(t));
+        });
+      }
+    }
+
     if (starRating) {
       results = results.filter(
         (hotel) => Number(hotel.rating) === Number(starRating.value),
@@ -1004,14 +1243,64 @@ export default function HotelSearch({
           const pct = Number(meta?.percentage || 0);
           const base = Number(hotel.price || 0);
           const uplifted = +(base * (1 + pct / 100)).toFixed(2);
-          return { ...hotel, price: uplifted, _twentyFourHourPercentage: pct };
+          // The card renders displayPrice, so convert the uplifted AED price
+          // once with the backend factor (same maths as RoomList).
+          const factor = Number(hotel.displayFactor) > 0 ? Number(hotel.displayFactor) : 1;
+          const displayPrice =
+            pct > 0 ? Math.round(uplifted * factor * 100 + 1e-9) / 100 : hotel.displayPrice;
+          return { ...hotel, price: uplifted, displayPrice, _twentyFourHourPercentage: pct };
         });
+    }
+
+    // Client-side sort so the visible list always matches the selected
+    // sort pill (Low to High is the default). The backend sorts each page,
+    // but the poll merges pages into `allResults` in insertion order via a
+    // Map — so a late-arriving supplier's cheap hotel would appear at the
+    // bottom of the list even when Low to High is selected. Re-sorting the
+    // current page here fixes that. Only the sort keys the UI can actually
+    // pick are handled; anything else keeps the incoming order.
+    if (sortBy === "priceAsc" || sortBy === "priceDesc") {
+      const dir = sortBy === "priceAsc" ? 1 : -1;
+      // Copy so we don't mutate a memoized array from an earlier stage.
+      results = [...results].sort((a, b) => {
+        const pa = Number(a?.price);
+        const pb = Number(b?.price);
+        // Rows without a numeric price sink to the bottom regardless of
+        // direction, so they never distort the top of the list.
+        const aMissing = !Number.isFinite(pa);
+        const bMissing = !Number.isFinite(pb);
+        if (aMissing && bMissing) return 0;
+        if (aMissing) return 1;
+        if (bMissing) return -1;
+        return (pa - pb) * dir;
+      });
     }
 
     return results;
   }, [allResults, hotelSearchTerm, starRating, hotelType, channelType,
       availableDeals, featureFlagsMap,
-      is24HourCheckin, twentyFourHourMap]);
+      is24HourCheckin, twentyFourHourMap, sortBy]);
+
+  // Channels that returned at least one hotel for the CURRENT search —
+  // drives the LIVE/OFF badge next to each Channel filter row.
+  // Rule: LIVE (green) = this supplier has hotels in the search result;
+  // OFF (red) = it has none. Nothing about admin toggles.
+  //
+  // Source of truth is `channelsWithResults`, the backend's per-supplier
+  // count over the WHOLE deduplicated result set (every page, before the
+  // apiType checkbox filter). allResults only holds the current page, so
+  // reading the badge off the page would mark a supplier OFF whenever its
+  // hotels happen to sort onto a later page — exactly the "all OFF but
+  // results are there" bug. The page-derived set is unioned in only as a
+  // fallback for a backend that hasn't been restarted with channelCounts.
+  const channelHasResults = useMemo(() => {
+    const set = new Set(channelsWithResults);
+    for (const h of allResults || []) {
+      const ct = String(h?.channelType || "").toLowerCase();
+      if (ct) set.add(ct);
+    }
+    return set;
+  }, [channelsWithResults, allResults]);
 
   // Shared "View Rooms" handler — used by both the row-level button on the
   // hotel card and the "View Rooms" action inside the Explore-on-Map
@@ -1079,6 +1368,11 @@ export default function HotelSearch({
       rooms: roomsPayload,
       parentBookingCode: parentBookingCode || null,
       employeeId: isAgentRole ? null : selectedEmployee?.value || null,
+      // Booking Done On Behalf Of Agent Staff (sub-user of the picked agent);
+      // forwarded RoomList -> HotelBookingPage -> POST /api/hotel-booking/create.
+      agentStaffId:
+        selectedAgentStaff?.value != null ? String(selectedAgentStaff.value) : null,
+      agentStaffName: selectedAgentStaff?.label || null,
       is24HourCheckin: !!is24HourCheckin,
       checkInTime: is24HourCheckin ? checkInTime24 : null,
       checkOutTime: is24HourCheckin ? checkOutTime24 : null,
@@ -1091,18 +1385,24 @@ export default function HotelSearch({
       phone: "",
       hotelImage: hotel.image,
     };
-    const currency =
-      hotel.channelType === "ratehawk"
-        ? { code: "AED", factor: 1 }
-        : {
-            code: displayCurrencyCode,
-            factor:
-              selectedCurrency &&
-              Number.isFinite(selectedCurrency.rate) &&
-              aedBaseRate
-                ? selectedCurrency.rate / aedBaseRate
-                : 1,
-          };
+    // Currency handoff comes from the backend (HotelSearchController): factor is
+    // "target per 1 AED", so RoomList / booking pages render aed * factor.
+    // Prefer the clicked card's own code/factor, else the last envelope value.
+    const backendCurrency =
+      backendDisplayCurrencyRef.current || { code: "AED", factor: 1 };
+    const currency = hotel.displayCurrencyCode
+      ? {
+          code: hotel.displayCurrencyCode,
+          factor:
+            Number(hotel.displayFactor) > 0 ? Number(hotel.displayFactor) : 1,
+        }
+      : {
+          code: backendCurrency.code || "AED",
+          factor:
+            Number.isFinite(backendCurrency.factor) && backendCurrency.factor > 0
+              ? backendCurrency.factor
+              : 1,
+        };
     sessionStorage.setItem(
       "roomListPayload",
       JSON.stringify({ payload, meta, currency }),
@@ -1289,18 +1589,28 @@ export default function HotelSearch({
     agentList();
   }, []);
 
-  // Maps /api/currency rows to react-select options. master_currency.value is
-  // a numeric string ("0.2723"); coerce it once here so the conversion is
-  // plain arithmetic downstream.
-  const mapCurrencyOptions = (list) =>
-    (Array.isArray(list) ? list : [])
-      .filter((c) => c && c.currencyCode)
+  // Maps /api/currency rows to react-select options. Only active rows with a
+  // positive rate are offered (the backend cannot convert into the others),
+  // one option per code — master_currency holds a deleted duplicate BDT row.
+  const mapCurrencyOptions = (list) => {
+    const seenCodes = new Set();
+    return (Array.isArray(list) ? list : [])
+      .filter((c) => {
+        if (!c || !c.currencyCode || c.isDeleted === true || !(Number(c.value) > 0)) {
+          return false;
+        }
+        const code = c.currencyCode.trim().toUpperCase();
+        if (seenCodes.has(code)) return false;
+        seenCodes.add(code);
+        return true;
+      })
       .map((c) => ({
         value: c.currencyId,
         label: c.currencyCode,
         code: c.currencyCode,
         rate: Number(c.value),
       }));
+  };
 
   // Fetches the currency list, passing the typed text as the backend `search`
   // param (server matches on currency name, e.g. "US dollar").
@@ -1340,6 +1650,44 @@ export default function HotelSearch({
     };
   }, []);
 
+  // Fetch the picked agent's own sub-users so the "Booking Done On
+  // Behalf Of Agent Staff" dropdown can populate. Fires whenever the
+  // Agent field changes (admin flow) or when the logged-in agent's own
+  // id resolves (agent flow). Fire-and-forget; failures collapse the
+  // options list to empty and the dropdown auto-hides.
+  useEffect(() => {
+    const resolvedAgentId = isAgentRole ? selfAgentId : agent;
+    if (!resolvedAgentId) {
+      setAgentStaffOptions([]);
+      setSelectedAgentStaff(null);
+      return;
+    }
+    let cancelled = false;
+    axiosInstance
+      .get(`/api/sub-user/by-agent/${resolvedAgentId}`)
+      .then((res) => {
+        if (cancelled) return;
+        const rows = Array.isArray(res?.data) ? res.data : [];
+        setAgentStaffOptions(rows);
+        // If the previously-selected staff no longer belongs to the
+        // new agent (admin switched agents), clear the selection so
+        // stale ids never ride onto the payload.
+        setSelectedAgentStaff((prev) => {
+          if (!prev) return prev;
+          const stillValid = rows.some(
+            (r) => String(r.id) === String(prev.id),
+          );
+          return stillValid ? prev : null;
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAgentStaffOptions([]);
+        setSelectedAgentStaff(null);
+      });
+    return () => { cancelled = true; };
+  }, [agent, selfAgentId, isAgentRole]);
+
   // For agent logins, resolve the agent's own id (cached userId else
   // /api/personalProfile/{UserName}) so we can look up their currency below.
   useEffect(() => {
@@ -1369,41 +1717,40 @@ export default function HotelSearch({
   // still quoted in AED — this only sets the initial dropdown selection so the
   // operator sees the agent's currency by default. Stops once the operator
   // changes the currency manually (currencyTouchedRef).
+  useEffect(() => {
+    selectedCurrencyCodeRef.current = selectedCurrency?.code || null;
+  }, [selectedCurrency]);
+
   const currencyAgentId = isAgentRole ? selfAgentId : agent;
   useEffect(() => {
     if (currencyTouchedRef.current) return;
     if (!currencyAgentId || currencyOptions.length === 0) return;
     let cancelled = false;
+    const searchGenAtRequest = searchGenRef.current;
     axiosInstance
       .get(`/api/agent/${currencyAgentId}`)
       .then((res) => {
         const code = res?.data?.currencyCode;
         if (cancelled || !code || currencyTouchedRef.current) return;
         const opt = currencyOptions.find((o) => o.code === code);
-        if (opt) setSelectedCurrency(opt);
+        // Skip the on-screen re-convert if a new search started meanwhile:
+        // this closure's searchId would belong to the previous search.
+        if (opt) {
+          changeDisplayCurrency(opt, {
+            reconvertAll: searchGenAtRequest === searchGenRef.current,
+          });
+        }
       })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [currencyAgentId, currencyOptions]);
 
-  // AED is the base the search rates are quoted in. We normalise against its
-  // stored value so AED→AED is always ×1 regardless of how the master row is
-  // configured. Falls back to 1 until the list loads.
-  const aedBaseRate = useMemo(() => {
-    const aed = currencyOptions.find((o) => o.code === "AED");
-    return aed && Number.isFinite(aed.rate) && aed.rate > 0 ? aed.rate : 1;
-  }, [currencyOptions]);
-
-  const displayCurrencyCode = selectedCurrency?.code || "AED";
-
-  const convertFromAed = (aedPrice) => {
-    if (aedPrice == null) return aedPrice;
-    const targetRate =
-      selectedCurrency && Number.isFinite(selectedCurrency.rate)
-        ? selectedCurrency.rate
-        : aedBaseRate;
-    return Number(aedPrice) * (targetRate / aedBaseRate);
-  };
+  // The display code shown next to card prices — mirrors the last backend
+  // response so admin-override picks and the agent's default currency both
+  // work. Falls back to the FE picker state on the first render, before any
+  // response has landed.
+  const displayCurrencyCode =
+    backendDisplayCurrencyRef.current?.code || selectedCurrency?.code || "AED";
 
   // "Explore on Map" markers — one per currently-visible (filtered) hotel.
   // MapModal itself drops any entry whose lat/lng isn't a finite number, so
@@ -1415,15 +1762,12 @@ export default function HotelSearch({
     () =>
       filteredResults.map((hotel) => {
         const priceLabel = hotel.price
-          ? hotel.channelType === "ratehawk"
-            ? `AED ${Number(hotel.price).toLocaleString(undefined, {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              })}`
-            : `${displayCurrencyCode} ${convertFromAed(hotel.price).toLocaleString(
-                undefined,
-                { minimumFractionDigits: 2, maximumFractionDigits: 2 },
-              )}`
+          ? `${hotel.displayCurrencyCode || displayCurrencyCode} ${Number(
+              hotel.displayPrice != null ? hotel.displayPrice : hotel.price,
+            ).toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}`
           : null;
         return {
           id: hotel.id,
@@ -1440,13 +1784,7 @@ export default function HotelSearch({
           dealLabels: getHotelFeatureLabels(hotel),
         };
       }),
-    [
-      filteredResults,
-      displayCurrencyCode,
-      selectedCurrency,
-      aedBaseRate,
-      featureFlagsMap,
-    ],
+    [filteredResults, displayCurrencyCode, featureFlagsMap],
   );
 
   useEffect(() => {
@@ -1502,22 +1840,34 @@ export default function HotelSearch({
     });
   };
 
-  const fetchHotels = async (page, sid, agentId, nameSearch = "") => {
+  const fetchHotels = async (page, sid, agentId, nameSearch = "", currencyCodeOverride = null) => {
     try {
       const isNameSearching = !!nameSearch.trim();
       // Capture a per-call seq only for name-search. Basic (unfiltered)
       // fetches don't need this — the poll loop is already the sole writer
       // for them and never races with itself.
       const mySeq = isNameSearching ? ++nameSearchSeqRef.current : null;
-      const endpoint = isNameSearching
-        ? `/api/hotel-search/results/${sid}/filter-by-name`
-        : `/api/hotel-search/results/${sid}`;
+      // Client-side owns hotel-name matching now (see filteredResults memo)
+      // so we always hit the plain /results endpoint. When a name filter is
+      // active we pull the entire result set in one page (mirroring the
+      // /resultsOut currency-refetch that already asks for size=100000) so
+      // the tokenized client filter can look at every hotel, not just the
+      // 10-row page slice — otherwise a hotel that sorts onto page 2+ could
+      // never match a partial name typed on page 1.
+      const NAME_SEARCH_PAGE_SIZE = 100000;
+      const endpoint = `/api/hotel-search/results/${sid}`;
 
       const params = {
         agentId:
           agentId || (isAgentRole ? selfAgentId : agent) || 1,
-        page,
-        pageSize,
+        page: isNameSearching ? 0 : page,
+        // pageSize is kept for the paginated case so existing behaviour is
+        // preserved (backend defaults to 10 anyway). For the name-search
+        // fetch we must send `size` — the backend's Pageable binder reads
+        // `size` (verified: /results?pageSize=1000 returns 10, /results?
+        // size=1000 returns 1000), matching the /resultsOut convention.
+        pageSize: isNameSearching ? undefined : pageSize,
+        size: isNameSearching ? NAME_SEARCH_PAGE_SIZE : undefined,
         sortBy:
           sortBy === "priceAsc" || sortBy === "priceDesc" ? "baseRate" : sortBy,
         sortOrder:
@@ -1531,17 +1881,60 @@ export default function HotelSearch({
           channelType.map((c) => c.value.toUpperCase()).join(",") || undefined,
       };
 
-      if (isNameSearching) {
-        params.hotelName = nameSearch.trim();
+      // Currency-conversion is fully backend-side now. When the operator
+      // picked an override from the (admin-only) currency dropdown we send
+      // it as `displayCurrencyCode`; otherwise the backend defaults to the
+      // agent's configured currency (Agent.currency_id → master_currency).
+      //
+      // `currencyCodeOverride` wins over the state read — the picker's
+      // onChange calls fetchHotels with the just-picked code even though
+      // setSelectedCurrency hasn't flushed yet, so the very first request
+      // after a picker change already carries the new code.
+      const effectiveCurrencyCode =
+        currencyCodeOverride || selectedCurrency?.code;
+      if (effectiveCurrencyCode) {
+        params.displayCurrencyCode = effectiveCurrencyCode;
+      }
+
+      // hotelName is deliberately NOT sent — the client-side filter in
+      // filteredResults does tokenized substring matching, which is broader
+      // than the backend endpoint's whole-string match ("smart hyde" would
+      // otherwise return zero even though "Smart Hyde Park Inn" is in the
+      // result set). Server-side filters (starRating, apiType) still ride
+      // on the same request so combined filtering keeps working.
+
+      // Capture the currency-version at send-time; if the user picks a
+      // different currency before the response lands, we DROP the response
+      // rather than merge — otherwise a slow in-flight request would
+      // overwrite freshly-fetched rows with old-currency data (that was
+      // the "mixed AED/GBP cards" bug in the screenshot).
+      const myCurrencyVersion = currencyVersionRef.current;
+      const mySearchGen = searchGenRef.current;
+      if (isNameSearching || pollStatus !== "IN_PROGRESS") {
+        replaceGenRef.current += 1;
       }
 
       const res = await axiosInstance.get(endpoint, {
         params,
       });
 
+      // A newer search has started since this request went out — its
+      // payload belongs to the previous destination, so never let it touch
+      // allResults / totals / hasSearchResult.
+      if (mySearchGen !== searchGenRef.current) {
+        return res.data;
+      }
+
       // Drop stale name-search responses so an older term can't overwrite
       // results for the term the user is actually looking at.
       if (isNameSearching && mySeq !== nameSearchSeqRef.current) {
+        return res.data;
+      }
+
+      // Same idea for currency: if the picker moved on, this response is
+      // now stale — return the raw data (so the caller's Promise resolves
+      // as before) without touching allResults.
+      if (myCurrencyVersion !== currencyVersionRef.current) {
         return res.data;
       }
 
@@ -1558,6 +1951,19 @@ export default function HotelSearch({
               ? hotel.hotelAddress.split(", ").pop() || "Unknown City"
               : "Unknown City",
             price: hotel.baseRate || null,
+            // Backend-converted price + code in the agent's display currency
+            // (see HotelSearchController.applyDisplayCurrency). Card renderer
+            // reads these; `price` (AED) stays the source of truth for every
+            // downstream flow (sorting, dedupe, booking payloads, credit
+            // checks) — same as before this fix.
+            displayPrice:
+              hotel.displayBaseRate != null ? hotel.displayBaseRate : hotel.baseRate,
+            displayCurrencyCode:
+              hotel.displayCurrencyCode || "AED",
+            displayFactor:
+              Number(res.data.displayCurrencyFactor) > 0
+                ? Number(res.data.displayCurrencyFactor)
+                : 1,
             badge: hotel.baseRate ? "Rate Available" : "Rate Unavailable",
             image:
               hotel.hotelImage ||
@@ -1575,6 +1981,20 @@ export default function HotelSearch({
           }))
         : [];
 
+      // Envelope-level currency metadata that the RoomList / booking-page
+      // handoff needs. Cached on a ref so `handleHotelClick` (which reads
+      // the sessionStorage handoff) sees the latest value without depending
+      // on setState timing.
+      if (res.data && res.data.displayCurrencyCode) {
+        backendDisplayCurrencyRef.current = {
+          code: res.data.displayCurrencyCode,
+          factor:
+            res.data.displayCurrencyFactor != null
+              ? Number(res.data.displayCurrencyFactor)
+              : 1,
+        };
+      }
+
       if (mappedResults.length > 0 || isNameSearching) {
         if (pollStatus === "IN_PROGRESS" && !isNameSearching) {
           setAllResults((prev) => {
@@ -1589,15 +2009,40 @@ export default function HotelSearch({
         setAllResults([]);
       }
 
-      setTotalElements(Number(res.data.totalResults) || mappedResults.length);
-      setTotalPages(
-        Math.max(
-          1,
-          Math.ceil(
-            (Number(res.data.totalResults) || mappedResults.length) / pageSize,
+      // For a name-search fetch we pulled everything (up to
+      // NAME_SEARCH_PAGE_SIZE) in one go and filter it client-side, so the
+      // paginator collapses to a single page for the visible/filtered set.
+      // Everything else uses the server-side totals exactly as before.
+      if (isNameSearching) {
+        setTotalElements(mappedResults.length);
+        setTotalPages(1);
+      } else {
+        setTotalElements(Number(res.data.totalResults) || mappedResults.length);
+        setTotalPages(
+          Math.max(
+            1,
+            Math.ceil(
+              (Number(res.data.totalResults) || mappedResults.length) / pageSize,
+            ),
           ),
-        ),
-      );
+        );
+      }
+      // Keep the LIVE/OFF badges in sync on filter / page refetches too.
+      // The backend counts over the full set BEFORE the apiType filter,
+      // so ticking one channel never flips the others to OFF.
+      if (
+        !isNameSearching &&
+        res.data.channelCounts &&
+        typeof res.data.channelCounts === "object"
+      ) {
+        setChannelsWithResults(
+          new Set(
+            Object.entries(res.data.channelCounts)
+              .filter(([, n]) => Number(n) > 0)
+              .map(([ct]) => String(ct).toLowerCase()),
+          ),
+        );
+      }
       setHasSearchResult(true);
       return res.data;
     } catch (err) {
@@ -1656,11 +2101,23 @@ export default function HotelSearch({
     }
 
     setErrors({});
+    // Start a new search generation and forget the previous searchId BEFORE
+    // the reset below. The fetch-effect further down re-runs whenever
+    // pollStatus / pageIndex change, and on a Modify Search → Search it was
+    // firing with the OLD searchId still in state: it re-fetched the
+    // previous destination's cached /results page and wrote those rows
+    // (plus hasSearchResult=true) straight back over the cleared list while
+    // the new search was still polling. Nulling searchId makes the effect
+    // early-return exactly as it does on the very first search; the
+    // generation bump covers any reply that is already in flight.
+    searchGenRef.current += 1;
+    setSearchId(null);
     setIsLoading(true);
     setHasSearched(true);
     setIsEditingSearch(false);
     setHasSearchResult(false);
     setAllResults([]);
+    setChannelsWithResults(new Set());
     setPollStatus("IDLE");
     setPageIndex(0);
     setTotalElements(0);
@@ -1668,6 +2125,16 @@ export default function HotelSearch({
     setIsInitialResultsLoaded(false);
     completedChannelsRef.current = new Set();
     setCompletedChannels(new Set());
+    dispatchedChannelsRef.current = new Set();
+    setDispatchedChannels(new Set());
+    // Drop the previous search's id until the new one comes back. Keeping it
+    // let the results effect refetch the OLD search as soon as pollStatus
+    // reset to IDLE — which is why a second Search press showed the first
+    // search's third-party hotels. Bumping currencyVersionRef (fetchHotels'
+    // stale-response guard) also stops a fetch still in flight for the old
+    // search from writing its rows into this one.
+    setSearchId(null);
+    currencyVersionRef.current += 1;
 
     try {
       const nationalityId = selectedNationality.value;
@@ -1710,6 +2177,23 @@ export default function HotelSearch({
       if (!newSearchId) throw new Error("No searchId returned");
       setSearchId(newSearchId);
 
+      // ── Agent search log (Unbooked Opportunities → Searches tab) ──────
+      // Fire-and-forget snapshot of the search context so the admin AI
+      // report can show what agents are looking for even when they never
+      // reach the booking page. Shared with LastMinuteBookingPage and
+      // any future /new-booking flow — see utils/agentSearchLog.js.
+      logAgentSearch({
+        agentId,
+        agentName: loggedInAgentName,
+        destinationId: destinationCityId,
+        destinationLabel: selectedDestination?.label,
+        nationalityLabel: selectedNationality?.label,
+        checkIn,
+        checkOut,
+        rooms,
+        source: "search-page",
+      });
+
       const params = {
         agentId,
         page: 0,
@@ -1727,6 +2211,26 @@ export default function HotelSearch({
           channelType.map((c) => c.value.toUpperCase()).join(",") || undefined,
       };
 
+      // The poll uses the SAME /results endpoint fetchHotels does — pass the
+      // picker override the same way so the very first wave of results also
+      // arrives already converted to the chosen display currency. Missing
+      // this made the initial rows render in AED for the ~10-15 s the poll
+      // took to finish, which is the "still see AED" symptom.
+      // Read the ref, not the closure: the agent-default currency can land
+      // while the POST above is still awaiting.
+      const pollDisplayCode = selectedCurrencyCodeRef.current;
+      if (pollDisplayCode) {
+        params.displayCurrencyCode = pollDisplayCode;
+        pollCurrencyCodeRef.current = pollDisplayCode;
+      } else {
+        pollCurrencyCodeRef.current = null;
+      }
+      // Stash the params object so a picker change mid-poll can mutate its
+      // `displayCurrencyCode` field in place — pollUntilComplete's closure
+      // reads the SAME object each tick, so the new code takes effect on
+      // the next axios call without restarting the search.
+      pollParamsRef.current = params;
+
       const expectedChannels = [
         "inhouse",
         // "iwtx",
@@ -1742,6 +2246,34 @@ export default function HotelSearch({
         params,
         (data) => data.finalStatus === "COMPLETED",
         (data, pollCount) => {
+          // Discard the tick when the currency this response was generated
+          // in no longer matches what the user has picked. Prevents an
+          // in-flight tick (fired before the picker moved) from clobbering
+          // freshly-fetched rows in the new currency two seconds later.
+          if (
+            pollCurrencyCodeRef.current &&
+            data?.displayCurrencyCode &&
+            String(data.displayCurrencyCode).toUpperCase() !==
+              String(pollCurrencyCodeRef.current).toUpperCase()
+          ) {
+            return;
+          }
+
+          // Poll payload also carries the backend-converted display currency
+          // — same shape as the /results endpoint. Cache it on the ref so
+          // handleHotelClick's sessionStorage handoff picks up the correct
+          // {code, factor} even when the user clicks a card that arrived
+          // during the polling phase.
+          if (data && data.displayCurrencyCode) {
+            backendDisplayCurrencyRef.current = {
+              code: data.displayCurrencyCode,
+              factor:
+                data.displayCurrencyFactor != null
+                  ? Number(data.displayCurrencyFactor)
+                  : 1,
+            };
+          }
+
           const mappedResults = Array.isArray(data.result)
             ? data.result.map((hotel, index) => ({
                 id: hotel.hotelCode
@@ -1755,6 +2287,18 @@ export default function HotelSearch({
                   ? hotel.hotelAddress.split(", ").pop() || "Unknown City"
                   : "Unknown City",
                 price: hotel.baseRate || null,
+                // Backend-converted display fields — MUST match the shape
+                // used by fetchHotels' mapping below. Missing these fields
+                // is what makes the FIRST wave of poll results render in
+                // raw AED even though the backend correctly sends GBP.
+                displayPrice:
+                  hotel.displayBaseRate != null ? hotel.displayBaseRate : hotel.baseRate,
+                displayCurrencyCode:
+                  hotel.displayCurrencyCode || "AED",
+                displayFactor:
+                  Number(data.displayCurrencyFactor) > 0
+                    ? Number(data.displayCurrencyFactor)
+                    : 1,
                 badge: hotel.baseRate ? "Rate Available" : "Rate Unavailable",
                 image:
                   hotel.hotelImage ||
@@ -1787,7 +2331,18 @@ export default function HotelSearch({
           }
 
           const currentStatuses = data.status || {};
-          expectedChannels.forEach((ch) => {
+          // Track every supplier the backend fan-out'd to (denominator)
+          // AND every one that reported COMPLETED (numerator). Iterate
+          // over the LIVE status keys so we never miss a supplier that
+          // wasn't on the old hardcoded expectedChannels list; the bar
+          // now progresses through every real reply and only reserves
+          // the final 10% for the overall COMPLETED flip.
+          let dispatchedGrew = false;
+          Object.keys(currentStatuses).forEach((ch) => {
+            if (!dispatchedChannelsRef.current.has(ch)) {
+              dispatchedChannelsRef.current.add(ch);
+              dispatchedGrew = true;
+            }
             if (
               currentStatuses[ch] === "COMPLETED" &&
               !completedChannelsRef.current.has(ch)
@@ -1795,6 +2350,9 @@ export default function HotelSearch({
               completedChannelsRef.current.add(ch);
             }
           });
+          if (dispatchedGrew) {
+            setDispatchedChannels(new Set(dispatchedChannelsRef.current));
+          }
           setCompletedChannels(new Set(completedChannelsRef.current));
 
           if (pollCount === 1 || mappedResults.length > 0) {
@@ -1822,16 +2380,33 @@ export default function HotelSearch({
               ),
             );
           }
+
+          // Full-set supplier presence for the LIVE/OFF badges. Counted
+          // by the backend over every page, so it is correct even when
+          // the current page happens to be all one supplier.
+          if (data.channelCounts && typeof data.channelCounts === "object") {
+            setChannelsWithResults(
+              new Set(
+                Object.entries(data.channelCounts)
+                  .filter(([, n]) => Number(n) > 0)
+                  .map(([ct]) => String(ct).toLowerCase()),
+              ),
+            );
+          }
         },
         2000,
-        // 60 s timeout — GRN Connect's fan-out over ~300 hotel codes for a
-        // Dubai search finishes in ~30-40 s against the sandbox. The prior
-        // 20 s ceiling would reject before GRN completed, and the catch
-        // below then set hasSearched=false, silently blocking every
-        // subsequent filter change (e.g. ticking Channel = GRN) from
-        // re-fetching. 60 s covers observed GRN latency; faster suppliers
-        // still resolve early via the finalStatus=COMPLETED check.
-        60000,
+        // 30 s poll ceiling — keeps the UI responsive; GRN's slower
+        // Dubai fan-out (~30-40 s) that would previously push the total
+        // wait to a full minute now caps out at 30 s. Faster suppliers
+        // (inhouse / RateHawk) still resolve early via the
+        // finalStatus=COMPLETED check, and any GRN rows that arrive
+        // between poll ticks before the timeout still show up. If GRN
+        // hasn't finished by then the catch below no longer flips
+        // hasSearched=false (existing behaviour after the 60 s bump), so
+        // filter changes keep working. Supplier legs that finish after the
+        // timeout are picked up by the late-results check (the effect right
+        // after the results effect).
+        30000,
         2000,
       );
       // ── 24 Hour Check-In post-processing ───────────────────────────
@@ -1879,8 +2454,19 @@ export default function HotelSearch({
       }
     } catch (err) {
       console.error("Search failed:", err);
-      setHasSearched(false);
-      setPollStatus("ERROR");
+      // Timeouts (30 s ceiling for GRN) are NOT a real failure — the rows
+      // that came in via prior poll ticks are still valid. Flipping
+      // hasSearched=false here used to block every subsequent picker /
+      // filter refetch, which is exactly the "AED still shown after USD
+      // picked" symptom. Leave hasSearched=true so downstream effects
+      // (currency-picker refetch, channel filter, pagination) keep
+      // working.
+      const isTimeout =
+        err && (err.message === "Polling timed out" || err.name === "TimeoutError");
+      if (!isTimeout) {
+        setHasSearched(false);
+      }
+      setPollStatus(isTimeout ? "TIMEOUT" : "ERROR");
     } finally {
       setIsLoading(false);
     }
@@ -1891,13 +2477,127 @@ export default function HotelSearch({
   //   isInitialResultsLoaded &&
   //   (pollStatus === "IN_PROGRESS" || pollStatus === "COMPLETED");
 
+  // Single path for every display-currency change (picker + agent default).
+  // Same code → no-op. Otherwise redirect the running poll, drop in-flight
+  // replies in the old currency, and re-convert what's already on screen.
+  const changeDisplayCurrency = (opt, { manual = false, reconvertAll = true } = {}) => {
+    if (manual) currencyTouchedRef.current = true;
+    if (!opt?.code) return;
+    setSelectedCurrency(opt);
+    if (opt.code === selectedCurrencyCodeRef.current) return;
+    selectedCurrencyCodeRef.current = opt.code;
+    currencyVersionRef.current += 1;
+    if (pollParamsRef.current) {
+      pollParamsRef.current.displayCurrencyCode = opt.code;
+    }
+    pollCurrencyCodeRef.current = opt.code;
+
+    // Once polling is over (or a name filter is active) the results effect
+    // REPLACES the list in the new currency itself (selectedCurrency?.code is
+    // one of its deps). While polling, its fetches only MERGE one page — even
+    // with a channel/star filter — so re-convert the whole list via /resultsOut.
+    const effectWillRefetch =
+      hasSearched &&
+      (pollStatus !== "IN_PROGRESS" || !!finalHotelSearchTermRef.current.trim());
+    if (!reconvertAll || !searchId || effectWillRefetch) return;
+
+    const myVersion = currencyVersionRef.current;
+    const mySearchGen = searchGenRef.current;
+    const myReplaceGen = replaceGenRef.current;
+    axiosInstance
+      .get(`/api/hotel-search/resultsOut/${searchId}`, {
+        params: {
+          agentId: (isAgentRole ? selfAgentId : agent) || 1,
+          page: 0,
+          size: 100000,
+          sortBy:
+            sortBy === "priceAsc" || sortBy === "priceDesc" ? "baseRate" : sortBy,
+          sortOrder:
+            sortBy === "priceAsc" || sortBy === "ratingAsc" || sortBy === "nameAsc"
+              ? "asc"
+              : "desc",
+          starRating: starRating ? starRating.value : undefined,
+          apiType:
+            channelType.map((c) => c.value.toUpperCase()).join(",") || undefined,
+          displayCurrencyCode: opt.code,
+        },
+      })
+      .then((res) => {
+        // Drop if the currency or search moved on, a newer page/name fetch
+        // replaced the list, or a hotel-name filter now owns allResults.
+        if (
+          myVersion !== currencyVersionRef.current ||
+          mySearchGen !== searchGenRef.current ||
+          myReplaceGen !== replaceGenRef.current ||
+          finalHotelSearchTermRef.current.trim()
+        ) {
+          return;
+        }
+        if (res.data && res.data.displayCurrencyCode) {
+          backendDisplayCurrencyRef.current = {
+            code: res.data.displayCurrencyCode,
+            factor:
+              res.data.displayCurrencyFactor != null
+                ? Number(res.data.displayCurrencyFactor)
+                : 1,
+          };
+        }
+        const mapped = Array.isArray(res.data?.result)
+          ? res.data.result.map((hotel, i) => ({
+              id: hotel.hotelCode
+                ? `${searchId}-${hotel.hotelCode}`
+                : `${searchId}-h${i + 1}`,
+              searchId,
+              hotelCode: hotel.hotelCode || null,
+              name: hotel.hotelName || "Unknown Hotel",
+              address: hotel.hotelAddress || "",
+              city: hotel.hotelAddress
+                ? hotel.hotelAddress.split(", ").pop() || "Unknown City"
+                : "Unknown City",
+              price: hotel.baseRate || null,
+              displayPrice:
+                hotel.displayBaseRate != null ? hotel.displayBaseRate : hotel.baseRate,
+              displayCurrencyCode: hotel.displayCurrencyCode || "AED",
+              displayFactor:
+                Number(res.data.displayCurrencyFactor) > 0
+                  ? Number(res.data.displayCurrencyFactor)
+                  : 1,
+              badge: hotel.baseRate ? "Rate Available" : "Rate Unavailable",
+              image:
+                hotel.hotelImage ||
+                "https://details/assets/details/profilepic/hotel/hoteldefault.jpg",
+              rating: hotel.starRating || 0,
+              hotelType: "hotel",
+              channelType: hotel.apiType?.toLowerCase() || "inhouse",
+              hasDestinationSales: !!hotel.hasDestinationSales,
+              flashSale: !!hotel.flashSale,
+              latitude: hotel.latitude,
+              longitude: hotel.longitude,
+              contactNumber: hotel.contactNumber || "",
+            }))
+          : [];
+        setAllResults(mapped);
+      })
+      .catch(() => {
+        /* fail-safe: leave existing rows */
+      });
+  };
+
   const showResultsDuringPolling = hasSearchResult || allResults.length > 0;
 
   // Collapse the full search form into the sticky summary strip once results
   // are on screen, unless the user explicitly chose to modify the search.
   const collapseSearch = showResultsDuringPolling && !isEditingSearch;
 
+  // Bumped by the late-results check below to make the results effect
+  // refetch the visible page. lateResultsRefreshRef marks that refetch as a
+  // background one so it doesn't flash the loading card every few seconds.
+  const [resultsRefreshTick, setResultsRefreshTick] = useState(0);
+  const lateResultsRefreshRef = useRef(false);
+
   useEffect(() => {
+    const isBackgroundRefresh = lateResultsRefreshRef.current;
+    lateResultsRefreshRef.current = false;
     if (!searchId || !hasSearched) return;
     // Gate basic (unfiltered) fetches until polling finishes so we don't
     // double-write allResults alongside the poll's merge. Name-search
@@ -1922,10 +2622,10 @@ export default function HotelSearch({
       !finalHotelSearchTerm.trim() &&
       !hasActiveFilter
     ) return;
-    setIsLoading(true);
-    fetchHotels(pageIndex, searchId, agent, finalHotelSearchTerm).finally(() =>
-      setIsLoading(false),
-    );
+    if (!isBackgroundRefresh) setIsLoading(true);
+    fetchHotels(pageIndex, searchId, agent, finalHotelSearchTerm).finally(() => {
+      if (!isBackgroundRefresh) setIsLoading(false);
+    });
   }, [
     pageIndex,
     sortBy,
@@ -1937,7 +2637,70 @@ export default function HotelSearch({
     hasSearched,
     pollStatus,
     finalHotelSearchTerm,
+    // Currency conversion happens server-side now (see fetchHotels — it
+    // sends `displayCurrencyCode=…` from selectedCurrency.code). Adding
+    // the code as a dep so a picker change re-fetches the results in the
+    // new currency instead of leaving stale numbers on screen.
+    selectedCurrency?.code,
+    resultsRefreshTick,
   ]);
+
+  // Late supplier results. The search poll gives up after 30 s, but a slow
+  // supplier leg (GRN waits up to its 25 s cutoff_time; big cities take
+  // longer) can still add hotels after that. Nothing asked again, so those
+  // hotels only appeared on the next Search press. After a poll timeout,
+  // check the result count every few seconds until the backend reports every
+  // supplier finished, and refresh the visible page whenever the count moves.
+  useEffect(() => {
+    if (pollStatus !== "TIMEOUT" || !searchId) return;
+    const CHECK_EVERY_MS = 4000;
+    const GIVE_UP_AFTER_MS = 90000;
+    const startedAt = Date.now();
+    let cancelled = false;
+    let timer;
+    let lastTotal = null;
+
+    const checkForLateResults = async () => {
+      try {
+        const res = await axiosInstance.get(
+          `/api/hotel-search/results/${searchId}`,
+          {
+            params: {
+              agentId: (isAgentRole ? selfAgentId : agent) || 1,
+              page: 0,
+              size: 1,
+            },
+          },
+        );
+        if (cancelled) return;
+        if (res.data?.finalStatus === "COMPLETED") {
+          // pollStatus is a dependency of the results effect, so this also
+          // runs its final (background) refetch.
+          lateResultsRefreshRef.current = true;
+          setPollStatus("COMPLETED");
+          return;
+        }
+        const total = Number(res.data?.totalResults) || 0;
+        if (total !== lastTotal) {
+          lastTotal = total;
+          lateResultsRefreshRef.current = true;
+          setResultsRefreshTick((tick) => tick + 1);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        console.warn("Late supplier results check failed (will retry):", err);
+      }
+      if (Date.now() - startedAt < GIVE_UP_AFTER_MS) {
+        timer = setTimeout(checkForLateResults, CHECK_EVERY_MS);
+      }
+    };
+
+    timer = setTimeout(checkForLateResults, CHECK_EVERY_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [pollStatus, searchId, agent, selfAgentId, isAgentRole]);
 
   return (
     <div className="min-vh-100 bg-light d-flex flex-column">
@@ -2094,7 +2857,7 @@ export default function HotelSearch({
                             </span>
                           ) : agentBalance != null ? (
                             <span className="fw-semibold" style={{ color: "#dc3545" }}>
-                              Available Balance: {Number(agentBalance).toFixed(2)} AED
+                              Available Balance: {Number(agentBalance).toFixed(2)} {agentBalanceCurrency || "AED"}
                             </span>
                           ) : (
                             <span className="text-muted">
@@ -2137,6 +2900,14 @@ export default function HotelSearch({
                         onInputChange={(inputValue, { action }) => {
                           if (action === "input-change") cityList(inputValue);
                         }}
+                        // Client-side filter/ranking is already done inside
+                        // debouncedCitySearch. Keeping react-select's default
+                        // filter would drop "Van, Turkey" for the query
+                        // "van turkey" because it does a raw substring test
+                        // against the label and the comma between city and
+                        // country breaks the match. Same pattern the Currency
+                        // picker below already uses.
+                        filterOption={() => true}
                         menuPortalTarget={document.body}
                         styles={{
                           menuPortal: (base) => ({ ...base, zIndex: 9999 }),
@@ -2292,6 +3063,66 @@ export default function HotelSearch({
                         />
                       </Form.Group>
                     </Col>
+                  )}
+                  {/* Booking Done On Behalf Of Agent Staff — new dropdown
+                      whose options come from the selected agent's own
+                      sub-users (GET /api/sub-user/by-agent/{agentId},
+                      fetched in the effect above). Auto-hides when the
+                      picked agent has no registered sub-users, so
+                      agencies without staff don't see an empty
+                      dropdown. Completely optional; when left blank the
+                      booking is persisted without agent-side attribution
+                      exactly as before this feature. */}
+                  {agentStaffOptions.length > 0 && (
+                    <Col lg={4} md={6}>
+                      <Form.Group>
+                        <Form.Label className="fw-semibold text-dark">
+                          Booking Done On Behalf Of Agent Staff{" "}
+                          <span className="text-muted small">(optional)</span>
+                        </Form.Label>
+                        <Select
+                          options={agentStaffOptions.map((s) => ({
+                            value: s.id,
+                            label: (s.agentName ||
+                              [s.firstName, s.lastName]
+                                .filter(Boolean)
+                                .join(" ")
+                                .trim() ||
+                              `Sub-user #${s.id}`),
+                          }))}
+                          value={selectedAgentStaff}
+                          onChange={(option) => setSelectedAgentStaff(option)}
+                          placeholder="Select agent staff"
+                          isSearchable
+                          isClearable
+                          className="modern-select"
+                          menuPortalTarget={document.body}
+                          styles={{
+                            menuPortal: (base) => ({ ...base, zIndex: 9999 }),
+                            control: (base) => ({
+                              ...base,
+                              minHeight: "42px",
+                              border: "1px solid #dee2e6",
+                              "&:hover": { borderColor: "#86b7fe" },
+                            }),
+                          }}
+                        />
+                      </Form.Group>
+                    </Col>
+                  )}
+
+                  {/* Row-break before Check-In (lg+ only) — only when the
+                      optional Agent-Staff dropdown is rendered. Bootstrap 5
+                      flex-wrap treats a full-width child as a hard break, so
+                      Check-In / Nights / Check-Out / Rooms & Guests
+                      (3 + 2 + 3 + 4 = 12) always land together on their own
+                      row instead of getting split across two rows when
+                      BookingBy + AgentStaff + Check-In (4 + 4 + 3 = 11) push
+                      Nights + Check-Out to the next line. On md and below
+                      each Col is already full-width, so the breaker is
+                      hidden there and the stacked layout is unchanged. */}
+                  {agentStaffOptions.length > 0 && (
+                    <div className="w-100 d-none d-lg-block" aria-hidden="true" />
                   )}
 
                   {/* 4. Check-In — RateCalendar renders a picker that
@@ -2535,6 +3366,7 @@ export default function HotelSearch({
             pollStatus={pollStatus}
             completedChannels={completedChannels}
             channels={visibleProgressChannels}
+            isLoading={isLoading}
           />
 
           {/* ── Loading skeleton ──
@@ -2662,12 +3494,9 @@ export default function HotelSearch({
                                 <Select
                                   options={currencyOptions}
                                   value={selectedCurrency}
-                                  onChange={(opt) => {
-                                    // Operator override — stop auto-defaulting
-                                    // to the agent's currency from here on.
-                                    currencyTouchedRef.current = true;
-                                    setSelectedCurrency(opt);
-                                  }}
+                                  onChange={(opt) =>
+                                    changeDisplayCurrency(opt, { manual: true })
+                                  }
                                   placeholder="Select currency"
                                   isSearchable
                                   // Server-side search: the backend filters the
@@ -2740,27 +3569,75 @@ export default function HotelSearch({
                                   Channel
                                 </Form.Label>
                                 <div className="filter-checkbox-list">
-                                  {visibleChannelTypeOptions.map((item) => (
-                                    <Form.Check
-                                      key={item.value}
-                                      type="checkbox"
-                                      id={`channel-${item.value}`}
-                                      label={item.label}
-                                      checked={channelType.some(
-                                        (c) => c.value === item.value,
-                                      )}
-                                      onChange={(e) => {
-                                        if (e.target.checked)
-                                          setChannelType([...channelType, item]);
-                                        else
-                                          setChannelType(
-                                            channelType.filter(
-                                              (c) => c.value !== item.value,
-                                            ),
-                                          );
-                                      }}
-                                    />
-                                  ))}
+                                  {/* Every supplier registered for this
+                                      company via /admin/api-access appears
+                                      here — enabled AND disabled ones —
+                                      so the filter mirrors what the admin
+                                      grid shows. The LIVE/OFF badge on
+                                      each row is a pure "is this channel
+                                      represented in the current results?"
+                                      check — nothing about admin toggles.
+                                      LIVE (green) = at least one hotel of
+                                      that channel is listed in the search
+                                      results right now; OFF (red) = none.
+                                      So the operator can read the sidebar
+                                      as "which suppliers actually gave me
+                                      data on this search". */}
+                                  {visibleChannelTypeOptions.map((item) => {
+                                    const isLive = channelHasResults.has(
+                                      item.value,
+                                    );
+                                    return (
+                                      <div
+                                        key={item.value}
+                                        className="d-flex align-items-center justify-content-between gap-2"
+                                        style={{ minHeight: 26 }}
+                                      >
+                                        <Form.Check
+                                          type="checkbox"
+                                          id={`channel-${item.value}`}
+                                          label={item.label}
+                                          checked={channelType.some(
+                                            (c) => c.value === item.value,
+                                          )}
+                                          onChange={(e) => {
+                                            if (e.target.checked)
+                                              setChannelType([
+                                                ...channelType,
+                                                item,
+                                              ]);
+                                            else
+                                              setChannelType(
+                                                channelType.filter(
+                                                  (c) => c.value !== item.value,
+                                                ),
+                                              );
+                                          }}
+                                        />
+                                        <span
+                                          title={
+                                            isLive
+                                              ? "Hotels from this supplier are in the results"
+                                              : "No hotels from this supplier in the results"
+                                          }
+                                          style={{
+                                            fontSize: "0.65rem",
+                                            fontWeight: 700,
+                                            padding: "1px 6px",
+                                            borderRadius: 10,
+                                            lineHeight: 1.4,
+                                            color: "#fff",
+                                            backgroundColor: isLive
+                                              ? "#198754"
+                                              : "#dc3545",
+                                            whiteSpace: "nowrap",
+                                          }}
+                                        >
+                                          {isLive ? "LIVE" : "OFF"}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
                               </Form.Group>
 
@@ -2870,6 +3747,7 @@ export default function HotelSearch({
                           >
                             Clear
                           </Button>
+
                         </div>
                       </Card.Body>
                     </Card>
@@ -3162,17 +4040,14 @@ export default function HotelSearch({
                                         }}
                                       >
                                         {hotel.price
-                                          ? hotel.channelType === "ratehawk"
-                                            ? `AED ${Number(hotel.price).toLocaleString(undefined, {
-                                                minimumFractionDigits: 2,
-                                                maximumFractionDigits: 2,
-                                              })}`
-                                            : `${displayCurrencyCode} ${convertFromAed(
-                                                hotel.price,
-                                              ).toLocaleString(undefined, {
-                                                minimumFractionDigits: 2,
-                                                maximumFractionDigits: 2,
-                                              })}`
+                                          ? `${hotel.displayCurrencyCode || displayCurrencyCode} ${Number(
+                                              hotel.displayPrice != null
+                                                ? hotel.displayPrice
+                                                : hotel.price,
+                                            ).toLocaleString(undefined, {
+                                              minimumFractionDigits: 2,
+                                              maximumFractionDigits: 2,
+                                            })}`
                                           : "Price on request"}
                                       </div>
 
@@ -3205,6 +4080,33 @@ export default function HotelSearch({
                             </div>
                           </Col>
                         ))
+                      ) : pollStatus === "IN_PROGRESS" || isLoading ? (
+                        // Search is still in flight — the supplier
+                        // fan-out hasn't finished yet, so an empty
+                        // filteredResults just means we don't have
+                        // rates back for this filter YET. Show a
+                        // "fetching best prices" placeholder instead
+                        // of the misleading "No hotels found" panel,
+                        // which only makes sense once polling is
+                        // COMPLETED.
+                        <Col xs={12}>
+                          <Card className="shadow-sm rounded-xl">
+                            <Card.Body className="text-center py-5">
+                              <Spinner
+                                animation="border"
+                                variant="primary"
+                                className="mb-3"
+                              />
+                              <h5 className="text-primary mb-1">
+                                Fetching best prices…
+                              </h5>
+                              <p className="text-muted mb-0">
+                                We're comparing rates across every
+                                supplier for you. Hang on a moment.
+                              </p>
+                            </Card.Body>
+                          </Card>
+                        </Col>
                       ) : (
                         <Col xs={12}>
                           <Card className="shadow-sm rounded-xl">

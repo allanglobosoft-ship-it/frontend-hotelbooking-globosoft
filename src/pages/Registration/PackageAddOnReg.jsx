@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { Card, Table, Button, Form, Modal, Row, Col, Badge, InputGroup } from "react-bootstrap";
-import { FaPlus, FaEdit, FaTrash, FaDollarSign, FaSearch } from "react-icons/fa";
+import { FaPlus, FaEdit, FaTrash, FaDollarSign, FaSearch, FaArrowLeft } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
 import { toast } from "react-hot-toast";
 import Swal from "sweetalert2";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
+import DashboardRedirections from "../../components/DashboardRedirections";
 
 /**
  * Admin master for MYOP add-ons. Lists every add-on, lets admin create / edit
@@ -144,6 +145,18 @@ export default function PackageAddOnReg() {
         <Sidebar />
         <div className="flex-grow-1" style={{ background: "#f6f8fa", minWidth: 0 }}>
           <div className="container-fluid p-4">
+            {/* Back to the signed-in user's dashboard — top-left, above the page header */}
+            <div className="mb-3">
+              <Button
+                variant="outline-secondary"
+                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
+              >
+                <FaArrowLeft />
+                Back
+              </Button>
+            </div>
+
             <div className="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-3">
               <h4 className="fw-bold mb-0">MYOP Package Add-Ons</h4>
               <Button variant="primary" onClick={openCreate}>

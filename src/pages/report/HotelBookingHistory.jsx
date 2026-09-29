@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
+import BackButton from "../../components/BackButton";
 import { Row, Col, Card, Form, Button, Table, Pagination } from "react-bootstrap";
 import { toast } from "react-hot-toast";
 import axiosInstance from "../../components/AxiosInstance";
@@ -324,14 +325,17 @@ export default function HotelBookingHistory() {
         <main className="flex-grow-1 p-4" style={{ overflow: "auto" }}>
           <Card className="shadow-sm rounded-xl">
             <Card.Header className="d-flex justify-content-between align-items-center flex-wrap gap-2 py-3">
-              <div>
-                <span className="fw-semibold">
-                  <i className="fas fa-history me-2"></i>
-                  Hotel Booking History
-                </span>
-                <div className="text-muted small mt-1">
-                  Hotel searches that reached the booking page but were not
-                  completed — entries are kept for one month
+              <div className="d-flex align-items-center gap-2">
+                <BackButton forceFallback fallback="/adminDashboard" />
+                <div>
+                  <span className="fw-semibold">
+                    <i className="fas fa-history me-2"></i>
+                    Hotel Booking History
+                  </span>
+                  <div className="text-muted small mt-1">
+                    Hotel searches that reached the booking page but were not
+                    completed — entries are kept for one month
+                  </div>
                 </div>
               </div>
               <span className="badge rounded-pill bg-light text-muted border fw-normal">

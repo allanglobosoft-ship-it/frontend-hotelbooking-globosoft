@@ -12,6 +12,7 @@ import {
   FileText,
   Landmark,
   Users,
+  UserCog,
   CalendarDays,
   FileSignature,
   BarChart3,
@@ -31,9 +32,25 @@ import axiosInstance from "./AxiosInstance";
 // import, the three blocks marked "Booking-code search (hidden)" below, and
 // the matching block at the end of Sidebar.css.
 // import BookingCodeSearch from "./BookingCodeSearch";
+import { isPartnerRole } from "../config/partnerFeatures";
+import PartnerSidebar from "./PartnerSidebar";
 
 
 let labelForDashboard = " ";
+
+/**
+ * Menus whose flyout opens UPWARDS (`.submenu-up` — bottom anchored to the top
+ * of the row) because they sit low enough in the sidebar that a downward panel
+ * would run off the bottom of the screen. "Report" belongs here rather than in
+ * the `submenu-center` group: near the foot of the admin menu its tall panel
+ * was being cut off by the viewport.
+ */
+const SUBMENU_UP = new Set([
+  "Inhouse Accounts",
+  "Agent Incentive",
+  "Marketing",
+  "Report",
+]);
 
 export default function Sidebar() {
   const [show, setShow] = useState(false);
@@ -93,6 +110,10 @@ export default function Sidebar() {
     // but this path pins the active role to super_admin so the sidebar
     // filter shows the SUPER_ADMIN-only groups (API Access, Credential Vault).
     "/superAdminDashboard": "super_admin",
+    // Supplier / DMC portal — same trick, so a direct visit to either
+    // dashboard pins the partner role before PartnerSidebar renders.
+    "/supplierDashboard": "supplier",
+    "/dmcDashboard": "dmc",
   };
   const pathRole = dashboardRoleByPath[pathname];
 
@@ -153,18 +174,23 @@ export default function Sidebar() {
     let cancelled = false;
     (async () => {
       try {
-        const [hotelRes, agentRes] = await Promise.all([
+        const [hotelRes, agentRes, partnerRes] = await Promise.all([
           axiosInstance
             .get("/api/hotel-external-register/pending-count")
             .catch(() => null),
           axiosInstance
             .get("/api/agent-external-register/pending-count")
             .catch(() => null),
+          // Supplier / DMC self-registrations awaiting review.
+          axiosInstance
+            .get("/api/partner-external-register/pending-count")
+            .catch(() => null),
         ]);
         if (cancelled) return;
         const h = Number(hotelRes?.data?.count) || 0;
         const a = Number(agentRes?.data?.count) || 0;
-        setApprovalsPendingCount(h + a);
+        const p = Number(partnerRes?.data?.count) || 0;
+        setApprovalsPendingCount(h + a + p);
       } catch (_) {
         if (!cancelled) setApprovalsPendingCount(0);
       }
@@ -257,6 +283,22 @@ export default function Sidebar() {
 
   console.log("currentRole in sidebar::", currentRole);
 
+  // Supplier / DMC logins get a menu generated from their approved
+  // features instead of the hardcoded items below. Delegated here (after
+  // every hook above has run) so the reused product pages, which all render
+  // <Sidebar />, show the partner menu without any change of their own.
+  if (isPartnerRole(currentRole)) {
+    return (
+      <PartnerSidebar
+        role={currentRole}
+        show={show}
+        onClose={handleClose}
+        collapsed={collapsed}
+        onToggleCollapsed={toggleCollapsed}
+      />
+    );
+  }
+
   // Set dashboard path based on current active role
   let dashboardPath = "/";
 
@@ -293,9 +335,12 @@ export default function Sidebar() {
       label: "User Management",
       roles: ["super_admin"],
       children: [
-        { label: "Roles",       to: "/masters/user-roles" },
-        { label: "Login Logs",  to: "/user-management/login-logs" },
-        { label: "Role Assign", to: "/user-management/role-assign" },
+        { label: "Roles",            to: "/masters/user-roles" },
+        { label: "Login Logs",       to: "/user-management/login-logs" },
+        { label: "Role Assign",      to: "/user-management/role-assign" },
+        // Same route as the "Access Control" entry further down; listed here
+        // too so admin logins can be managed from the identity group.
+        { label: "Admin Management", to: "/super-admin/admins" },
       ],
     },
     {
@@ -455,6 +500,7 @@ export default function Sidebar() {
       children: [
         { code: "appr_hotel", label: "Hotel", to: "/admin/approval/hotels" },
         { code: "appr_agent", label: "Agent", to: "/admin/approval/agents" },
+        { code: "appr_partner", label: "Supplier / DMC", to: "/admin/approval/partners" },
       ],
     },
     {
@@ -467,6 +513,7 @@ export default function Sidebar() {
       // "Hotel" as required. Sub Agent / Sub User reuse the same
       // /agent-registration routes that agents themselves use.
       children: [
+        { code: "reg_all",         label: "All Registrations",                to: "/registration/all" },
         { code: "reg_hotel",         label: "Hotel",                          to: "/registration/hotel" },
         {
           code: "reg_agent_management",
@@ -524,7 +571,7 @@ export default function Sidebar() {
           code: "nb_offline",
           label: "Offline",
           to: "/new-booking/offline-search",
-          roles: ["admin"],
+          roles: ["admin", "agent"],
         },
         { code: "nb_restaurant",    label: "Restaurant",       to: "/new-booking/restaurant" },
         { code: "nb_honeymoon",     label: "Honeymoon Package", to: "/new-booking/honeymoon" },
@@ -614,7 +661,7 @@ export default function Sidebar() {
         {
           label: "Offline",
           to: "/booking-details/offline-booking-list",
-          roles: ["admin"],
+          roles: ["admin", "agent"],
         },
         {
           label: "Restaurants",
@@ -661,6 +708,13 @@ export default function Sidebar() {
         {
           label: "Agent Accounts",
           to: "/inhouse-accounts/agent",
+        },
+        {
+          // Statement of every credit movement — bookings debit, cancellations
+          // and payments credit. Inherits the parent's roles; an agent login is
+          // scoped to its own account server-side.
+          label: "Ledger",
+          to: "/inhouse-accounts/ledger",
         },
         // {
         //   label: "Payment Gateway Transactions",
@@ -1028,8 +1082,11 @@ export default function Sidebar() {
           height: "calc(100vh - 60px)", // 👈 reserve space
           background: "var(--color-bg, #fff)",
           borderRight: "1px solid var(--color-border, #e5e7eb)",
-          zIndex: 100,
-          // zIndex: 100,
+          // Must sit above page-level sticky strips (e.g. the hotel search
+          // .hs-summary-bar at 1020): submenus rendered inside this <aside>
+          // are trapped in its stacking context and were painted underneath.
+          // Modals / toasts use 9999+, so they still sit above the sidebar.
+          zIndex: 1050,
         }}
       >
         {/* Collapse control — pinned to the top-right corner of the sidebar
@@ -1083,7 +1140,7 @@ export default function Sidebar() {
             return (
               <Nav.Item
                 key={item.label}
-                className={`nav-item-custom ${hasChildren || hasGroups ? "nav-item-has-children" : ""} ${(item.label === "Inhouse Accounts" || item.label === "Agent Incentive" || item.label === "Marketing") ? "submenu-up" : ""} ${item.label === "Booking List" || item.label === "New Booking" || item.label === "Report" || (item.label === "Registration" && (item.children?.length ?? 0) > 4) ? "submenu-center" : ""}`}
+                className={`nav-item-custom ${hasChildren || hasGroups ? "nav-item-has-children" : ""} ${SUBMENU_UP.has(item.label) ? "submenu-up" : ""} ${item.label === "Booking List" || item.label === "New Booking" || (item.label === "Registration" && (item.children?.length ?? 0) > 4) ? "submenu-center" : ""}`}
               >
                 <Nav.Link
                   as={hasChildren || hasGroups ? "div" : Link}
@@ -1556,6 +1613,11 @@ function getIcon(label) {
   switch (label) {
     case labelForDashboard:
       return <LayoutDashboard {...iconProps} />;
+
+    // Super-admin-only identity-and-access group — Roles, Login Logs,
+    // Role Assign, Admin Management.
+    case "User Management":
+      return <UserCog {...iconProps} />;
 
     case "Manage Masters":
       return <Puzzle {...iconProps} />;

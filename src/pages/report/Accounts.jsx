@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
+import BackButton from "../../components/BackButton";
 import {
   Row,
   Col,
@@ -301,7 +302,8 @@ export default function Accounts() {
         <Sidebar />
         <main className="flex-grow-1 p-4">
           <Card className="shadow-sm rounded-xl">
-            <Card.Header>
+            <Card.Header className="d-flex align-items-center gap-2">
+              <BackButton forceFallback fallback="/adminDashboard" />
               <span className="fw-semibold"> Accounts Report</span>
             </Card.Header>
 

@@ -1,6 +1,7 @@
 import React, {useEffect, useMemo, useState} from "react";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
+import BackButton from "../../components/BackButton";
 import { toast } from "react-hot-toast";
 import axiosInstance from "../../components/AxiosInstance";
 import jsPDF from 'jspdf';
@@ -285,7 +286,8 @@ export default function CancellationReport() {
         <Sidebar />
         <main className="flex-grow-1 p-4">
           <Card className="shadow-sm rounded-xl">
-            <Card.Header>
+            <Card.Header className="d-flex align-items-center gap-2">
+              <BackButton forceFallback fallback="/adminDashboard" />
               <span className="fw-semibold"> Cancellation Report</span>
             </Card.Header>
 

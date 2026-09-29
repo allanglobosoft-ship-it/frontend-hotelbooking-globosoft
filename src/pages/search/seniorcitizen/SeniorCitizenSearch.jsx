@@ -31,12 +31,14 @@ import TopBar from "../../../components/TopBar";
 import Select from "react-select";
 import AgentSelect from "../../../components/AgentSelect";
 import axiosInstance from "../../../components/AxiosInstance";
+import { logAgentSearch } from "../../../utils/agentSearchLog";
 import AdvertisementCarousel from "../../../components/AdvertisementCarousel";
 import AgentCreditBalance from "../../../components/AgentCreditBalance";
 import DateInput from "../../../components/DateInput";
-import { FaSearch, FaStar } from "react-icons/fa";
+import { FaSearch, FaStar, FaArrowLeft } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
 import "../../../styles/HotelSearch.css";
+import DashboardRedirections from "../../../components/DashboardRedirections";
 
 function Counter({ value, min, max, onChange }) {
   return (
@@ -557,14 +559,18 @@ export default function SeniorCitizenSearch() {
     return aed && Number.isFinite(aed.rate) && aed.rate > 0 ? aed.rate : 1;
   }, [currencyOptions]);
 
+  // factor = AED → target multiplier. master_currency.value is "AED per 1 unit"
+  // of the target, so the multiplier is aedBaseRate / value (= 1/value when AED
+  // itself has value 1), NOT value / aedBaseRate.
   const displayCurrency = useMemo(
     () => ({
       code: selectedCurrency?.code || "AED",
       factor:
         selectedCurrency &&
         Number.isFinite(selectedCurrency.rate) &&
+        selectedCurrency.rate > 0 &&
         aedBaseRate
-          ? selectedCurrency.rate / aedBaseRate
+          ? aedBaseRate / selectedCurrency.rate
           : 1,
     }),
     [selectedCurrency, aedBaseRate],
@@ -690,6 +696,20 @@ export default function SeniorCitizenSearch() {
         agentId: Number(agent),
         roomConfigurations,
       };
+
+      // Agent search log (Unbooked Opportunities → Searches tab) —
+      // fire-and-forget, agent-only, non-blocking. See utils/agentSearchLog.js.
+      logAgentSearch({
+        agentId: Number(agent) || null,
+        agentName: loggedInAgentName,
+        destinationId: selectedDestination?.value,
+        destinationLabel: selectedDestination?.label,
+        nationalityLabel: selectedNationality?.label,
+        checkIn,
+        checkOut,
+        rooms,
+        source: "senior-citizen",
+      });
 
       const { data } = await axiosInstance.post(
         "/api/senior-citizen-hotel-search/search",
@@ -860,6 +880,18 @@ export default function SeniorCitizenSearch() {
       <div className="d-flex flex-grow-1">
         <Sidebar />
         <main className="flex-grow-1 p-4 hs-page">
+          {/* Back to the signed-in user's dashboard — top-left, above the page content */}
+          <div className="mb-3">
+            <Button
+              variant="outline-secondary"
+              onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+              className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
+            >
+              <FaArrowLeft />
+              Back
+            </Button>
+          </div>
+
           {/* ── Results-page heading ──
               Shown once actual results have arrived (not just on search
               click), above the search summary / form. Matches the heading

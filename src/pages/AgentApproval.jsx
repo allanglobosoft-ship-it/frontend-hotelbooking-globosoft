@@ -30,14 +30,17 @@ const STATUS_META = {
   PENDING: { label: "Pending", bg: "#fff7e6", color: "#b76e00", dot: "#f59e0b" },
   APPROVED: { label: "Approved", bg: "#e7f6ec", color: "#1b7f3a", dot: "#22c55e" },
   REJECTED: { label: "Rejected", bg: "#fdecec", color: "#b42318", dot: "#ef4444" },
+  CANCELLED: { label: "Cancelled", bg: "#f2f4f7", color: "#475467", dot: "#98a2b3" },
 };
 
-// Approval list shows PENDING + REJECTED requests — a rejected request
-// stays visible here (with its Rejected status) instead of disappearing.
+// Approval list shows PENDING + REJECTED + CANCELLED requests — a reviewed
+// request stays visible here under its own status instead of disappearing.
+// Only APPROVED rows leave the list; their details live on AgentView.
 const STATUS_OPTIONS = [
   { value: "all", label: "All" },
   { value: "PENDING", label: "Pending" },
   { value: "REJECTED", label: "Rejected" },
+  { value: "CANCELLED", label: "Cancelled" },
 ];
 
 const StatusPill = ({ status }) => {
@@ -86,10 +89,11 @@ export default function AgentApproval() {
   const fetchRequests = async () => {
     try {
       setLoading(true);
-      // PENDING + REJECTED requests appear here — once an admin approves an
-      // agent the row moves off this list (approved details live on
-      // AgentView). A rejected request stays visible (as Rejected) so the
-      // admin can Re-Approve or Cancel it from the detail page.
+      // PENDING + REJECTED + CANCELLED requests appear here — once an admin
+      // approves an agent the row moves off this list (approved details live
+      // on AgentView). A rejected request stays visible (as Rejected) so the
+      // admin can Re-Approve or Cancel it from the detail page; cancelling
+      // leaves it here as Cancelled rather than deleting it.
       const res = await axiosInstance.get("/api/agent-external-register/pending-or-rejected");
       setRequests(Array.isArray(res.data) ? res.data : []);
     } catch (err) {

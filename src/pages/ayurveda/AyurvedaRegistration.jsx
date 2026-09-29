@@ -35,12 +35,14 @@ import {
   FaReply,
   FaBuilding,
   FaCog,
+  FaArrowLeft,
 } from "react-icons/fa";
 import toast from "react-hot-toast";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
 import "../../styles/Ayurveda.css";
+import DashboardRedirections from "../../components/DashboardRedirections";
 
 const AYURVEDA_API = "/api/v1/ayurveda";
 
@@ -289,6 +291,18 @@ const AyurvedaRegistration = () => {
         <main className="flex-grow-1" style={{ minWidth: 0, overflowX: "hidden" }}>
         <div className="ayurveda-page">
           <Container fluid className="p-3">
+            {/* Back to the signed-in user's dashboard — top-left, above the page header */}
+            <div className="mb-3">
+              <Button
+                variant="outline-secondary"
+                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
+              >
+                <FaArrowLeft />
+                Back
+              </Button>
+            </div>
+
             <div className="ayurveda-header">
               <div>
                 <h2 className="ayurveda-title">

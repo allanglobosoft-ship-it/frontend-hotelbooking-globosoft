@@ -29,6 +29,7 @@ import { toast } from "react-hot-toast";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
+import { logAgentSearch } from "../../utils/agentSearchLog";
 import HoneymoonCard from "./HoneymoonCard";
 import AdvertisementCarousel from "../../components/AdvertisementCarousel";
 import AgentCreditBalance from "../../components/AgentCreditBalance";
@@ -284,6 +285,25 @@ const HoneymoonSearch = () => {
           agentId: Number(form.agentId) || null,
           markupPercent: Number(form.markupPercent) || 0,
         };
+        // Agent search log (Unbooked Opportunities → Searches tab) —
+        // honeymoon flow has origin+destination and no nationality.
+        logAgentSearch({
+          agentId: Number(form.agentId) || null,
+          agentName: form.agentName,
+          destinationId: form.destination?.id,
+          destinationLabel:
+            form.destination?.stateName || form.destination?.label,
+          checkIn: form.startingDate,
+          checkOut: form.startingDate,
+          rooms: [
+            {
+              adults: Number(form.adults) || 0,
+              children: Number(form.children) || 0,
+            },
+          ],
+          source: "honeymoon",
+        });
+
         const res = await axiosInstance.post("/api/honeymoon/search", payload);
         const data = Array.isArray(res.data) ? res.data : res.data?.content || [];
 

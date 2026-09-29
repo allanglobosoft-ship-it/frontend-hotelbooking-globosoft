@@ -17,6 +17,10 @@ const Logout = () => {
         localStorage.removeItem("UserName");
         localStorage.removeItem("currentActiveRole");
         localStorage.removeItem("makeYourOwnPackageAgentId");
+        // RegionalClock country cache (components/RegionalClock.jsx). Without
+        // this the next login inherits the previous user's timezone until the
+        // browser storage is cleared by hand.
+        localStorage.removeItem("regionalClockProfile");
         navigate("/login", { replace: true });
       }
     };

@@ -28,6 +28,7 @@ import { toast } from "react-hot-toast";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
+import { logAgentSearch } from "../../utils/agentSearchLog";
 import RestaurantCard from "./RestaurantCard";
 import AdvertisementCarousel from "../../components/AdvertisementCarousel";
 import AgentCreditBalance from "../../components/AgentCreditBalance";
@@ -434,6 +435,21 @@ const RestaurantSearch = () => {
     }
 
     try {
+      // Agent search log (Unbooked Opportunities → Searches tab) — one
+      // event per admin-visible search action. Cuisine-toggle re-fires
+      // are OK: the backend upserts on a hash of the context, so a
+      // repeat inside the dedupe window only bumps lastSeenAt.
+      logAgentSearch({
+        agentId: Number(form.agentId) || null,
+        agentName: form.agentName,
+        destinationId: form.destination?.id,
+        destinationLabel:
+          form.destination?.stateName || form.destination?.label,
+        checkIn: form.bookingDate,
+        checkOut: form.bookingDate,
+        source: "restaurant",
+      });
+
       const res = await axiosInstance.post(
         "/api/restaurant/search",
         buildPayload(cuisines)

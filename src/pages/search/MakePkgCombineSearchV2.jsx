@@ -53,6 +53,7 @@ import {
 import AgentBalanceDisplay from "../../components/AgentBalanceDisplay";
 import { useLocation, useNavigate, useNavigationType } from "react-router-dom";
 import axiosInstance from "../../components/AxiosInstance";
+import { logAgentSearch } from "../../utils/agentSearchLog";
 import { toast } from "react-hot-toast";
 import MyopV2JourneyStepper from "../../components/myopv2/MyopV2JourneyStepper";
 // The "Recommended Existing Packages" section itself lives on the criteria
@@ -1607,6 +1608,19 @@ const [activeAccordion, setActiveAccordion] = useState({});
         agentId: agentIdFinal,
         apiType: ["INHOUSE"],
       };
+
+      // Agent search log (Unbooked Opportunities → Searches tab) —
+      // Build Your Own Package v2 hotel search.
+      logAgentSearch({
+        agentId: agentIdFinal,
+        destinationId: dest?.value,
+        destinationLabel: dest?.label,
+        nationalityLabel: nationality?.label,
+        checkIn,
+        checkOut,
+        rooms,
+        source: "make-your-own-package",
+      });
 
       const searchRes = await axiosInstance.post(
         "/api/makeYourOwnPackageV2/hotel/search",

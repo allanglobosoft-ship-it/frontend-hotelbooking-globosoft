@@ -537,6 +537,21 @@ export default function DayStayBookingDetailView() {
     selected?.reconfirmation === true ||
     String(selected?.status || "").toUpperCase() === "CONFIRMED";
 
+  // Mirrors the docs-vs-proforma rule used across the app for the resend-mail
+  // preview: a still-tentative day-stay booking (CONFIRMED) resends the
+  // Proforma Voucher; once ReConfirmed / Completed — or Cancelled — it resends
+  // the real Voucher. Kept as derived values so the modal title, loading
+  // copy, iframe title, and the /pdf?type= request all stay in sync.
+  const resendUsesFinalDoc =
+    isCancelledStatus ||
+    selected?.reconfirmation === true ||
+    normalizedStatus === "RECONFIRMED" ||
+    normalizedStatus === "COMPLETED";
+  const resendDocLabel = resendUsesFinalDoc
+    ? "Voucher"
+    : "Day Stay Booking Proforma Voucher";
+  const resendDocType = resendUsesFinalDoc ? "VOUCHER" : "PROFORMA_VOUCHER";
+
   // On-Request flow mirror (degrades gracefully — when the backend does
   // not populate roomStatus="On Request" or onRequestConfirmed both flags
   // evaluate false and the page behaves as a standard booking).
@@ -1213,7 +1228,7 @@ export default function DayStayBookingDetailView() {
       const [docRes, agentRes] = await Promise.all([
         axiosInstance
           .get(`/api/day-stay-bookings/${bookingId}/pdf`, {
-            params: { type: "VOUCHER" },
+            params: { type: resendDocType },
           })
           .catch(() => null),
         agentId
@@ -3408,7 +3423,7 @@ export default function DayStayBookingDetailView() {
       >
         <Modal.Header closeButton={!resendingMail}>
           <Modal.Title style={{ fontSize: "1rem", fontWeight: 700 }}>
-            Resend Voucher to Agent
+            Resend {resendDocLabel} to Agent
             {selected?.bookingCode ? ` — ${selected.bookingCode}` : ""}
           </Modal.Title>
         </Modal.Header>
@@ -3417,14 +3432,14 @@ export default function DayStayBookingDetailView() {
             <div className="d-flex align-items-center justify-content-center h-100">
               <Spinner animation="border" variant="primary" />
               <span className="ms-2 text-muted">
-                Preparing voucher attachment…
+                Preparing {resendDocLabel.toLowerCase()} attachment…
               </span>
             </div>
           ) : resendMailPdfUrl ? (
             <iframe
               key={resendMailPdfUrl}
               src={resendMailPdfUrl}
-              title="Voucher preview"
+              title={`${resendDocLabel} preview`}
               style={{
                 width: "100%",
                 height: "100%",

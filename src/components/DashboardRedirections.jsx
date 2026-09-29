@@ -16,6 +16,11 @@ const DashboardRedirections = (role, navigate) => {
     // role distinguishes destination. Created via /auth/register with
     // userType = RESTAURANT_EXTRANET (UserAccountService.createRestaurantUser).
     "RESTAURANT_EXTRANET": "/restaurant-extranet/dashboard",
+    // Supplier / DMC portal — provisioned by the partner approval flow
+    // (PartnerExternalRegistrationService); one shared PartnerDashboard
+    // component, two paths so the sidebar can derive the role from the URL.
+    "SUPPLIER": "/supplierDashboard",
+    "DMC": "/dmcDashboard",
     // Add more roles as needed
   };
 

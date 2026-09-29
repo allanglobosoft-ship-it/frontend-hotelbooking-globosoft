@@ -16,6 +16,7 @@ import axiosInstance from "../../components/AxiosInstance";
 import Supplier from "../../components/filters/Supplier";
 import DestinationCity from "../../components/filters/DestinationCity";
 import { toast } from "react-hot-toast";
+import BackButton from "../../components/BackButton";
 
 export default function OfflineBookingDailySalesStatement() {
 
@@ -250,7 +251,8 @@ export default function OfflineBookingDailySalesStatement() {
 
         <main className="flex-grow-1 p-4" style={{ overflow: "auto" }}>
           <Card className="shadow-sm rounded-xl">
-            <Card.Header>
+            <Card.Header className="d-flex align-items-center gap-2">
+              <BackButton forceFallback fallback={isAgentRole ? "/agentDashboard" : "/adminDashboard"} />
               <span className="fw-semibold">Offline Daily Sales Statement Report</span>
             </Card.Header>
 

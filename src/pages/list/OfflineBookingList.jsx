@@ -27,14 +27,16 @@ import {
   Pagination,
   Row,
   Col,
+  Button,
 } from "react-bootstrap";
-import { FaSearch, FaEye, FaInbox } from "react-icons/fa";
+import { FaSearch, FaEye, FaInbox, FaArrowLeft } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
 import toast from "react-hot-toast";
 import "../../styles/HotelBookingListModern.css";
+import DashboardRedirections from "../../components/DashboardRedirections";
 
 const PER_PAGE_OPTIONS = [10, 25, 50, 100];
 
@@ -351,6 +353,18 @@ const OfflineBookingList = () => {
           style={{ width: "100%", overflow: "hidden" }}
         >
           <Container fluid className="px-0">
+            {/* Back to the signed-in user's dashboard — top-left, above the header row */}
+            <div className="mb-3">
+              <Button
+                variant="outline-secondary"
+                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
+              >
+                <FaArrowLeft />
+                Back
+              </Button>
+            </div>
+
             {/* Header: Title + Search (left) | Time Period (right) */}
             <div className="d-flex justify-content-between align-items-end mb-3 hbl-header">
               <div className="hbl-header-left">
