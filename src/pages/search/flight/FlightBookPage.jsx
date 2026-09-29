@@ -26,6 +26,7 @@ import { toast } from "react-hot-toast";
 import Sidebar from "../../../components/Sidebar";
 import TopBar from "../../../components/TopBar";
 import axiosInstance from "../../../components/AxiosInstance";
+import QuotationPdfCard from "../../../components/quotation/QuotationPdfCard";
 // Reuses HotelBookingPage's right-sidebar classes (.hbp-sticky-summary,
 // .hbp-summary-row/-label/-value, .hbp-price-card, .hbp-action-bar) so the
 // flight and hotel booking pages' summary sidebars look like one product —
@@ -710,6 +711,145 @@ const FlightBookPage = () => {
     }
   };
 
+  // ── Quotation PDF ────────────────────────────────────────────────────
+  // Quotes what the Flight Summary and Price Details cards show: the route,
+  // every segment of the selected recommendation, passengers, baggage and
+  // the sell-price Total (the net fare is never put on the quotation).
+  const buildFlightQuotationPayload = () => {
+    if (!rec || !fare) return null;
+    const legs = Array.isArray(rec.legs) ? rec.legs : [];
+    const legEnds = legs
+      .map((leg) => {
+        const segs = Array.isArray(leg?.segments) ? leg.segments : [];
+        if (!segs.length) return null;
+        const first = segs[0];
+        const last = segs[segs.length - 1];
+        return {
+          from: first.departureAirportCode || first.from || "",
+          to: last.arrivalAirportCode || last.to || "",
+        };
+      })
+      .filter(Boolean);
+    const tripType =
+      legEnds.length <= 1
+        ? "One way"
+        : legEnds.length === 2 && legEnds[1].to === legEnds[0].from
+          ? "Return"
+          : "Multi-city";
+    const paxSummary = `${adultCount} Adult${adultCount !== 1 ? "s" : ""}${
+      childrenCount
+        ? `, ${childrenCount} Child${childrenCount !== 1 ? "ren" : ""}`
+        : ""
+    }${infantCount ? `, ${infantCount} Infant${infantCount !== 1 ? "s" : ""}` : ""}`;
+
+    // Prepared For: the separate booker when "Same as Primary" is unticked,
+    // otherwise the primary passenger — only once a name has been typed.
+    const primary = passengers[0] || {};
+    const useCustomer = !customer.sameAsPrimary;
+    const names = (
+      useCustomer
+        ? [customer.firstName, customer.lastName]
+        : [primary.firstName, primary.middleName, primary.lastName]
+    )
+      .map((p) => (p ? String(p).trim() : ""))
+      .filter(Boolean);
+    const customerName = names.length
+      ? [useCustomer ? "" : primary.salutation || "", ...names]
+          .filter(Boolean)
+          .join(" ")
+      : "";
+
+    const segments = legs.flatMap((leg) =>
+      Array.isArray(leg?.segments) ? leg.segments : [],
+    );
+    const flexibility = selectedFamily?.flexibility || fare.flexibility || {};
+    const cancellationPolicy = [
+      typeof flexibility.cancellation === "string" && flexibility.cancellation
+        ? `Cancellation: ${flexibility.cancellation}`
+        : "",
+      typeof flexibility.dateChange === "string" && flexibility.dateChange
+        ? `Date change: ${flexibility.dateChange}`
+        : "",
+    ].filter(Boolean);
+    if (!cancellationPolicy.length && summary) {
+      cancellationPolicy.push(
+        summary.refundable
+          ? "Refundable fare - cancellation charges as per the airline fare rules."
+          : "Non-refundable fare.",
+      );
+    }
+
+    return {
+      bookingType: "FLIGHT",
+      agentId: Number(agentId) || null,
+      currency,
+      serviceName:
+        legEnds.map((l) => `${l.from} to ${l.to}`).join(", ") || "Flight",
+      serviceSubtitle: [summary?.airline, tripType].filter(Boolean).join(", "),
+      customerName: customerName || null,
+      customerEmail: customerName
+        ? ((useCustomer ? customer.email : primary.email) || "").trim() || null
+        : null,
+      customerMobile: customerName
+        ? ((useCustomer ? customer.contactNumber : primary.contactNumber) || "").trim() ||
+          null
+        : null,
+      details: [
+        { label: "Trip", value: tripType },
+        { label: "Airline", value: summary?.airline || "" },
+        {
+          label: "Departure",
+          value: summary
+            ? `${fmtWeekdayDate(summary.departure)}, ${fmtTime(summary.departure)}`
+            : "",
+        },
+        { label: "Passengers", value: paxSummary },
+        { label: "Cabin Baggage", value: summary?.cabinBaggage || "" },
+        { label: "Check-In Baggage", value: summary?.checkinBaggage || "" },
+        { label: "Fare Family", value: fare.fareFamily || "" },
+        {
+          label: "Fare Type",
+          value: summary ? (summary.refundable ? "Refundable" : "Non-Refundable") : "",
+        },
+      ],
+      priceItems: [
+        {
+          description: "Airfare",
+          details: `${paxSummary}${fare.fareFamily ? `, ${fare.fareFamily} fare` : ""}`,
+          amount: total,
+        },
+      ],
+      totalAmount: total,
+      itineraryTitle: "Flight Itinerary",
+      itineraryDayLabel: "#",
+      itinerary: segments.map((seg, i) => ({
+        day: i + 1,
+        heading: `${seg.airLineName ? `${seg.airLineName} ` : ""}${
+          seg.marketingCarrier || ""
+        }${seg.flightNumber || ""}`.trim(),
+        place: `${seg.departureAirportCode || seg.from || ""} to ${
+          seg.arrivalAirportCode || seg.to || ""
+        }`,
+        activities: [
+          `Departs ${fmtWeekdayDate(seg.departureDateTime)}, ${fmtTime(seg.departureDateTime)}${
+            seg.departureTerminal ? ` (Terminal ${seg.departureTerminal})` : ""
+          }`,
+          `Arrives ${fmtWeekdayDate(seg.arrivalDateTime)}, ${fmtTime(seg.arrivalDateTime)}${
+            seg.arrivalTerminal ? ` (Terminal ${seg.arrivalTerminal})` : ""
+          }`,
+          seg.cabin ? `Cabin: ${seg.cabin}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      })),
+      cancellationPolicy,
+      notes:
+        typeof fare.lastTicketingDate === "string" && fare.lastTicketingDate
+          ? [`Last ticketing date: ${fare.lastTicketingDate}`]
+          : [],
+    };
+  };
+
   // ── Render ───────────────────────────────────────────────────────────
   return (
     <div>
@@ -966,6 +1106,14 @@ const FlightBookPage = () => {
                       </div>
                     </Card.Body>
                   </Card>
+
+                  {/* Quotation — under the Price Details it quotes, above the
+                      Confirm Booking bar (a type="button", so it never
+                      submits this form). */}
+                  <QuotationPdfCard
+                    buildPayload={buildFlightQuotationPayload}
+                    disabled={!rec || !fare || submitting}
+                  />
 
                   <div className="hbp-action-bar mt-3">
                     <Button

@@ -380,6 +380,12 @@
   background: #fff3cd;
 }
 
+/* Results heading + one-line note (e.g. the activity booking date that
+   used to live in the step intro). */
+.myop-v2-results-head {
+  margin-bottom: 0.75rem;
+}
+
 /* Hotel step: filters column visible at every width */
 .myop-v2 .myop-v2-filters {
   position: static;
@@ -701,13 +707,18 @@
   border-top: 1px solid var(--myop-border);
 }
 
-/* ── Recommended Existing Packages (wizard) ───────────────────
-   Read-only suggestion strip rendered between the wizard card and the
-   sticky navigation bar. Uses the same result-card tokens as the hotel /
-   activity tiles above it so it reads as part of the same results area. */
+/* ── Recommended Existing Packages (criteria form) ────────────
+   Read-only suggestion strip rendered on the criteria form, between the
+   "Destinations & nights" group and "Continue to build your package",
+   once every mandatory field is filled. Kept compact on purpose: a slim
+   header with ‹ › paging and a Hide / Show toggle, over ONE horizontally
+   scrollable row of small cards (thumbnail left, key facts right). The
+   box stays a single short row however many packages match — swipe, the
+   ‹ › buttons or the keyboard reach the rest. Colours reuse the
+   result-card tokens above. */
 .myop-v2-suggest {
-  margin-top: 1.25rem;
-  padding: 1.25rem;
+  margin-top: 1rem;
+  padding: 14px 16px;
   background: #ffffff;
   border: 1px solid var(--myop-border);
   border-radius: var(--myop-radius-lg);
@@ -721,33 +732,128 @@
 }
 .myop-v2-suggest__header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px 12px;
   flex-wrap: wrap;
-  margin-bottom: 1rem;
-  padding-bottom: 0.75rem;
-  border-bottom: 1px solid var(--myop-border);
 }
 .myop-v2-suggest__title {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-width: 0;
-  flex: 1 1 320px;
-}
-.myop-v2-suggest__criteria {
-  padding-top: 4px;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
 }
-.myop-v2-suggest__grid {
+.myop-v2-suggest__icon {
+  width: 28px;
+  height: 28px;
+}
+.myop-v2-suggest__updating {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* New criteria being checked: the previous cards stay (so the form does
+   not jump) but are dimmed and inert until the new matches arrive. */
+.myop-v2-suggest.is-updating .myop-v2-suggest__track {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.myop-v2-suggest__controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.myop-v2-suggest__nav,
+.myop-v2-suggest__toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  border: 1px solid var(--myop-border-strong);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #212529;
+  line-height: 1;
+}
+.myop-v2-suggest__nav {
+  width: 30px;
+  padding: 0;
+}
+.myop-v2-suggest__toggle {
+  padding: 0 12px;
+  font-weight: 500;
+}
+.myop-v2-suggest__nav:not([aria-disabled="true"]):hover,
+.myop-v2-suggest__toggle:hover {
+  border-color: #EC0B43;
+  color: #EC0B43;
+}
+.myop-v2-suggest__nav[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: default;
+}
+.myop-v2-suggest__nav:focus-visible,
+.myop-v2-suggest__toggle:focus-visible,
+.myop-v2-suggest__scroller:focus-visible {
+  outline: 2px solid #EC0B43;
+  outline-offset: 2px;
+}
+.myop-v2-suggest__toggle-icon {
+  transition: transform 0.2s ease;
+}
+.myop-v2-suggest__toggle-icon.is-open {
+  transform: rotate(180deg);
+}
+.myop-v2-suggest__subtitle {
+  margin: 6px 0 10px;
+}
+
+/* The scrolling card row */
+.myop-v2-suggest__scroller {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain;
+  padding-bottom: 6px; /* keeps the thin scrollbar off the cards */
+}
+.myop-v2-suggest__track {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 16px;
+  grid-auto-flow: column;
+  grid-auto-columns: 348px;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
+.myop-v2-suggest__item {
+  display: flex; /* every card takes the full row height */
+  min-width: 0;
+  scroll-snap-align: start;
+}
+
+/* Compact card: thumbnail left, details right. `position: relative` keeps
+   the absolutely positioned screen-reader labels inside the card, so they
+   scroll and clip with the row instead of widening the page. */
 .myop-v2-suggest-card {
-  display: flex;
-  flex-direction: column;
+  position: relative;
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  width: 100%;
+  background: #ffffff;
+  border: 1px solid var(--myop-border-strong);
+  border-radius: var(--myop-radius);
+  overflow: hidden;
+}
+/* "Fits your trip" — red outline + red flag, deliberately distinct from
+   the filled red "In package" pill the hotel/cab/activity tiles use. */
+.myop-v2-suggest-card--fit {
+  border-color: #EC0B43;
+}
+.myop-v2-suggest-card__media {
+  position: relative;
+  background-color: #f5f5f5;
 }
 .myop-v2-suggest-card__media > img {
   position: absolute;
@@ -758,82 +864,111 @@
   display: block;
 }
 .myop-v2-suggest-card__type {
-  top: 10px;
-  left: 10px;
+  top: 6px;
+  left: 6px;
+  display: block;
+  max-width: calc(100% - 12px);
+  padding: 2px 6px;
   text-transform: uppercase;
-}
-/* "Fits your trip" — a highlighted chip, deliberately distinct from the
-   red "In package" state the hotel/cab/activity tiles use for cart items. */
-.myop-v2-suggest-card--fit {
-  border-color: #EC0B43;
-}
-.myop-v2-suggest-card__fit {
-  border-color: #EC0B43;
-  color: #EC0B43;
-  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .myop-v2-suggest-card__body {
   display: flex;
   flex-direction: column;
-  flex: 1 1 auto;
-  padding: 14px 16px 16px;
-  gap: 6px;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+.myop-v2-suggest-card__flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  max-width: 100%;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.myop-v2-suggest-card__flag--fit {
+  color: #EC0B43;
+}
+.myop-v2-suggest-card__flag--warning {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  color: #212529;
+  font-weight: 500;
 }
 .myop-v2-suggest-card__name {
-  font-weight: 600;
-  color: #333;
   margin: 0;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #333;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: anywhere;
 }
 .myop-v2-suggest-card__line {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
 }
 .myop-v2-suggest-card__chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
 }
 .myop-v2-suggest-card__chips .myop-v2-trip-chip {
-  padding: 3px 8px;
-  white-space: normal;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 1px 8px;
 }
-.myop-v2-suggest-card__desc {
-  margin: 0;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  white-space: normal;
+.myop-v2-suggest-card__includes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
 }
-.myop-v2-suggest-card__warning {
+.myop-v2-suggest-card__includes > span {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  align-self: flex-start;
-  padding: 3px 8px;
-  border-radius: 8px;
-  background: #fff3cd;
-  border: 1px solid #ffc107;
-  color: #212529;
+  gap: 3px;
 }
 .myop-v2-suggest-card .myop-v2-card-footer {
   margin-top: auto;
+  padding-top: 8px;
+}
+.myop-v2-suggest-card__price {
+  min-width: 0;
+  line-height: 1.25;
 }
 .myop-v2-suggest-card__cta {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
   white-space: nowrap;
 }
 @media (max-width: 575.98px) {
   .myop-v2-suggest {
-    padding: 1rem;
+    padding: 12px;
   }
-  .myop-v2-suggest__grid {
-    grid-template-columns: 1fr;
+  /* Phones: a little under one card per view (the next one peeks in to
+     show the row scrolls), with the image stacked on top. */
+  .myop-v2-suggest__track {
+    grid-auto-columns: min(280px, calc(100vw - 126px));
+  }
+  .myop-v2-suggest-card {
+    grid-template-columns: minmax(0, 1fr);
+    /* extra height (a taller neighbour) goes to the details, not the image */
+    grid-template-rows: auto 1fr;
+  }
+  .myop-v2-suggest-card__media {
+    aspect-ratio: 2 / 1;
   }
 }
 

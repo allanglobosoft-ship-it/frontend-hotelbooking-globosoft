@@ -49,6 +49,7 @@ import { toast } from "react-hot-toast";
 import axiosInstance from "../../../components/AxiosInstance";
 import Sidebar from "../../../components/Sidebar";
 import TopBar from "../../../components/TopBar";
+import QuotationPdfCard from "../../../components/quotation/QuotationPdfCard";
 import "../../../styles/HotelBookingPage.css";
 
 // Feature flag — Add-ons section hidden for now per spec. Flip to `true`
@@ -719,6 +720,111 @@ export default function MeetAndSpaceBookingPage() {
 
   const currency = space?.currency || "INR";
   const money = (n) => `${currency} ${Number(n || 0).toFixed(2)}`;
+
+  // ── Quotation PDF ─────────────────────────────────────────────────────
+  // Quotes what this page shows: the Booking Summary (venue, date, time,
+  // attendees, layout, event) and the Price Details Sub Total / Tax / Total
+  // in the space's currency, like money(). Amount Paid / Balance Due are
+  // payment tracking, not quotation content. Cancellation lines use the
+  // Policies modal's own wording.
+  const buildMeetSpaceQuotationPayload = () => {
+    if (!space) return null;
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const unit = Number(criteria.unitRate || 0);
+    const selectedAmenities = [
+      ...spaceAmenities.filter((a) => a.isSelected).map((a) => a.name),
+      ...customAmenities.map((a) => (a || "").trim()),
+    ].filter(Boolean);
+
+    const priceItems = [
+      {
+        description: `Venue hire - ${space.spaceName || "Meeting space"}`,
+        details:
+          criteria.rateType === "Hourly"
+            ? `${pricing.hours} hour${pricing.hours === 1 ? "" : "s"} x ${currency} ${unit.toFixed(2)}`
+            : [criteria.ratePlan, criteria.rateType].filter(Boolean).join(", "),
+        amount: round2(pricing.subTotal),
+      },
+    ];
+    if (pricing.addonTotal > 0) {
+      addons
+        .filter((a) => Number(a.totalPrice || 0) !== 0)
+        .forEach((a) =>
+          priceItems.push({
+            description: a.addonName || "Add-on",
+            details: `${Number(a.quantity) || 0} x ${currency} ${Number(
+              a.unitPrice || 0,
+            ).toFixed(2)}`,
+            amount: round2(a.totalPrice),
+          }),
+        );
+    }
+    if (pricing.taxAmount > 0) {
+      priceItems.push({
+        description: `Tax (${pricing.taxPercent}%)`,
+        details: "",
+        amount: round2(pricing.taxAmount),
+      });
+    }
+
+    const customerName = [customer.firstName, customer.lastName]
+      .map((p) => (p || "").trim())
+      .filter(Boolean)
+      .join(" ");
+
+    return {
+      bookingType: "MEET_SPACE",
+      agentId: agentId || null,
+      currency,
+      serviceName: space.spaceName || "Meeting Space",
+      serviceSubtitle: space.hotelName || "",
+      customerName: customerName
+        ? `${customer.salutation ? `${customer.salutation} ` : ""}${customerName}`
+        : null,
+      customerEmail: customer.email.trim() || null,
+      customerMobile: customer.mobile.trim() || null,
+      details: [
+        { label: "Date", value: criteria.bookingDate || "" },
+        {
+          label: "Time",
+          value:
+            criteria.startTime && criteria.endTime
+              ? `${criteria.startTime} - ${criteria.endTime} (${pricing.hours}h)`
+              : "",
+        },
+        { label: "Attendees", value: String(criteria.attendees || "") },
+        { label: "Layout", value: criteria.layout || "" },
+        { label: "Event Type", value: eventType || "" },
+        { label: "Space Type", value: space.spaceType || "" },
+        {
+          label: "Capacity",
+          value: space.capacity != null ? String(space.capacity) : "",
+        },
+        { label: "Rate Plan", value: criteria.ratePlan || "" },
+        { label: "Company", value: customer.companyName || "" },
+        { label: "Country", value: nationalityName || "" },
+        { label: "Amenities", value: selectedAmenities.join(", ") },
+      ],
+      priceItems,
+      totalAmount: round2(pricing.totalAmount),
+      cancellationPolicy: cancellationPolicies.map((policy) => {
+        const hasDays =
+          policy.daysBeforeEvent !== null && policy.daysBeforeEvent !== undefined;
+        const hasCharge =
+          policy.chargePercent !== null && policy.chargePercent !== undefined;
+        const meta = [
+          hasDays ? `${policy.daysBeforeEvent} day(s) before event` : "",
+          hasCharge ? `${policy.chargePercent}% charge` : "",
+        ]
+          .filter(Boolean)
+          .join(" - ");
+        return `${policy.policyText}${meta ? ` (${meta})` : ""}`;
+      }),
+      notes: additionalRequirements.trim()
+        ? [`Additional requirements: ${additionalRequirements.trim()}`]
+        : [],
+    };
+  };
 
   if (loading) {
     return (
@@ -1586,6 +1692,16 @@ export default function MeetAndSpaceBookingPage() {
                         </div>
                       </Card.Body>
                     </Card>
+
+                    {/* Quotation — under the Price Details it quotes, above
+                        Review & Confirm. Not offered while editing an
+                        existing booking (a quotation precedes a booking). */}
+                    {!isEditMode && (
+                      <QuotationPdfCard
+                        buildPayload={buildMeetSpaceQuotationPayload}
+                        disabled={saving}
+                      />
+                    )}
 
                     <div className="hbp-action-bar mt-3 d-flex gap-2">
                       <Button

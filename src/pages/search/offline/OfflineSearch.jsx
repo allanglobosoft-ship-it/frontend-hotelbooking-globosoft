@@ -8,6 +8,7 @@ import Sidebar from "../../../components/Sidebar";
 import TopBar from "../../../components/TopBar";
 import AdvertisementCarousel from "../../../components/AdvertisementCarousel";
 import AgentCreditBalance from "../../../components/AgentCreditBalance";
+import QuotationPdfCard from "../../../components/quotation/QuotationPdfCard";
 import { FaSearch } from "react-icons/fa";
 import { toast } from "react-hot-toast";
 import "../../../styles/OfflineSearch.css";
@@ -433,6 +434,56 @@ const OfflineSearch = () => {
   // sticky summary strip (the supplier-entries panel below stays visible),
   // unless the user chose to modify the criteria.
   const collapseSearch = !!mainBasicId && !isEditingSearch;
+
+  // ── Quotation PDF ─────────────────────────────────────────────────────
+  // Quotes exactly what the summary table and totals below show: one price
+  // line per supplier entry at its Sub Total (selling price, tax included)
+  // and the Grand Total. Amounts are in AED, as every supplier form states.
+  const buildOfflineQuotationPayload = () => {
+    if (!mainBasicId || supplierEntries.length === 0) return null;
+    const adults = rooms.reduce((a, r) => a + r.adults, 0);
+    const children = rooms.reduce((a, r) => a + r.children, 0);
+    const grandTotal = supplierEntries.reduce(
+      (sum, entry) => sum + (parseFloat(entry.subTotal) || 0),
+      0,
+    );
+    const serviceTypes = Array.from(
+      new Set(supplierEntries.map((entry) => entry.supplierType).filter(Boolean)),
+    );
+    return {
+      bookingType: "OFFLINE",
+      agentId: Number(formData.agentId?.value) || null,
+      currency: "AED",
+      serviceName: "Offline Booking",
+      serviceSubtitle: serviceTypes.length
+        ? `Services: ${serviceTypes.join(", ")}`
+        : "",
+      customerName: formData.customerName || null,
+      customerMobile: formData.contactNo || null,
+      details: [
+        { label: "Check-in", value: formatDate(formData.checkIn) },
+        { label: "Check-out", value: formatDate(formData.checkOut) },
+        {
+          label: "Guests",
+          value: `${adults} Adult${adults === 1 ? "" : "s"}${
+            children ? `, ${children} Child${children === 1 ? "" : "ren"}` : ""
+          }`,
+        },
+        { label: "Rooms", value: String(rooms.length) },
+        { label: "Reference No.", value: formData.refNo || "" },
+      ],
+      priceItems: supplierEntries.map((entry) => ({
+        description: [entry.supplierType, entry.hotelName]
+          .filter(Boolean)
+          .join(" - "),
+        details: [entry.description, entry.quantity ? `Qty: ${entry.quantity}` : ""]
+          .filter(Boolean)
+          .join("\n"),
+        amount: parseFloat(entry.subTotal) || 0,
+      })),
+      totalAmount: grandTotal,
+    };
+  };
 
   return (
     <div className="min-vh-100 bg-light d-flex flex-column">
@@ -863,6 +914,14 @@ const OfflineSearch = () => {
                   </div>
 
                   <div className="d-flex justify-content-end mt-3 pt-3">
+                    {/* Quotation — this flow has no price sidebar, so it sits
+                        beside Submit, under the Grand Total it quotes. */}
+                    <QuotationPdfCard
+                      variant="button"
+                      className="me-2 align-self-center"
+                      buildPayload={buildOfflineQuotationPayload}
+                      disabled={isSubmitting || supplierEntries.length === 0}
+                    />
                     <Button
                       variant="success"
                       className="btn-final-submit-premium d-flex align-items-center gap-2"

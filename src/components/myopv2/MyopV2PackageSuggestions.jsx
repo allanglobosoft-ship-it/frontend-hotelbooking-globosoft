@@ -1,16 +1,18 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Spinner } from "react-bootstrap";
 import {
   FaBed,
   FaCalendarAlt,
+  FaCheck,
+  FaCheckCircle,
+  FaChevronDown,
+  FaChevronLeft,
+  FaChevronRight,
   FaExclamationTriangle,
   FaExternalLinkAlt,
   FaMapMarkerAlt,
   FaSuitcase,
   FaUtensils,
-  FaHotel,
-  FaCar,
-  FaTicketAlt,
 } from "react-icons/fa";
 import axiosInstance from "../AxiosInstance";
 import {
@@ -21,31 +23,46 @@ import {
 } from "../../utils/packageBookingHandoff";
 
 /**
- * "Recommended Existing Packages" — read-only suggestion strip rendered
- * under the Make Your Own Package V2 wizard results.
+ * "Recommended Existing Packages" — read-only suggestion strip rendered on
+ * the Make Your Own Package V2 criteria form
+ * (/new-booking/make-your-own-package-v2), above "Continue to build your
+ * package".
  *
  * How it works
- *  • Once the wizard's own search has completed (`enabled`), the same
+ *  • Once every mandatory field on the form is filled (`enabled`), the
  *    criteria the operator entered (destination(s), travel window, pax,
  *    nationality, agent) are sent to POST /api/v1/package-booking/suggestions
  *    — the Package Search page's matching rules, plus a few display fields.
+ *  • The criteria are live form values: queries are debounced while the
+ *    operator is still typing, and the previous matches stay on screen
+ *    (dimmed) until the new ones arrive, so the form does not jump.
+ *    Clearing a mandatory field hides the section again.
  *  • One request per distinct destination in the itinerary (a single-city
  *    trip is one call). Results are merged by packageId.
  *  • Results are cached in sessionStorage under the exact request payload,
- *    so step changes, re-mounts and Back/Forward never re-query while the
- *    criteria are unchanged. A refresh of the wizard clears the cache along
- *    with the rest of the v2 search state.
+ *    so re-mounts and Back/Forward never re-query while the criteria are
+ *    unchanged. A refresh of the v2 search page clears the cache along with
+ *    the rest of the v2 search state.
  *  • Failures are silent: the section simply does not render, and the
- *    wizard is never blocked or affected.
- *  • "View Package" replays the Package Search page's own booking hand-off
+ *    form is never blocked or affected.
+ *  • "View" replays the Package Search page's own booking hand-off
  *    (localStorage draft + new tab), so the existing booking flow runs
  *    unchanged.
+ *  • Layout: a slim header (title, match count, ‹ › paging, Hide / Show)
+ *    over ONE horizontally scrollable row of compact cards, so the box
+ *    stays a single short row however many packages match. Hide / Show is
+ *    a view preference, kept for the tab session.
  *
- * Nothing here writes to the cart, the wizard state or the search results.
+ * Nothing here writes to the cart, the criteria form or the build flow.
  */
 export const PACKAGE_SUGGESTIONS_STORAGE_KEY = "makePkgV2PkgSuggestions";
+// Hide / Show choice. A view preference rather than search state, so it is
+// deliberately not part of the wizard's refresh reset.
+const COLLAPSED_STORAGE_KEY = "makePkgV2PkgSuggestionsCollapsed";
 const SUGGESTIONS_ENDPOINT = "/api/v1/package-booking/suggestions";
-const INITIAL_VISIBLE = 6;
+// Quiet period after the last criteria edit before querying — long enough to
+// cover a date typed digit by digit or a two-digit nights value.
+const FETCH_DEBOUNCE_MS = 400;
 
 const isTruthyFlag = (v) => v === 1 || v === true || v === "1";
 
@@ -109,6 +126,31 @@ const writeCache = (key, items) => {
   }
 };
 
+const readCollapsed = () => {
+  try {
+    return sessionStorage.getItem(COLLAPSED_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+
+const writeCollapsed = (collapsed) => {
+  try {
+    if (collapsed) sessionStorage.setItem(COLLAPSED_STORAGE_KEY, "1");
+    else sessionStorage.removeItem(COLLAPSED_STORAGE_KEY);
+  } catch {
+    /* private mode / quota — non-fatal */
+  }
+};
+
+const prefersReducedMotion = () => {
+  try {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  } catch {
+    return false;
+  }
+};
+
 export default function MyopV2PackageSuggestions({
   enabled,
   criteria,
@@ -122,7 +164,7 @@ export default function MyopV2PackageSuggestions({
 }) {
   const [items, setItems] = useState([]);
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
-  const [showAll, setShowAll] = useState(false);
+  const [collapsed, setCollapsed] = useState(readCollapsed);
 
   const isAgentRole = useMemo(detectAgentRole, []);
   // Admin/staff: the agent picked on the criteria form. Agent logins: the
@@ -230,7 +272,13 @@ export default function MyopV2PackageSuggestions({
   const requestKey = useMemo(() => JSON.stringify(requests.map((r) => r.payload)), [requests]);
 
   useEffect(() => {
-    if (!enabled || requests.length === 0) return undefined;
+    // Criteria incomplete (e.g. a mandatory field was cleared): drop the old
+    // matches so they never reappear against different criteria.
+    if (!enabled || requests.length === 0) {
+      setItems((prev) => (prev.length === 0 ? prev : []));
+      setStatus("idle");
+      return undefined;
+    }
 
     const cached = readCache();
     if (cached && cached.key === requestKey && Array.isArray(cached.items)) {
@@ -241,49 +289,51 @@ export default function MyopV2PackageSuggestions({
 
     let cancelled = false;
     setStatus("loading");
-    setShowAll(false);
 
-    Promise.all(
-      requests.map((r) =>
-        axiosInstance
-          .post(SUGGESTIONS_ENDPOINT, r.payload)
-          .then((res) =>
-            (Array.isArray(res.data) ? res.data : []).map((pkg) => ({
-              ...pkg,
-              suggestionDestinationValue: r.destinationValue,
-            })),
-          )
-          .catch((err) => {
-            // Recommendation only — never surface an error to the operator
-            // or interrupt the wizard.
-            console.warn("Package suggestions unavailable:", err?.message || err);
-            return null;
-          }),
-      ),
-    ).then((results) => {
-      if (cancelled) return;
-      const anySucceeded = results.some((r) => r !== null);
-      const merged = [];
-      const seen = new Set();
-      results
-        .filter(Boolean)
-        .flat()
-        .forEach((pkg) => {
-          if (!pkg || pkg.packageId == null) return;
-          const key = String(pkg.packageId);
-          if (seen.has(key)) return;
-          seen.add(key);
-          merged.push(pkg);
-        });
-      setItems(merged);
-      setStatus(anySucceeded ? "done" : "error");
-      // Cache only a complete answer — a leg that failed transiently must be
-      // retried the next time the section mounts for the same criteria.
-      if (results.every((r) => r !== null)) writeCache(requestKey, merged);
-    });
+    const timer = window.setTimeout(() => {
+      Promise.all(
+        requests.map((r) =>
+          axiosInstance
+            .post(SUGGESTIONS_ENDPOINT, r.payload)
+            .then((res) =>
+              (Array.isArray(res.data) ? res.data : []).map((pkg) => ({
+                ...pkg,
+                suggestionDestinationValue: r.destinationValue,
+              })),
+            )
+            .catch((err) => {
+              // Recommendation only — never surface an error to the operator
+              // or interrupt the form.
+              console.warn("Package suggestions unavailable:", err?.message || err);
+              return null;
+            }),
+        ),
+      ).then((results) => {
+        if (cancelled) return;
+        const anySucceeded = results.some((r) => r !== null);
+        const merged = [];
+        const seen = new Set();
+        results
+          .filter(Boolean)
+          .flat()
+          .forEach((pkg) => {
+            if (!pkg || pkg.packageId == null) return;
+            const key = String(pkg.packageId);
+            if (seen.has(key)) return;
+            seen.add(key);
+            merged.push(pkg);
+          });
+        setItems(merged);
+        setStatus(anySucceeded ? "done" : "error");
+        // Cache only a complete answer — a leg that failed transiently must be
+        // retried the next time the section mounts for the same criteria.
+        if (results.every((r) => r !== null)) writeCache(requestKey, merged);
+      });
+    }, FETCH_DEBOUNCE_MS);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
     // `requests` is fully represented by requestKey.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -305,9 +355,85 @@ export default function MyopV2PackageSuggestions({
     );
   }, [items, totalNights]);
 
-  const visible = showAll ? sorted : sorted.slice(0, INITIAL_VISIBLE);
+  // ── Card row paging ──────────────────────────────────────────────
+  // All cards sit in one horizontally scrollable row. The ‹ › buttons page
+  // it and only show while the row actually overflows.
+  const scrollerRef = useRef(null);
+  const detachScrollerRef = useRef(null);
+  const [scrollEdges, setScrollEdges] = useState({ atStart: true, atEnd: true });
+
+  const syncScrollEdges = useCallback(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const atStart = el.scrollLeft <= 1;
+    const atEnd = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
+    setScrollEdges((prev) =>
+      prev.atStart === atStart && prev.atEnd === atEnd ? prev : { atStart, atEnd },
+    );
+  }, []);
+
+  // Callback ref: attaches the scroll / resize listeners when the row
+  // mounts and removes them when it unmounts. Updates are batched to one
+  // per animation frame, which also keeps ResizeObserver free of
+  // "loop limit" warnings.
+  const attachScroller = useCallback(
+    (el) => {
+      if (detachScrollerRef.current) {
+        detachScrollerRef.current();
+        detachScrollerRef.current = null;
+      }
+      scrollerRef.current = el;
+      if (!el) return;
+      let frame = 0;
+      const schedule = () => {
+        window.cancelAnimationFrame(frame);
+        frame = window.requestAnimationFrame(syncScrollEdges);
+      };
+      const observer =
+        typeof ResizeObserver !== "undefined" ? new ResizeObserver(schedule) : null;
+      el.addEventListener("scroll", schedule, { passive: true });
+      if (observer) observer.observe(el);
+      else window.addEventListener("resize", schedule);
+      schedule();
+      detachScrollerRef.current = () => {
+        window.cancelAnimationFrame(frame);
+        el.removeEventListener("scroll", schedule);
+        if (observer) observer.disconnect();
+        else window.removeEventListener("resize", schedule);
+      };
+    },
+    [syncScrollEdges],
+  );
+
+  // A new result set, or Hide → Show, changes what overflows without
+  // resizing the row itself.
+  useEffect(() => {
+    syncScrollEdges();
+  }, [sorted, collapsed, syncScrollEdges]);
+
+  const scrollByPage = (direction) => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    // Mandatory scroll-snap lands each page on a card edge. The 0.9 factor
+    // brings the card cut off at the edge fully into view.
+    el.scrollBy({
+      left: direction * el.clientWidth * 0.9,
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+  };
+
+  const toggleCollapsed = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    writeCollapsed(next);
+  };
+
+  const isUpdating = status === "loading";
 
   const handleViewPackage = (pkg) => {
+    // While new criteria are being checked the cards on screen belong to
+    // the previous criteria; don't hand one off with the new values.
+    if (isUpdating) return;
     const destination =
       destinations.find((d) => String(d.value) === String(pkg.suggestionDestinationValue)) ||
       destinations[0] ||
@@ -329,7 +455,10 @@ export default function MyopV2PackageSuggestions({
 
   if (!enabled || requests.length === 0) return null;
 
-  if (status === "loading") {
+  // First query for these criteria: a one-line placeholder. Later queries
+  // keep the previous cards on screen (dimmed) instead, so the form below
+  // doesn't jump while the operator edits.
+  if (isUpdating && sorted.length === 0) {
     return (
       <div className="myop-v2-suggest-loading small text-muted" role="status">
         <Spinner animation="border" size="sm" className="me-2" />
@@ -348,177 +477,259 @@ export default function MyopV2PackageSuggestions({
     .filter(Boolean)
     .join(" · ");
 
+  const hasOverflow = !(scrollEdges.atStart && scrollEdges.atEnd);
+
   return (
-    <section className="myop-v2-suggest" aria-labelledby="myop-v2-suggest-title">
+    <section
+      className={`myop-v2-suggest${isUpdating ? " is-updating" : ""}`}
+      aria-labelledby="myop-v2-suggest-title"
+      aria-busy={isUpdating}
+    >
       <div className="myop-v2-suggest__header">
         <div className="myop-v2-suggest__title">
-          <span className="myop-v2-step-intro__icon">
-            <FaSuitcase />
+          <span className="myop-v2-step-intro__icon myop-v2-suggest__icon" aria-hidden="true">
+            <FaSuitcase size={13} />
           </span>
-          <div>
-            <h5 id="myop-v2-suggest-title" className="fw-bold mb-1 d-flex align-items-center flex-wrap gap-2">
-              Recommended Existing Packages
-              <Badge bg="primary" pill>
-                {sorted.length}
-              </Badge>
-            </h5>
-            <div className="text-muted small">
-              We found ready-made packages matching your search. You can book one of
-              these instantly instead of creating a custom package.
-            </div>
-          </div>
+          <h6 id="myop-v2-suggest-title" className="fw-bold mb-0">
+            Recommended Existing Packages
+          </h6>
+          <Badge bg="primary" pill>
+            {sorted.length}
+          </Badge>
+          {isUpdating && (
+            <span className="myop-v2-suggest__updating small text-muted" role="status">
+              <Spinner animation="border" size="sm" aria-hidden="true" />
+              Updating…
+            </span>
+          )}
         </div>
-        <div className="myop-v2-suggest__criteria small text-muted">
-          <FaCalendarAlt className="text-primary me-1" />
-          Matched on {tripSummary}
-        </div>
-      </div>
 
-      <div className="myop-v2-suggest__grid">
-        {visible.map((pkg) => {
-          const nights = nightsOf(pkg);
-          const fitsExactly = nights != null && totalNights > 0 && nights === totalNights;
-          const hotelLabel = pkg.hotelCategory || pkg.hotelName || "";
-          const includes = [
-            isTruthyFlag(pkg.containHotel) ? { Icon: FaHotel, label: "Hotel" } : null,
-            isTruthyFlag(pkg.containCab) ? { Icon: FaCar, label: "Transfers" } : null,
-            isTruthyFlag(pkg.containActivity) ? { Icon: FaTicketAlt, label: "Tours" } : null,
-          ].filter(Boolean);
-          return (
-            <article
-              key={pkg.packageId}
-              className={`myop-v2-result-card myop-v2-suggest-card ${fitsExactly ? "myop-v2-suggest-card--fit" : ""}`.trim()}
-            >
-              <div className="myop-v2-ratio-16x9 myop-v2-suggest-card__media">
-                <img
-                  src={resolvePackageImageUrl(pkg.packageImage) || PACKAGE_FALLBACK_IMAGE}
-                  alt={pkg.packageName || "Package"}
-                  loading="lazy"
-                  onError={(e) => {
-                    // Guard so an unreachable fallback can't re-trigger itself.
-                    if (e.currentTarget.src === PACKAGE_FALLBACK_IMAGE) return;
-                    e.currentTarget.src = PACKAGE_FALLBACK_IMAGE;
-                  }}
-                />
-                {pkg.packageType && pkg.packageType !== "N/A" && (
-                  <span className="myop-v2-media-badge myop-v2-suggest-card__type" style={{ fontSize: "12px" }}>
-                    {pkg.packageType}
-                  </span>
-                )}
-              </div>
-
-              <div className="myop-v2-suggest-card__body">
-                <h6 className="myop-v2-suggest-card__name" title={pkg.packageName}>
-                  {pkg.packageName || "Package"}
-                </h6>
-
-                <div className="myop-v2-suggest-card__line text-muted small">
-                  <FaMapMarkerAlt className="text-primary" />
-                  <span className="text-truncate">
-                    {[pkg.arrivePlace, pkg.arriveCountryName]
-                      .filter((v) => v && v !== "N/A")
-                      .join(", ") || "Destination on request"}
-                  </span>
-                </div>
-
-                <div className="myop-v2-suggest-card__chips">
-                  {nights != null && (
-                    <span className="myop-v2-trip-chip small">
-                      <FaCalendarAlt className="text-primary" />
-                      {nights} night{nights === 1 ? "" : "s"} / {nights + 1} day{nights + 1 === 1 ? "" : "s"}
-                    </span>
-                  )}
-                  {fitsExactly && (
-                    <span className="myop-v2-trip-chip myop-v2-suggest-card__fit small">
-                      Fits your {totalNights}-night trip
-                    </span>
-                  )}
-                  {hotelLabel && (
-                    <span className="myop-v2-trip-chip small" title={pkg.hotelName || undefined}>
-                      <FaBed className="text-primary" />
-                      {hotelLabel}
-                    </span>
-                  )}
-                  {pkg.mealPlan && (
-                    <span className="myop-v2-trip-chip small">
-                      <FaUtensils className="text-primary" />
-                      {pkg.mealPlan}
-                    </span>
-                  )}
-                </div>
-
-                {includes.length > 0 && (
-                  <div className="myop-v2-suggest-card__includes text-muted" style={{ fontSize: "0.75rem" }}>
-                    Includes:{" "}
-                    {includes.map(({ Icon, label }) => (
-                      <span key={label} className="me-2">
-                        <Icon className="me-1" />
-                        {label}
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {pkg.overview && (
-                  <p className="myop-v2-suggest-card__desc text-muted small" title={pkg.overview}>
-                    {pkg.overview}
-                  </p>
-                )}
-
-                {pkg.exceedsTravelWindow && (
-                  <div
-                    className="myop-v2-suggest-card__warning small"
-                    title={pkg.travelWindowWarning || undefined}
-                  >
-                    <FaExclamationTriangle className="text-warning me-1" />
-                    Longer than your {totalNights}-night trip
-                  </div>
-                )}
-
-                <div className="myop-v2-card-footer">
-                  <div>
-                    {hasPrice(pkg) && (
-                      <div className="text-muted" style={{ fontSize: "0.72rem" }}>
-                        Starting from
-                      </div>
-                    )}
-                    <div className="fw-bold text-dark" style={{ fontSize: "1.1rem" }}>
-                      {formatRate(pkg)}
-                    </div>
-                    {hasPrice(pkg) && (
-                      <div className="text-muted" style={{ fontSize: "0.72rem" }}>
-                        {pkg.rateType || "Per Adult"}
-                      </div>
-                    )}
-                  </div>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    className="myop-v2-suggest-card__cta"
-                    onClick={() => handleViewPackage(pkg)}
-                    title="Opens the package booking page in a new tab"
-                  >
-                    View Package
-                    <FaExternalLinkAlt className="ms-2" size={11} />
-                  </Button>
-                </div>
-              </div>
-            </article>
-          );
-        })}
-      </div>
-
-      {sorted.length > INITIAL_VISIBLE && (
-        <div className="text-center mt-3">
-          <Button
-            variant="outline-primary"
-            size="sm"
-            onClick={() => setShowAll((v) => !v)}
+        <div className="myop-v2-suggest__controls">
+          {!collapsed && hasOverflow && (
+            <>
+              {/* aria-disabled (not disabled) so keyboard focus stays on the
+                  button when the row reaches its end. */}
+              <button
+                type="button"
+                className="myop-v2-suggest__nav"
+                onClick={() => !scrollEdges.atStart && scrollByPage(-1)}
+                aria-disabled={scrollEdges.atStart}
+                aria-label="Previous packages"
+                title="Previous packages"
+              >
+                <FaChevronLeft size={12} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="myop-v2-suggest__nav"
+                onClick={() => !scrollEdges.atEnd && scrollByPage(1)}
+                aria-disabled={scrollEdges.atEnd}
+                aria-label="Next packages"
+                title="Next packages"
+              >
+                <FaChevronRight size={12} aria-hidden="true" />
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            className="myop-v2-suggest__toggle small"
+            onClick={toggleCollapsed}
+            aria-expanded={!collapsed}
+            aria-controls="myop-v2-suggest-body"
           >
-            {showAll ? "Show fewer" : `Show all ${sorted.length} packages`}
-          </Button>
+            {collapsed ? "Show" : "Hide"}
+            <FaChevronDown
+              size={11}
+              className={`myop-v2-suggest__toggle-icon${collapsed ? "" : " is-open"}`}
+              aria-hidden="true"
+            />
+          </button>
         </div>
-      )}
+      </div>
+
+      {/* Hidden rather than unmounted, so the toggle's aria-controls always
+          points at a real element. */}
+      <div id="myop-v2-suggest-body" hidden={collapsed}>
+        <p className="myop-v2-suggest__subtitle text-muted small">
+          Ready-made packages matching{" "}
+          <span className="fw-semibold text-dark">{tripSummary}</span>. Book one
+          instantly instead of building a custom package.
+        </p>
+
+        <div
+          ref={attachScroller}
+          className="myop-v2-suggest__scroller thin-scrollbar"
+          role="region"
+          aria-label="Recommended existing packages"
+          tabIndex={0}
+        >
+          <ul className="myop-v2-suggest__track">
+            {sorted.map((pkg) => {
+              const nights = nightsOf(pkg);
+              const fitsExactly = nights != null && totalNights > 0 && nights === totalNights;
+              const hotelLabel = pkg.hotelCategory || pkg.hotelName || "";
+              const packageName = pkg.packageName || "Package";
+              const nameId = `myop-v2-suggest-name-${pkg.packageId}`;
+              const place = [pkg.arrivePlace, pkg.arriveCountryName]
+                .filter((v) => v && v !== "N/A")
+                .join(", ");
+              const durationLabel =
+                nights != null
+                  ? `${nights} night${nights === 1 ? "" : "s"} / ${nights + 1} day${nights + 1 === 1 ? "" : "s"}`
+                  : "";
+              const includes = [
+                isTruthyFlag(pkg.containHotel) ? "Hotel" : null,
+                isTruthyFlag(pkg.containCab) ? "Transfers" : null,
+                isTruthyFlag(pkg.containActivity) ? "Tours" : null,
+              ].filter(Boolean);
+              return (
+                <li key={pkg.packageId} className="myop-v2-suggest__item">
+                  <article
+                    className={`myop-v2-suggest-card${fitsExactly ? " myop-v2-suggest-card--fit" : ""}`}
+                    aria-labelledby={nameId}
+                  >
+                    <div className="myop-v2-suggest-card__media">
+                      {/* Decorative: the package name sits right beside it. */}
+                      <img
+                        src={resolvePackageImageUrl(pkg.packageImage) || PACKAGE_FALLBACK_IMAGE}
+                        alt=""
+                        loading="lazy"
+                        onError={(e) => {
+                          // Guard so an unreachable fallback can't re-trigger itself.
+                          if (e.currentTarget.src === PACKAGE_FALLBACK_IMAGE) return;
+                          e.currentTarget.src = PACKAGE_FALLBACK_IMAGE;
+                        }}
+                      />
+                      {pkg.packageType && pkg.packageType !== "N/A" && (
+                        <span
+                          className="myop-v2-media-badge myop-v2-suggest-card__type"
+                          style={{ fontSize: "0.625rem" }}
+                          title={pkg.packageType}
+                        >
+                          {pkg.packageType}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="myop-v2-suggest-card__body">
+                      {fitsExactly && (
+                        <span
+                          className="myop-v2-suggest-card__flag myop-v2-suggest-card__flag--fit"
+                          style={{ fontSize: "0.72rem" }}
+                        >
+                          <FaCheckCircle className="flex-shrink-0" aria-hidden="true" />
+                          Fits your {totalNights}-night trip
+                        </span>
+                      )}
+                      {pkg.exceedsTravelWindow && (
+                        <span
+                          className="myop-v2-suggest-card__flag myop-v2-suggest-card__flag--warning"
+                          style={{ fontSize: "0.72rem" }}
+                          title={pkg.travelWindowWarning || undefined}
+                        >
+                          <FaExclamationTriangle className="text-warning flex-shrink-0" aria-hidden="true" />
+                          Longer than your {totalNights}-night trip
+                        </span>
+                      )}
+
+                      {/* The overview no longer fits the compact card; it
+                          stays available on hover. */}
+                      <h6
+                        id={nameId}
+                        className="myop-v2-suggest-card__name small"
+                        title={pkg.overview ? `${packageName}\n\n${pkg.overview}` : packageName}
+                      >
+                        {packageName}
+                      </h6>
+
+                      <div className="myop-v2-suggest-card__line text-muted" style={{ fontSize: "0.75rem" }}>
+                        <FaMapMarkerAlt className="text-primary flex-shrink-0" aria-hidden="true" />
+                        <span className="text-truncate" title={place || undefined}>
+                          {place || "Destination on request"}
+                        </span>
+                      </div>
+
+                      {(durationLabel || hotelLabel || pkg.mealPlan) && (
+                        <div className="myop-v2-suggest-card__chips" style={{ fontSize: "0.72rem" }}>
+                          {durationLabel && (
+                            <span className="myop-v2-trip-chip" title={durationLabel}>
+                              <FaCalendarAlt className="text-primary flex-shrink-0" aria-hidden="true" />
+                              <span aria-hidden="true">
+                                {nights}N / {nights + 1}D
+                              </span>
+                              <span className="visually-hidden">{durationLabel}</span>
+                            </span>
+                          )}
+                          {hotelLabel && (
+                            <span className="myop-v2-trip-chip" title={pkg.hotelName || hotelLabel}>
+                              <FaBed className="text-primary flex-shrink-0" aria-hidden="true" />
+                              <span className="text-truncate">{hotelLabel}</span>
+                            </span>
+                          )}
+                          {pkg.mealPlan && (
+                            <span className="myop-v2-trip-chip" title={pkg.mealPlan}>
+                              <FaUtensils className="text-primary flex-shrink-0" aria-hidden="true" />
+                              <span className="text-truncate">{pkg.mealPlan}</span>
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      {includes.length > 0 && (
+                        <div className="myop-v2-suggest-card__includes text-muted" style={{ fontSize: "0.72rem" }}>
+                          <span className="visually-hidden">Includes:</span>
+                          {includes.map((label) => (
+                            <span key={label}>
+                              <FaCheck size={9} aria-hidden="true" />
+                              {label}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="myop-v2-card-footer">
+                        <div className="myop-v2-suggest-card__price">
+                          {hasPrice(pkg) ? (
+                            <>
+                              <div className="text-dark text-nowrap">
+                                <span className="text-muted me-1" style={{ fontSize: "0.72rem" }}>
+                                  From
+                                </span>
+                                <span className="fw-bold" style={{ fontSize: "0.95rem" }}>
+                                  {formatRate(pkg)}
+                                </span>
+                              </div>
+                              <div className="text-muted" style={{ fontSize: "0.7rem" }}>
+                                {pkg.rateType || "Per Adult"}
+                              </div>
+                            </>
+                          ) : (
+                            <div className="fw-semibold text-muted" style={{ fontSize: "0.8rem" }}>
+                              {formatRate(pkg)}
+                            </div>
+                          )}
+                        </div>
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          className="myop-v2-suggest-card__cta"
+                          onClick={() => handleViewPackage(pkg)}
+                          title="Opens the package booking page in a new tab"
+                          aria-label={`View ${packageName} (opens in a new tab)`}
+                        >
+                          View
+                          <FaExternalLinkAlt className="ms-1" size={10} aria-hidden="true" />
+                        </Button>
+                      </div>
+                    </div>
+                  </article>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      </div>
     </section>
   );
 }

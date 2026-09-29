@@ -26,6 +26,7 @@ import "../../styles/HotelBookingPage.css";
 import axiosInstance from "../../components/AxiosInstance";
 import toast from "react-hot-toast";
 import { toLocalDateTime } from "../../utils/dateUtils";
+import QuotationPdfCard from "../../components/quotation/QuotationPdfCard";
 
 /**
  * LastMinuteBookingForm — booking creation page for the Last Minute flow.
@@ -1026,6 +1027,132 @@ export default function LastMinuteBookingForm() {
       ? Number(tourismDirham)
       : 0);
 
+  // ── Quotation PDF ─────────────────────────────────────────────────────
+  // Quotes what this page shows: the Booking Summary and the Price Details
+  // total, with one price line per room computed exactly like totalPrice
+  // (the lines add up to the Selling Price), all in the display currency
+  // like formatPrice. Policy lines use the same wording as the policy modal.
+  const buildLastMinuteQuotationPayload = () => {
+    const toDisplay = (aed) =>
+      Math.round((Number(aed) || 0) * curFactor * 100) / 100;
+    const nightsText = `${nights} Night${nights !== 1 ? "s" : ""}`;
+    const describeGuests = (r) => {
+      const adults = Number(r?.adults) || 0;
+      const children = Number(r?.children) || 0;
+      return `${adults} Adult${adults !== 1 ? "s" : ""}${
+        children ? `, ${children} Child${children !== 1 ? "ren" : ""}` : ""
+      }`;
+    };
+    const roomLabel = (rr) => {
+      const cat =
+        rr.roomCategoryName ||
+        (rr.roomCategoryId ? `Category #${rr.roomCategoryId}` : "");
+      return `${cat || "Room"}${rr.roomTypeName ? ` (${rr.roomTypeName})` : ""}`;
+    };
+
+    const priceItems = rooms.map((r, idx) => {
+      const a = Number(r.adults) || 1;
+      const c = Number(r.children) || 0;
+      const xa = Math.max(0, a - 2);
+      const rate = getRoomRate(idx);
+      const mk = rate?.markup || 0;
+      const perNightI = applyMarkup(rate?.lastMinuteRate || 0, mk);
+      const adultRateI = applyMarkup(rate?.adultRate || 0, mk);
+      const childRateI = applyMarkup(rate?.childRate || 0, mk);
+      const roomTotal =
+        perNightI * nights + xa * adultRateI * nights + c * childRateI * nights;
+      return {
+        description: `Room ${idx + 1} - ${roomLabel(rate)}`,
+        details: [rate.mealPlanName, describeGuests(r), nightsText]
+          .filter(Boolean)
+          .join(", "),
+        amount: toDisplay(roomTotal),
+      };
+    });
+    const tdAmount = payableTotal - Number(totalPrice || 0);
+    if (tdAmount > 0) {
+      priceItems.push({
+        description: "Tourism Dirham",
+        details: "",
+        amount: toDisplay(tdAmount),
+      });
+    }
+
+    const lead = rooms?.[leadIndex.roomIdx]?.guests?.[leadIndex.guestIdx];
+    const leadNames = [lead?.firstName, lead?.middleName, lead?.lastName]
+      .map((p) => (p ? String(p).trim() : ""))
+      .filter(Boolean);
+    const leadName = leadNames.length
+      ? [lead?.salutation ? String(lead.salutation).trim() : "", ...leadNames]
+          .filter(Boolean)
+          .join(" ")
+      : "";
+
+    const ruleLines = (list, label) =>
+      Array.isArray(list)
+        ? list.map((item) => formatLastMinuteRule(item, label)).filter(Boolean)
+        : [];
+    const textLines = (list) =>
+      Array.isArray(list)
+        ? list.filter((t) => typeof t === "string" && t.trim())
+        : [];
+
+    return {
+      bookingType: "LAST_MINUTE",
+      agentId: Number(ctx.agentId) || null,
+      currency: curCode,
+      serviceName: hotel.hotelName || "",
+      serviceSubtitle: hotel.address || "",
+      customerName: leadName || null,
+      details: [
+        { label: "Check-in", value: ctx.checkInDate || "" },
+        { label: "Check-out", value: ctx.checkOutDate || "" },
+        { label: "Nights", value: String(nights) },
+        { label: "Rooms", value: String(totalRoomCount) },
+        {
+          label: "Guests",
+          value: rooms
+            .map((r, i) => `Room ${i + 1}: ${describeGuests(r)}`)
+            .join("\n"),
+        },
+        {
+          label: "Room",
+          value: rooms
+            .map((r, i) => `Room ${i + 1}: ${roomLabel(getRoomRate(i))}`)
+            .join("\n"),
+        },
+        {
+          label: "Meal Plan",
+          value: rooms
+            .map((r, i) => getRoomRate(i).mealPlanName || "")
+            .filter(Boolean)
+            .join("\n"),
+        },
+        {
+          label: "Star Rating",
+          value: hotel.starRating != null ? `${hotel.starRating} Star` : "",
+        },
+        { label: "Room Status", value: room.roomStatus || "Available" },
+        {
+          label: "Refund Status",
+          value: isNonRefundableRoom ? "Non-Refundable" : "Flexible",
+        },
+      ],
+      priceItems,
+      totalAmount: toDisplay(payableTotal),
+      cancellationPolicy: [
+        ...(isNonRefundableRoom ? ["Non-refundable rate."] : []),
+        ...ruleLines(room.cancellationPolicies, "Cancellation fee of"),
+        ...ruleLines(room.noShowPolicies, "No-show fee of"),
+      ],
+      notes: [
+        ...ruleLines(room.amendmentPolicies, "Amendment fee of"),
+        ...textLines(room.paymentPolicies),
+        ...textLines(room.termsAndConditions),
+      ],
+    };
+  };
+
   return (
     <Layout>
       <Container fluid="xl">
@@ -1488,6 +1615,11 @@ export default function LastMinuteBookingForm() {
                     </div>
                   </Card.Body>
                 </Card>
+
+                {/* Quotation — under the Price Details it quotes, above the
+                    booking decision and Confirm Booking (a type="button", so
+                    it never submits this form). */}
+                <QuotationPdfCard buildPayload={buildLastMinuteQuotationPayload} />
 
                 {/* Booking-confirmation choice — only for refundable rates
                     whose free-cancellation deadline hasn't passed. When the

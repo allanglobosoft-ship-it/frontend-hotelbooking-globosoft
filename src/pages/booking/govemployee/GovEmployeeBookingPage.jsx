@@ -53,6 +53,7 @@ import TopBar from "../../../components/TopBar";
 import axiosInstance from "../../../components/AxiosInstance";
 import { createAmendmentLink } from "../../../utils/amendmentLink";
 import toast from "react-hot-toast";
+import QuotationPdfCard from "../../../components/quotation/QuotationPdfCard";
 import "../../../styles/HotelBookingPage.css";
 
 const SPECIAL_REQUEST_OPTIONS = [
@@ -1139,6 +1140,167 @@ const GovEmployeeBookingPage = () => {
     ? bookingData.roomBreakdown.reduce((s, r) => s + Number(r.rate || 0), 0)
     : Number(selectedRate.rate || 0) * (rooms.length || 1);
 
+  // ── Quotation PDF ─────────────────────────────────────────────────────
+  // Quotes what this page shows: the Booking Summary and Price Details in
+  // the display currency (like formatPrice). When the Gov discount applies,
+  // rooms are listed at the Standard Total with a discount line, so the
+  // lines add up to the New Total the page shows.
+  const buildGovEmployeeQuotationPayload = () => {
+    if (!selectedRate || !hotelStaticData || !payload) return null;
+    const cur = bookingData?.searchCtx?.currency || { code: "AED", factor: 1 };
+    const factor = Number(cur.factor) > 0 ? Number(cur.factor) : 1;
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const toDisplay = (aed) => round2((Number(aed) || 0) * factor);
+    const ci = new Date(payload.checkInDate);
+    const co = new Date(payload.checkOutDate);
+    const nights =
+      isNaN(ci.getTime()) || isNaN(co.getTime())
+        ? null
+        : Math.max(1, Math.round((co - ci) / 86400000));
+    const nightsText = nights ? `${nights} Night${nights === 1 ? "" : "s"}` : "";
+    const searchRooms = Array.isArray(payload.rooms) ? payload.rooms : [];
+    const roomCount = rooms.length || 1;
+    const describeGuests = (room) => {
+      if (!room) return "";
+      const adults = Number(room.adults) || 0;
+      const children = Number(room.children) || 0;
+      return `${adults} Adult${adults === 1 ? "" : "s"}${
+        children ? `, ${children} Child${children === 1 ? "" : "ren"}` : ""
+      }`;
+    };
+    const slotFor = (i) => bookingData.roomBreakdown?.[i] || selectedRate;
+    const discountApplies = !!activePromotion && totalBefore > totalAfter;
+    const promoText = activePromotion
+      ? `Gov Discount${
+          activePromotion.discountPercent ? ` ${activePromotion.discountPercent}%` : ""
+        }${activePromotion.discountAmount ? ` + ${activePromotion.discountAmount}` : ""}`
+      : "";
+
+    const breakdown = Array.isArray(bookingData.roomBreakdown)
+      ? bookingData.roomBreakdown
+      : [];
+    const priceItems = breakdown.length
+      ? breakdown.map((slot, i) => ({
+          description: `Room ${slot.roomNo ?? i + 1} - ${
+            slot.roomCategory || selectedRate.roomCategory || "Room"
+          }`,
+          details: [
+            slot.mealPlan || selectedRate.mealPlan,
+            describeGuests(searchRooms[i]),
+            nightsText,
+          ]
+            .filter(Boolean)
+            .join(", "),
+          amount: toDisplay(
+            discountApplies
+              ? Number(slot.rateBeforeDiscount || slot.rate || 0)
+              : Number(slot.rate || 0),
+          ),
+        }))
+      : [
+          {
+            description: selectedRate.roomCategory || "Accommodation",
+            details: [
+              selectedRate.mealPlan,
+              `${roomCount} Room${roomCount === 1 ? "" : "s"}`,
+              nightsText,
+            ]
+              .filter(Boolean)
+              .join(", "),
+            amount: toDisplay(discountApplies ? totalBefore : totalAfter),
+          },
+        ];
+    const totalAmount = toDisplay(totalAfter);
+    if (discountApplies) {
+      const linesSum = priceItems.reduce((s, item) => s + item.amount, 0);
+      priceItems.push({
+        description: "Gov Discount",
+        details: promoText,
+        amount: round2(totalAmount - linesSum),
+      });
+    }
+
+    const lead = rooms?.[leadIndex.roomIdx]?.guests?.[leadIndex.guestIdx];
+    const leadNames = [lead?.firstName, lead?.middleName, lead?.lastName]
+      .map((p) => (p ? String(p).trim() : ""))
+      .filter(Boolean);
+    const leadName = leadNames.length
+      ? [lead?.salutation ? String(lead.salutation).trim() : "", ...leadNames]
+          .filter(Boolean)
+          .join(" ")
+      : "";
+
+    const cancellationPolicy = [];
+    if (isNonRefundableRate) {
+      cancellationPolicy.push("Non-refundable rate.");
+    } else if (cancellationDeadline) {
+      cancellationPolicy.push(
+        `Cancellation deadline: ${cancellationDeadline.toLocaleDateString(
+          "en-GB",
+          { day: "2-digit", month: "short", year: "numeric" },
+        )}.`,
+      );
+    }
+
+    return {
+      bookingType: "GOV_EMPLOYEE",
+      agentId: Number(payload.agentId || bookingData?.searchCtx?.agentId) || null,
+      currency: cur.code || "AED",
+      serviceName: hotelStaticData.hotelName || selectedRate.hotelName || "",
+      serviceSubtitle: hotelStaticData.address || "",
+      customerName: leadName || null,
+      details: [
+        { label: "Check-in", value: formatDateTime(payload.checkInDate) },
+        { label: "Check-out", value: formatDateTime(payload.checkOutDate) },
+        { label: "Nights", value: nights ? String(nights) : "" },
+        { label: "Rooms", value: String(roomCount) },
+        {
+          label: "Guests",
+          value: searchRooms
+            .map((room, i) => `Room ${i + 1}: ${describeGuests(room)}`)
+            .join("\n"),
+        },
+        {
+          label: "Room",
+          value: searchRooms
+            .map(
+              (room, i) =>
+                `${searchRooms.length > 1 ? `Room ${i + 1}: ` : ""}${
+                  slotFor(i).roomCategory || "-"
+                }`,
+            )
+            .join("\n"),
+        },
+        {
+          label: "Meal Plan",
+          value: searchRooms
+            .map((room, i) => slotFor(i).mealPlan || "-")
+            .join("\n"),
+        },
+        {
+          label: "Star Rating",
+          value: hotelStaticData.starRating
+            ? `${hotelStaticData.starRating} Star`
+            : "",
+        },
+        { label: "Room Status", value: selectedRate.roomStatus || "Available" },
+        {
+          label: "Refund Status",
+          value:
+            selectedRate.nonRefundable !== undefined
+              ? isNonRefundableRate
+                ? "Non-Refundable"
+                : "Flexible"
+              : "",
+        },
+        { label: "Offer", value: promoText },
+      ],
+      priceItems,
+      totalAmount,
+      cancellationPolicy,
+    };
+  };
+
   return (
     <div className="min-vh-100 bg-light d-flex flex-column hotel-booking-container">
       <TopBar />
@@ -1790,6 +1952,10 @@ const GovEmployeeBookingPage = () => {
                         </div>
                       </Card.Body>
                     </Card>
+
+                    {/* Quotation — under the Price Details it quotes, above
+                        the booking decision and Confirm Booking. */}
+                    <QuotationPdfCard buildPayload={buildGovEmployeeQuotationPayload} />
 
                     {/* Voucher-choice card — mirrors HotelBookingPage.
                         Shown only when the rate is Available + refundable

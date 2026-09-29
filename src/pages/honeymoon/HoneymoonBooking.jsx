@@ -24,6 +24,7 @@ import Swal from "sweetalert2";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
+import QuotationPdfCard from "../../components/quotation/QuotationPdfCard";
 
 const PAYMENT_MODES = ["Cash", "Card", "UPI", "Online", "Net Banking"];
 
@@ -431,6 +432,158 @@ const HoneymoonBooking = () => {
   };
 
   const totals = computeTotals();
+
+  // ── Quotation PDF ─────────────────────────────────────────────────────
+  // Quotes what the Price Summary shows, in INR (the page's ₹). The agent
+  // markup is folded into the per-person package price — the customer sees
+  // selling prices, never "Markup" — so every line and the Total stay
+  // identical in sum to the page's Total. Policies, hotels and the
+  // itinerary come from the selected package.
+  const buildHoneymoonQuotationPayload = () => {
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const markupFactor = 1 + (Number(totals.markupPct) || 0) / 100;
+    const adultUnit = round2(totals.perAdult * markupFactor);
+    const childUnit = round2(totals.perChild * markupFactor);
+    const freeChildren = totals.childCount - totals.payingChildren;
+    const ages = Array.isArray(form.childAges) ? form.childAges : [];
+
+    const priceItems = [
+      {
+        description: "Package - Adults",
+        details: `${totals.adults} x INR ${adultUnit.toFixed(2)}`,
+        amount: round2(totals.perAdult * totals.adults * markupFactor),
+      },
+    ];
+    if (totals.payingChildren > 0) {
+      priceItems.push({
+        description: "Package - Children",
+        details: `${totals.payingChildren} x INR ${childUnit.toFixed(2)}`,
+        amount: round2(totals.perChild * totals.payingChildren * markupFactor),
+      });
+    }
+    if (freeChildren > 0) {
+      priceItems.push({
+        description: "Children up to 3 years",
+        details: `${freeChildren} free`,
+        amount: 0,
+      });
+    }
+    const taxIndex = priceItems.length;
+    priceItems.push({
+      description: `Tax (${totals.taxPct}%)`,
+      details: "",
+      amount: round2(totals.taxAmount),
+    });
+    addons
+      .filter((a) => a.checked)
+      .forEach((a) =>
+        priceItems.push({
+          description: a.label,
+          details: "Add-on",
+          amount: round2(a.price),
+        }),
+      );
+    // Same rows totals.extrasTotal sums: every extra service with a price.
+    extraServices
+      .filter((e) => (Number(e.price) || 0) !== 0)
+      .forEach((e) =>
+        priceItems.push({
+          description: (e.label || "").trim() || "Extra service",
+          details: "Extra service",
+          amount: round2(e.price),
+        }),
+      );
+    if (totals.tourismDirham > 0) {
+      priceItems.push({
+        description: "Tourism Dirham",
+        details: "",
+        amount: round2(totals.tourismDirham),
+      });
+    }
+    // Absorb per-line rounding (at most a few paise) into the tax line so
+    // the lines add up exactly to the Total.
+    const totalAmount = round2(totals.grandTotal);
+    const diff = round2(
+      totalAmount - priceItems.reduce((s, item) => s + item.amount, 0),
+    );
+    if (diff !== 0 && Math.abs(diff) <= 0.05) {
+      priceItems[taxIndex].amount = round2(priceItems[taxIndex].amount + diff);
+    }
+
+    const dateChange = splitPolicyText(pkg.dateChangePolicy).map(
+      (line) => `Date change: ${line}`,
+    );
+
+    return {
+      bookingType: "HONEYMOON",
+      agentId: Number(sf.agentId) || null,
+      currency: "INR",
+      serviceName: pkg.packageName || "Honeymoon Package",
+      serviceSubtitle: [
+        [pkg.startingFrom, pkg.destination].filter(Boolean).join(" to "),
+        pkg.noOfNights ? `${pkg.noOfNights}N/${pkg.noOfDays}D` : "",
+      ]
+        .filter(Boolean)
+        .join(", "),
+      customerName: form.customerName.trim()
+        ? `${form.salutation ? `${form.salutation} ` : ""}${form.customerName.trim()}`
+        : null,
+      customerEmail: form.email.trim() || null,
+      customerMobile: form.mobile.trim() || null,
+      details: [
+        { label: "Starting Date", value: form.startingDate || "" },
+        {
+          label: "Duration",
+          value: pkg.noOfNights
+            ? `${pkg.noOfNights} Nights / ${pkg.noOfDays} Days`
+            : "",
+        },
+        { label: "Destination", value: pkg.destination || "" },
+        { label: "Rooms", value: String(Number(form.rooms) || 0) },
+        {
+          label: "Guests",
+          value: `${totals.adults} Adult${totals.adults === 1 ? "" : "s"}${
+            totals.childCount
+              ? `, ${totals.childCount} Child${totals.childCount === 1 ? "" : "ren"}${
+                  ages.length ? ` (Ages ${ages.join(", ")})` : ""
+                }`
+              : ""
+          }`,
+        },
+        { label: "Category", value: pkg.category || "" },
+        { label: "Theme", value: pkg.theme || "" },
+        { label: "Hotel Category", value: pkg.hotelCategory || "" },
+        {
+          label: "Hotels",
+          value: includedHotels
+            .map((h) =>
+              [
+                h.hotelName,
+                [h.placeName, h.countryName].filter(Boolean).join(", "),
+                h.noOfNights ? `${h.noOfNights} Night(s)` : "",
+              ]
+                .filter(Boolean)
+                .join(" - "),
+            )
+            .join("\n"),
+        },
+      ],
+      priceItems,
+      totalAmount,
+      itinerary: Array.isArray(pkg.itinerary)
+        ? pkg.itinerary.map((it) => ({
+            day: it?.dayNumber ?? it?.day ?? null,
+            heading: it?.heading || "",
+            place: it?.place || it?.placeName || "",
+            activities: it?.activities || it?.dayActivities || "",
+          }))
+        : [],
+      inclusions: splitPolicyText(pkg.inclusions),
+      exclusions: splitPolicyText(pkg.exclusions),
+      cancellationPolicy: splitPolicyText(pkg.cancellationPolicy),
+      notes: [...dateChange, ...splitPolicyText(pkg.termsAndConditions)],
+    };
+  };
 
   return (
     <div
@@ -893,6 +1046,13 @@ const HoneymoonBooking = () => {
                         </div>
                       </Card.Body>
                     </Card>
+                    {/* Quotation — under the Price Summary it quotes, above
+                        Review & Submit (a type="button", so it never submits
+                        this form). */}
+                    <QuotationPdfCard
+                      buildPayload={buildHoneymoonQuotationPayload}
+                      disabled={saving}
+                    />
                     <Button
                       type="submit"
                       variant="primary"

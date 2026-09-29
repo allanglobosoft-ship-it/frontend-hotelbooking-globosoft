@@ -17,6 +17,7 @@ import { toast } from "react-hot-toast";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
+import QuotationPdfCard from "../../components/quotation/QuotationPdfCard";
 import "../../styles/HotelBookingPage.css";
 // RestaurantSummary is no longer imported — we now render a lightweight
 // recap inline (no prices/rates on the booking page).
@@ -293,6 +294,94 @@ const RestaurantBooking = () => {
     } finally {
       setSaving(false);
     }
+  };
+
+  // ── Quotation PDF ─────────────────────────────────────────────────────
+  // Quotes what this page shows: the restaurant and the Booking Recap plus
+  // the entered seating / occasion. The page carries no price (the operator
+  // adds it later), so the quotation prints the price as "On request".
+  // Policy lines use the Policies modal's own wording.
+  const buildRestaurantQuotationPayload = () => {
+    if (!restaurant) return null;
+    const members = Number(form.memberCount) || 0;
+    const cuisines = Array.isArray(restaurant.cuisineTypes)
+      ? restaurant.cuisineTypes.filter(Boolean).join(", ")
+      : "";
+    const cancellationLine = (policy) => {
+      const hasDays =
+        policy.daysBeforeBooking !== null &&
+        policy.daysBeforeBooking !== undefined;
+      const hasCharge =
+        policy.chargePercent !== null && policy.chargePercent !== undefined;
+      const meta = [
+        hasDays ? `${policy.daysBeforeBooking} day(s) before booking` : "",
+        hasCharge ? `${policy.chargePercent}% charge` : "",
+      ]
+        .filter(Boolean)
+        .join(" - ");
+      return `${policy.title ? `${policy.title}: ` : ""}${policy.policyText}${
+        meta ? ` (${meta})` : ""
+      }`;
+    };
+
+    return {
+      bookingType: "RESTAURANT",
+      agentId: Number(form.agentId) || null,
+      currency: "AED",
+      serviceName: restaurant.restaurantName || "Restaurant",
+      serviceSubtitle: [
+        restaurant.place,
+        restaurant.isInsideHotel && restaurant.hotelName
+          ? `Hotel: ${restaurant.hotelName}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(", "),
+      customerName: form.customerName.trim() || null,
+      customerEmail: form.customerEmail.trim() || null,
+      customerMobile: form.customerMobile.trim() || null,
+      details: [
+        { label: "Date", value: form.bookingDate || "" },
+        {
+          label: "Time",
+          value: form.bookingTime || (supportsWalkIn ? "Anytime" : ""),
+        },
+        { label: "Members", value: String(members) },
+        { label: "Meal", value: form.mealType || "" },
+        { label: "Seating", value: form.seatingPreference || "" },
+        {
+          label: "Occasion",
+          value: form.occasion && form.occasion !== "None" ? form.occasion : "",
+        },
+        { label: "Cuisine", value: cuisines },
+        {
+          label: "Opening Hours",
+          value:
+            restaurant.openTime && restaurant.closeTime
+              ? `${restaurant.openTime} - ${restaurant.closeTime}`
+              : "",
+        },
+      ],
+      priceItems: [
+        {
+          description: "Table reservation",
+          details: [
+            `${members} Member${members === 1 ? "" : "s"}`,
+            form.mealType,
+            "Food and beverages as per the restaurant menu",
+          ]
+            .filter(Boolean)
+            .join(", "),
+          amount: null,
+        },
+      ],
+      totalAmount: null,
+      cancellationPolicy: restaurantPolicies.cancellation.map(cancellationLine),
+      notes: restaurantPolicies.reservation.map(
+        (policy) =>
+          `${policy.title ? `${policy.title}: ` : ""}${policy.policyText}`,
+      ),
+    };
   };
 
   return (
@@ -668,6 +757,14 @@ const RestaurantBooking = () => {
                       </div>
                     </Card.Body>
                   </Card>
+                  {/* Quotation — under the Booking Recap it quotes, above
+                      Submit (a type="button", so it never submits this
+                      form). */}
+                  <QuotationPdfCard
+                    buildPayload={buildRestaurantQuotationPayload}
+                    disabled={saving}
+                    note="Share this reservation with your customer before submitting. No booking is made."
+                  />
                   <Button
                     type="submit"
                     variant="primary"

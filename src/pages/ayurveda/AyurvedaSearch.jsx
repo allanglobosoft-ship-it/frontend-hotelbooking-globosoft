@@ -39,6 +39,7 @@ import toast from "react-hot-toast";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
+import QuotationPdfCard from "../../components/quotation/QuotationPdfCard";
 import "../../styles/Ayurveda.css";
 
 const AYURVEDA_API = "/api/v1/ayurveda";
@@ -100,6 +101,128 @@ const sanitizeCustomer = (c) => ({
   customerEmail: c.customerEmail?.trim() || null,
   customerGender: c.customerGender || null,
 });
+
+// ----- Quotation PDF helpers -----
+// Quotes are priced like the booking modals' "Estimated Total": price per
+// person x participants, the amount the booking is created at.
+const QUOTE_TYPE_LABELS = {
+  package: "Ayurveda Package",
+  consultation: "Doctor Consultation",
+  course: "Course",
+};
+
+const quoteText = (v) =>
+  typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
+
+// "2026-10-01" -> "1 Oct 2026"; anything else is shown as given.
+const quoteDate = (value) => {
+  const s = quoteText(value);
+  if (!/^\d{4}-\d{2}-\d{2}/.test(s)) return s;
+  const d = new Date(`${s.slice(0, 10)}T00:00:00`);
+  return isNaN(d.getTime())
+    ? s
+    : d.toLocaleDateString("en-GB", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      });
+};
+
+// "09:00:00" -> "09:00"
+const quoteTime = (value) => {
+  const s = quoteText(value);
+  return /^\d{2}:\d{2}:\d{2}$/.test(s) ? s.slice(0, 5) : s;
+};
+
+// Participants as the booking will use them: blank means 1; anything else
+// must be a whole number of at least 1 (null otherwise).
+const quoteParticipants = (value) => {
+  const n = value === "" || value == null ? 1 : Number(value);
+  return Number.isInteger(n) && n >= 1 ? n : null;
+};
+
+const quoteItemName = (type, item) =>
+  quoteText(
+    type === "package"
+      ? item.packageName
+      : type === "consultation"
+      ? item.doctorName
+      : item.courseName
+  ) || QUOTE_TYPE_LABELS[type];
+
+// Key facts of a package / consultation / course, as on View Details.
+const quoteItemDetails = (type, item) => {
+  if (type === "package") {
+    return [
+      { label: "Category", value: quoteText(item.category) },
+      {
+        label: "Duration",
+        value: item.durationDays ? `${item.durationDays} days` : "",
+      },
+    ];
+  }
+  if (type === "consultation") {
+    return [
+      { label: "Specialization", value: quoteText(item.specialization) },
+      { label: "Qualification", value: quoteText(item.qualification) },
+      {
+        label: "Experience",
+        value:
+          item.experienceYears != null ? `${item.experienceYears} years` : "",
+      },
+    ];
+  }
+  return [
+    { label: "Instructor", value: quoteText(item.instructorName) },
+    {
+      label: "Duration",
+      value: item.durationWeeks ? `${item.durationWeeks} weeks` : "",
+    },
+    { label: "Course Level", value: quoteText(item.courseLevel) },
+    { label: "Course Start Date", value: quoteDate(item.startDate) },
+    { label: "Course End Date", value: quoteDate(item.endDate) },
+  ];
+};
+
+const quoteItemInclusions = (type, item) => {
+  if (type === "package") {
+    return [
+      item.isAllInclusive ? "All-inclusive package" : "",
+      quoteText(item.treatmentsIncluded)
+        ? `Treatments: ${quoteText(item.treatmentsIncluded)}`
+        : "",
+      item.includesYoga ? "Yoga" : "",
+      item.includesMeditation ? "Meditation" : "",
+      item.includesDining ? "Dining" : "",
+    ].filter(Boolean);
+  }
+  if (type === "course" && item.certificationIncluded) {
+    return ["Course certification"];
+  }
+  return [];
+};
+
+// Price lines at 2 decimals plus their total; a rounding cent, if any, goes
+// on the largest line so the lines add up to the total.
+const quoteLinesAndTotal = (rawItems) => {
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const totalAmount = round2(rawItems.reduce((sum, it) => sum + it.amount, 0));
+  const priceItems = rawItems.map((it) => ({ ...it, amount: round2(it.amount) }));
+  const residue = round2(
+    totalAmount - priceItems.reduce((sum, it) => sum + it.amount, 0)
+  );
+  if (residue !== 0 && priceItems.length > 0) {
+    let largest = 0;
+    priceItems.forEach((it, i) => {
+      if (it.amount > priceItems[largest].amount) largest = i;
+    });
+    priceItems[largest] = {
+      ...priceItems[largest],
+      amount: round2(priceItems[largest].amount + residue),
+    };
+  }
+  return { priceItems, totalAmount };
+};
 
 const AyurvedaSearch = () => {
   const navigate = useNavigate();
@@ -573,6 +696,149 @@ const AyurvedaSearch = () => {
     } finally {
       setComboSubmitting(false);
     }
+  };
+
+  // ----- Quotation PDF -----
+  // Customer-facing quote of the booking open in the Single Booking modal,
+  // at its Estimated Total. Nothing is saved or booked.
+  const buildAyurvedaQuotationPayload = () => {
+    if (!bookingTarget?.item) return null;
+    const { type, item } = bookingTarget;
+    const pax = quoteParticipants(bookingForm.numberOfParticipants);
+    const unit = Number(item.price || 0);
+    if (!pax || !Number.isFinite(unit)) return null;
+    const name = quoteItemName(type, item);
+    const { priceItems, totalAmount } = quoteLinesAndTotal([
+      {
+        description: name,
+        details: `${QUOTE_TYPE_LABELS[type]} · ${pax} x INR ${unit.toFixed(2)}`,
+        amount: unit * pax,
+      },
+    ]);
+    const bookingDetails =
+      type === "package"
+        ? [{ label: "Start Date", value: quoteDate(bookingForm.startDate) }]
+        : type === "consultation"
+        ? [
+            {
+              label: "Preferred Date",
+              value: quoteDate(bookingForm.preferredDate),
+            },
+            {
+              label: "Preferred Time",
+              value: quoteTime(bookingForm.preferredTimeSlot),
+            },
+          ]
+        : [];
+    const specialRequests =
+      type === "package" ? quoteText(bookingForm.specialRequests) : "";
+    return {
+      bookingType: "AYURVEDA",
+      agentId: agentId || null,
+      currency: "INR",
+      serviceName: name,
+      serviceSubtitle: [QUOTE_TYPE_LABELS[type], quoteText(item.centreName)]
+        .filter(Boolean)
+        .join(" · "),
+      customerName: quoteText(bookingCustomer.customerName),
+      customerEmail: quoteText(bookingCustomer.customerEmail),
+      customerMobile: quoteText(bookingCustomer.customerPhone),
+      details: [
+        ...bookingDetails,
+        { label: "Participants", value: String(pax) },
+        ...quoteItemDetails(type, item),
+      ],
+      priceItems,
+      totalAmount,
+      inclusions: quoteItemInclusions(type, item),
+      notes: specialRequests ? [`Special requests: ${specialRequests}`] : [],
+    };
+  };
+
+  // Quote of the Combo Booking modal: one line per selected item, adding up
+  // to its Estimated Total (each item's price x participants).
+  const buildAyurvedaComboQuotationPayload = () => {
+    const entries = ["package", "consultation", "course"]
+      .filter((type) => combo[type])
+      .map((type) => ({ type, item: combo[type] }));
+    const pax = quoteParticipants(comboForm.numberOfParticipants);
+    if (entries.length === 0 || !pax) return null;
+    const rawItems = entries.map(({ type, item }) => {
+      const unit = item.price ? Number(item.price) : 0;
+      return {
+        description: quoteItemName(type, item),
+        details: `${QUOTE_TYPE_LABELS[type]} · ${pax} x INR ${unit.toFixed(2)}`,
+        amount: unit * pax,
+      };
+    });
+    if (rawItems.some((it) => !Number.isFinite(it.amount))) return null;
+    const { priceItems, totalAmount } = quoteLinesAndTotal(rawItems);
+    const specialRequests = combo.package
+      ? quoteText(comboForm.specialRequests)
+      : "";
+    return {
+      bookingType: "AYURVEDA",
+      agentId: agentId || null,
+      currency: "INR",
+      serviceName: entries
+        .map(({ type, item }) => quoteItemName(type, item))
+        .join(" + "),
+      serviceSubtitle: ["Combo booking", quoteText(entries[0].item.centreName)]
+        .filter(Boolean)
+        .join(" · "),
+      customerName: quoteText(comboCustomer.customerName),
+      customerEmail: quoteText(comboCustomer.customerEmail),
+      customerMobile: quoteText(comboCustomer.customerPhone),
+      details: [
+        { label: "Participants", value: String(pax) },
+        ...(combo.package
+          ? [
+              {
+                label: "Package Start Date",
+                value: quoteDate(comboForm.packageStartDate),
+              },
+              {
+                label: "Package Duration",
+                value: combo.package.durationDays
+                  ? `${combo.package.durationDays} days`
+                  : "",
+              },
+            ]
+          : []),
+        ...(combo.consultation
+          ? [
+              {
+                label: "Consultation Date",
+                value: quoteDate(comboForm.consultationPreferredDate),
+              },
+              {
+                label: "Consultation Time",
+                value: quoteTime(comboForm.consultationPreferredTime),
+              },
+            ]
+          : []),
+        ...(combo.course
+          ? [
+              {
+                label: "Course Duration",
+                value: combo.course.durationWeeks
+                  ? `${combo.course.durationWeeks} weeks`
+                  : "",
+              },
+              {
+                label: "Course Level",
+                value: quoteText(combo.course.courseLevel),
+              },
+            ]
+          : []),
+      ],
+      priceItems,
+      totalAmount,
+      inclusions: entries.flatMap(({ type, item }) =>
+        quoteItemInclusions(type, item)
+      ),
+      notes: specialRequests ? [`Special requests: ${specialRequests}`] : [],
+    };
   };
 
   // ----- Enquiry -----
@@ -1578,6 +1844,12 @@ const AyurvedaSearch = () => {
           )}
         </Modal.Body>
         <Modal.Footer>
+          <QuotationPdfCard
+            variant="button"
+            className="me-auto"
+            buildPayload={buildAyurvedaQuotationPayload}
+            disabled={submitting}
+          />
           <Button variant="secondary" onClick={closeBooking} disabled={submitting}>
             Cancel
           </Button>
@@ -1847,6 +2119,12 @@ const AyurvedaSearch = () => {
           </Form>
         </Modal.Body>
         <Modal.Footer>
+          <QuotationPdfCard
+            variant="button"
+            className="me-auto"
+            buildPayload={buildAyurvedaComboQuotationPayload}
+            disabled={comboSubmitting}
+          />
           <Button
             variant="secondary"
             onClick={() => setShowComboModal(false)}

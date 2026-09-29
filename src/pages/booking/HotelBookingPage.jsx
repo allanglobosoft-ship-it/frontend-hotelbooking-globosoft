@@ -20,6 +20,7 @@ import {
 import axiosInstance from "../../components/AxiosInstance";
 import toast from "react-hot-toast";
 import { toLocalDateTime, formatDateTime } from "../../utils/dateUtils";
+import QuotationPdfCard from "../../components/quotation/QuotationPdfCard";
 
 // Dummy online-payment gateways shown when an agent's credit is short.
 // Each routes to /payment/<id> — a placeholder card-entry page.
@@ -1513,6 +1514,160 @@ const HotelBookingPage = ({ force24Hour = false, religiousMode = false } = {}) =
     tourismDirhamsAmount;
   console.log("bookingData:::", bookingData);
 
+  // ── Quotation PDF ─────────────────────────────────────────────────────
+  // Quotes what this page shows: hotel, stay and guests from the Booking
+  // Summary, the Selling Price / New Total from Price Details (converted to
+  // the display currency exactly like formatPrice) and the refund status /
+  // deadline. Serves the Hotel, 24 Hour and Religious flows.
+  const buildHotelQuotationPayload = () => {
+    if (!selectedRate || !hotelStaticData || !payload) return null;
+    const toDisplay = (aed) =>
+      Math.round((Number(aed) || 0) * displayCurrency.factor * 100) / 100;
+    const checkInAt = new Date(toLocalDateTime(payload.checkInDate));
+    const checkOutAt = new Date(toLocalDateTime(payload.checkOutDate));
+    const nights =
+      isNaN(checkInAt.getTime()) || isNaN(checkOutAt.getTime())
+        ? null
+        : Math.max(
+            1,
+            Math.round((checkOutAt - checkInAt) / (1000 * 60 * 60 * 24)),
+          );
+    const nightsText = nights ? `${nights} Night${nights === 1 ? "" : "s"}` : "";
+    const searchRooms = Array.isArray(payload.rooms) ? payload.rooms : [];
+    const roomCount = searchRooms.length || 1;
+    const describeGuests = (room) => {
+      if (!room) return "";
+      const adults = Number(room.adults) || 0;
+      const children = Number(room.children) || 0;
+      return `${adults} Adult${adults === 1 ? "" : "s"}${
+        children ? `, ${children} Child${children === 1 ? "" : "ren"}` : ""
+      }`;
+    };
+
+    const lead = rooms?.[leadIndex.roomIdx]?.guests?.[leadIndex.guestIdx];
+    const leadNames = [lead?.firstName, lead?.middleName, lead?.lastName]
+      .map((p) => (p ? String(p).trim() : ""))
+      .filter(Boolean);
+    const leadName = leadNames.length
+      ? [lead?.salutation ? String(lead.salutation).trim() : "", ...leadNames]
+          .filter(Boolean)
+          .join(" ")
+      : "";
+
+    // Multi-room: one line per selected slot at its per-room rate (these sum
+    // to the Selling Price). Single rate: one line at roomRateBasedOnRoomCount
+    // (per-room rate x rooms searched), exactly the Selling Price row.
+    const breakdown = Array.isArray(bookingData?.roomBreakdown)
+      ? bookingData.roomBreakdown
+      : [];
+    const priceItems = breakdown.length
+      ? breakdown.map((slot, i) => ({
+          description: `Room ${slot.roomNo ?? i + 1} - ${
+            slot.roomCategory || selectedRate.roomCategory || "Room"
+          }`,
+          details: [
+            slot.mealPlan || selectedRate.mealPlan,
+            describeGuests(searchRooms[i]),
+            nightsText,
+          ]
+            .filter(Boolean)
+            .join(", "),
+          amount: toDisplay(slot.rate),
+        }))
+      : [
+          {
+            description: selectedRate.roomCategory || "Accommodation",
+            details: [
+              selectedRate.mealPlan,
+              `${roomCount} Room${roomCount === 1 ? "" : "s"}`,
+              nightsText,
+            ]
+              .filter(Boolean)
+              .join(", "),
+            amount: toDisplay(
+              selectedRate.roomRateBasedOnRoomCount || selectedRate.rate,
+            ),
+          },
+        ];
+    if (tourismDirhamsAmount > 0) {
+      priceItems.push({
+        description: "Tourism Dirhams",
+        details: "",
+        amount: toDisplay(tourismDirhamsAmount),
+      });
+    }
+    const linesTotal =
+      Math.round(
+        priceItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0) *
+          100,
+      ) / 100;
+
+    const cancellationPolicy = [];
+    if (hasMixedRefundability) {
+      cancellationPolicy.push(
+        "This booking has both refundable and non-refundable rooms.",
+      );
+    } else if (isNonRefundableRate) {
+      cancellationPolicy.push("Non-refundable rate.");
+    } else if (cancellationDeadline) {
+      cancellationPolicy.push(
+        `Cancellation deadline: ${cancellationDeadline.toLocaleDateString(
+          "en-GB",
+          { day: "2-digit", month: "short", year: "numeric" },
+        )}, 02:00 PM (UAE).`,
+      );
+    }
+
+    return {
+      bookingType:
+        religiousMode || bookingData?.isReligiousBooking
+          ? "RELIGIOUS"
+          : force24Hour || payload.is24HourCheckin
+            ? "HOTEL_24_HOUR"
+            : "HOTEL",
+      agentId: Number(payload.agentId) || null,
+      currency: displayCurrency.code,
+      serviceName: hotelStaticData.hotelName || selectedRate.hotelName || "",
+      serviceSubtitle: hotelStaticData.address || "",
+      customerName: leadName || null,
+      details: [
+        { label: "Check-in", value: formatDateTime(payload.checkInDate) },
+        { label: "Check-out", value: formatDateTime(payload.checkOutDate) },
+        { label: "Nights", value: nights ? String(nights) : "" },
+        { label: "Rooms", value: String(roomCount) },
+        {
+          label: "Guests",
+          value: searchRooms
+            .map((room, i) => `Room ${i + 1}: ${describeGuests(room)}`)
+            .join("\n"),
+        },
+        { label: "Meal Plan", value: selectedRate.mealPlan || "" },
+        {
+          label: "Star Rating",
+          value: hotelStaticData.starRating
+            ? `${hotelStaticData.starRating} Star`
+            : "",
+        },
+        { label: "Room Status", value: selectedRate.roomStatus || "" },
+        {
+          label: "Refund Status",
+          value:
+            selectedRate.nonRefundable !== undefined
+              ? isNonRefundableRate
+                ? "Non-Refundable"
+                : "Flexible"
+              : "",
+        },
+      ],
+      priceItems,
+      // The New Total shown in Price Details; the line sum only covers a
+      // rate that arrived without roomRateBasedOnRoomCount.
+      totalAmount:
+        sellingPriceWithTd > 0 ? toDisplay(sellingPriceWithTd) : linesTotal,
+      cancellationPolicy,
+    };
+  };
+
   return (
     <div className="min-vh-100 bg-light d-flex flex-column  hotel-booking-container">
       <TopBar />
@@ -2217,6 +2372,10 @@ const HotelBookingPage = ({ force24Hour = false, religiousMode = false } = {}) =
                         )}
                       </Card.Body>
                     </Card>
+
+                    {/* Quotation — under the Price Details it quotes, above
+                        the booking decision and Confirm Booking. */}
+                    <QuotationPdfCard buildPayload={buildHotelQuotationPayload} />
 
                     {/* Booking-confirmation voucher choice — shown above the
                         Confirm Booking button in the Booking Summary so the

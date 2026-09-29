@@ -33,6 +33,7 @@ import {
   grnPolicyFromRate,
   grnIsBundledSelection,
 } from "../../components/grn/GrnPolicy";
+import QuotationPdfCard from "../../components/quotation/QuotationPdfCard";
 
 // Online-payment gateways offered when the agent's credit is short.
 // Mirrors the same list Inhouse HotelBookingPage.jsx uses (line 25) so
@@ -1642,6 +1643,189 @@ const requiresPan = () => requiresAtharvaPan() || requiresGrnPan();
     return today > cancellationDeadline;
   })();
 
+  // ── Quotation PDF ─────────────────────────────────────────────────────
+  // Quotes what this page shows: hotel, stay, guests and meal plans from the
+  // Booking Summary and the Selling Price / New Total from Price Details, in
+  // the display currency exactly like formatPrice. Cancellation text and the
+  // deadline use the same helpers the create payload persists. Serves the
+  // Hotel flow for supplier APIs and Last Minute bookings of API hotels.
+  const buildApiHotelQuotationPayload = () => {
+    if (!selectedRate.length || !hotelStaticData || !payload) return null;
+    const factor =
+      Number(displayCurrency.factor) > 0 ? Number(displayCurrency.factor) : 1;
+    const toDisplay = (aed) =>
+      Math.round((Number(aed) || 0) * factor * 100) / 100;
+    const apiId = Number(payload.apiId);
+    const checkInAt = new Date(toLocalDateTime(payload.checkInDate));
+    const checkOutAt = new Date(toLocalDateTime(payload.checkOutDate));
+    const nights =
+      isNaN(checkInAt.getTime()) || isNaN(checkOutAt.getTime())
+        ? null
+        : Math.max(
+            1,
+            Math.round((checkOutAt - checkInAt) / (1000 * 60 * 60 * 24)),
+          );
+    const nightsText = nights ? `${nights} Night${nights === 1 ? "" : "s"}` : "";
+    const searchRooms = Array.isArray(payload.rooms) ? payload.rooms : [];
+    const describeGuests = (room) => {
+      if (!room) return "";
+      const adults = Number(room.adults) || 0;
+      const children = Number(room.children) || 0;
+      return `${adults} Adult${adults === 1 ? "" : "s"}${
+        children ? `, ${children} Child${children === 1 ? "" : "ren"}` : ""
+      }`;
+    };
+    const isRoomNonRefundable = (room) =>
+      room?.nonRefundable === true ||
+      room?.nonRefundable === "true" ||
+      room?.nonRefundable === "Y";
+
+    const leadRoom = rooms[leadIndex.roomIdx] || rooms[0];
+    const leadGuest =
+      leadRoom?.guests?.[leadIndex.guestIdx] ||
+      leadRoom?.guests?.[0] ||
+      rooms[0]?.guests?.[0] ||
+      {};
+    const leadNames = [leadGuest.firstName, leadGuest.middleName, leadGuest.lastName]
+      .map((p) => (p ? String(p).trim() : ""))
+      .filter(Boolean);
+    const leadName = leadNames.length
+      ? [leadGuest.salutation ? String(leadGuest.salutation).trim() : "", ...leadNames]
+          .filter(Boolean)
+          .join(" ")
+      : "";
+
+    // One line per room at its rate. GRN (apiId 20) bundled rooms share one
+    // rate key and each carries the full bundle price, so they collapse into
+    // one line — the same rule totalPrice applies.
+    const groups = [];
+    const groupByKey = new Map();
+    selectedRate.forEach((room, i) => {
+      const key =
+        apiId === 20
+          ? room?.atharvaRateKey || room?.rateKey || `row-${i}`
+          : `row-${i}`;
+      if (groupByKey.has(key)) {
+        groupByKey.get(key).roomIdxs.push(i);
+        return;
+      }
+      const group = { room, roomIdxs: [i] };
+      groupByKey.set(key, group);
+      groups.push(group);
+    });
+    const priceItems = groups.map(({ room, roomIdxs }) => ({
+      description: `${roomIdxs.length > 1 ? "Rooms" : "Room"} ${roomIdxs
+        .map((i) => i + 1)
+        .join(" & ")} - ${room?.roomCategory || "Room"}`,
+      details: [
+        room?.mealPlan,
+        roomIdxs
+          .map((i) => describeGuests(searchRooms[i]))
+          .filter(Boolean)
+          .join(" / "),
+        nightsText,
+      ]
+        .filter(Boolean)
+        .join(", "),
+      amount: toDisplay(room?.rate),
+    }));
+
+    const cancellationPolicy = [];
+    if (apiId === 20) {
+      cancellationPolicy.push(...buildGrnPolicyLines(selectedRate));
+    } else {
+      const deadline = deriveDeadlineDate(selectedRate, payload.apiId);
+      if (deadline) {
+        cancellationPolicy.push(
+          `Cancellation deadline: ${deadline.toLocaleDateString("en-GB", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          })}.`,
+        );
+      }
+      selectedRate.forEach((room, i) => {
+        const label = selectedRate.length > 1 ? `Room ${i + 1}: ` : "";
+        if (isRoomNonRefundable(room)) {
+          cancellationPolicy.push(`${label}Non-refundable rate.`);
+          return;
+        }
+        (Array.isArray(room?.cancellationPolicy) ? room.cancellationPolicy : [])
+          .map((p) => stripPolicyHtml(p?.policyText))
+          .filter(Boolean)
+          .forEach((text) => cancellationPolicy.push(`${label}${text}`));
+      });
+    }
+
+    const notes = [];
+    if (payableAtHotel) {
+      notes.push(
+        `Payable at hotel${
+          payableAtHotel.description ? ` (${payableAtHotel.description})` : ""
+        }${
+          payableAtHotel.amount != null
+            ? `: ${payableAtHotel.currency || "AED"} ${Number(
+                payableAtHotel.amount,
+              ).toFixed(2)}`
+            : ""
+        } - not included in the total; collected by the hotel at check-in.`,
+      );
+    }
+
+    return {
+      bookingType: payload.lastMinuteBooking === true ? "LAST_MINUTE" : "HOTEL",
+      agentId: Number(payload.agentId) || null,
+      currency: displayCurrency.code || "AED",
+      serviceName:
+        hotelStaticData.hotelName || selectedRate[0]?.hotelName || "",
+      serviceSubtitle: hotelStaticData.address || "",
+      customerName: leadName || null,
+      details: [
+        { label: "Check-in", value: formatDateTime(payload.checkInDate) },
+        { label: "Check-out", value: formatDateTime(payload.checkOutDate) },
+        { label: "Nights", value: nights ? String(nights) : "" },
+        { label: "Rooms", value: String(selectedRate.length) },
+        {
+          label: "Guests",
+          value: searchRooms
+            .map((room, i) => `Room ${i + 1}: ${describeGuests(room)}`)
+            .join("\n"),
+        },
+        {
+          label: "Meal Plan",
+          value: selectedRate
+            .map((room, i) => `Room ${i + 1}: ${room?.mealPlan || "-"}`)
+            .join("\n"),
+        },
+        {
+          label: "Star Rating",
+          value:
+            hotelStaticData.starRating != null
+              ? `${hotelStaticData.starRating} Star`
+              : "",
+        },
+        {
+          label: "Refund Status",
+          value:
+            apiId === 20
+              ? ""
+              : selectedRate
+                  .map(
+                    (room, i) =>
+                      `Room ${i + 1}: ${
+                        isRoomNonRefundable(room) ? "Non-Refundable" : "Flexible"
+                      }`,
+                  )
+                  .join("\n"),
+        },
+      ],
+      priceItems,
+      totalAmount: toDisplay(newTotal),
+      cancellationPolicy: [...new Set(cancellationPolicy)],
+      notes,
+    };
+  };
+
   return (
     <div className="min-vh-100 bg-light d-flex flex-column hotel-booking-container">
       <TopBar />
@@ -2550,6 +2734,10 @@ const requiresPan = () => requiresAtharvaPan() || requiresGrnPan();
                         )}
                       </Card.Body>
                     </Card>
+
+                    {/* Quotation — under the Price Details it quotes, above
+                        the booking-mode choice and Confirm Booking. */}
+                    <QuotationPdfCard buildPayload={buildApiHotelQuotationPayload} />
 
                     {/* ATHARVA (apiId 3) ONLY: Vouchered vs Confirmed booking
                         choice per the HCreateBooking docs. Sits right above

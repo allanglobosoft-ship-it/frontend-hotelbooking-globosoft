@@ -55,9 +55,10 @@ import { useLocation, useNavigate, useNavigationType } from "react-router-dom";
 import axiosInstance from "../../components/AxiosInstance";
 import { toast } from "react-hot-toast";
 import MyopV2JourneyStepper from "../../components/myopv2/MyopV2JourneyStepper";
-import MyopV2PackageSuggestions, {
-  PACKAGE_SUGGESTIONS_STORAGE_KEY,
-} from "../../components/myopv2/MyopV2PackageSuggestions";
+// The "Recommended Existing Packages" section itself lives on the criteria
+// form (MakeUrOwnPackageV2); only its cache key is needed here, for the
+// refresh reset below.
+import { PACKAGE_SUGGESTIONS_STORAGE_KEY } from "../../components/myopv2/MyopV2PackageSuggestions";
 import "../../styles/RoomList.css";
 import "../../styles/MakeYourOwnPackageV2.css";
 
@@ -721,6 +722,19 @@ const [activeAccordion, setActiveAccordion] = useState({});
       setCurrentStepIdx(Math.max(0, wizardSteps.length - 1));
     }
   }, [wizardSteps.length, currentStepIdx]);
+
+  // Open every step from the top of the page. Next / Back sit in the sticky
+  // bar at the bottom, so without this a new step opened wherever the
+  // previous one had been scrolled to. Runs after the new step has
+  // rendered; comparing with the last index (rather than skipping the
+  // first run) keeps the initial mount — including StrictMode's double
+  // effect run — from scrolling.
+  const lastScrolledStepIdxRef = useRef(currentStepIdx);
+  useEffect(() => {
+    if (lastScrolledStepIdxRef.current === currentStepIdx) return;
+    lastScrolledStepIdxRef.current = currentStepIdx;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [currentStepIdx]);
 
   // <SingleAddOnService/> can flip an addon's gate from inside its own
   // step (the Yes/No radio writes to mypkg_addon_services). When the
@@ -2369,7 +2383,6 @@ const [activeAccordion, setActiveAccordion] = useState({});
   // selected without opening the TopBar cart modal.
   const currentWizardStep = wizardSteps[currentStepIdx];
   const nextWizardStep = wizardSteps[currentStepIdx + 1];
-  const wizardTotal = wizardSteps.length;
   const isTransferStepActive = currentWizardStep?.key === "transfer";
   const isLastWizardStep = currentStepIdx >= wizardSteps.length - 1;
   const packageHotels = packageItems.filter((it) => it && it.hotel);
@@ -2421,14 +2434,6 @@ const [activeAccordion, setActiveAccordion] = useState({});
   const stayNights = parseInt(nightsCount) || 0;
   const stayNightsLabel = `${stayNights} night${stayNights === 1 ? "" : "s"}`;
   const hotelGateLocked = v2Services.hotel && !hasHotelInCart;
-  // Agent the recommendation query and its booking hand-off run under —
-  // the same chain the cart operations on this page already use.
-  const suggestionAgentId =
-    agentId ||
-    agent ||
-    sessionStorage.getItem("makeYourOwnPackageAgentId") ||
-    localStorage.getItem("makeYourOwnPackageAgentId") ||
-    "";
 
   // On refresh we redirect to the Search Criteria form (effect above).
   // Render a lightweight loader meanwhile so the wizard's "Select
@@ -2862,21 +2867,9 @@ const [activeAccordion, setActiveAccordion] = useState({});
                         );
                       })}
                     </nav>
-                    <div className="d-flex justify-content-between align-items-center flex-wrap gap-2">
-                      <div>
-                        <div className="small text-muted text-uppercase" style={{ letterSpacing: "0.05em", fontSize: "0.7rem" }}>
-                          Step {currentStepIdx + 1} of {wizardTotal}
-                        </div>
-                      </div>
-                      <div className="text-end">
-                        <div className="small text-muted" style={{ fontSize: "0.7rem" }}>
-                          {nextWizardStep ? "Up next" : "Final step"}
-                        </div>
-                        <div className="small fw-semibold" style={{ color: "#EC0B43" }}>
-                          {nextWizardStep ? nextWizardStep.label : "Proceed to Booking"}
-                        </div>
-                      </div>
-                    </div>
+                    {/* The numbered pills above already show the position, so
+                        the separate "Step X of Y / Up next" row is gone — the
+                        next step's name is on the Next button instead. */}
                   </div>
 
                   {/* ═══════════════════════════════════════
@@ -3085,33 +3078,18 @@ const [activeAccordion, setActiveAccordion] = useState({});
                           {/* Search form removed — the criteria submitted on the
                               previous page already drives the hotel results, which
                               are pre-fetched and hydrated on mount. */}
-                          <div className="myop-v2-step-intro">
-                            <div className="myop-v2-step-intro__title">
-                              <span className="myop-v2-step-intro__icon">
-                                <FaHotel />
-                              </span>
-                              <div>
-                                <h5 className="fw-bold mb-0">Hotel</h5>
-                                <div className="text-muted small">
-                                  Click <span className="fw-semibold">View Rooms</span>, open a room
-                                  category and use <span className="fw-semibold">Add to Package</span>.
-                                  At least one room is required.
-                                </div>
-                              </div>
-                            </div>
-                            <div className="text-end small">
-                              <div className="text-muted">Rooms in package</div>
-                              <div className="fw-bold text-dark">{packageHotels.length}</div>
-                            </div>
-                          </div>
-
+                          {/* No step intro (same as Transfer / Activities): the
+                              how-to sits in the notice below, which shows only
+                              until the first room is in the package. */}
                           {hasSearched && hotelGateLocked && (
                             <div className="myop-v2-hint myop-v2-hint--warning small">
                               <FaInfoCircle className="mt-1 flex-shrink-0" />
                               <span>
-                                Add at least one room here to unlock the transfer and activity
-                                steps — their <span className="fw-semibold">Add to Package</span>{" "}
-                                buttons stay disabled until a hotel is in your package.
+                                Add at least one room: click{" "}
+                                <span className="fw-semibold">View Rooms</span> on a hotel, open a
+                                room category and use{" "}
+                                <span className="fw-semibold">Add to Package</span>. Transfers and
+                                activities can be added once a room is in your package.
                               </span>
                             </div>
                           )}
@@ -3761,27 +3739,9 @@ const [activeAccordion, setActiveAccordion] = useState({});
                   {wizardSteps[currentStepIdx]?.key === "transfer" && (
                       <Card className="border-0 shadow-sm rounded-4 myop-v2-step">
                         <Card.Body>
-                          <div className="myop-v2-step-intro">
-                            <div className="myop-v2-step-intro__title">
-                              <span className="myop-v2-step-intro__icon">
-                                <FaCar />
-                              </span>
-                              <div>
-                                <h5 className="fw-bold mb-0">Transfer</h5>
-                                <div className="text-muted small">
-                                  Set the pickup and drop-off locations, then use{" "}
-                                  <span className="fw-semibold">Add to Package</span> on the transfer
-                                  option you want. Adding a transfer is optional, but pickup &amp;
-                                  drop-off must be set before you can continue.
-                                </div>
-                              </div>
-                            </div>
-                            <div className="text-end small">
-                              <div className="text-muted">Transfers in package</div>
-                              <div className="fw-bold text-dark">{packageCabs.length}</div>
-                            </div>
-                          </div>
-
+                          {/* No step intro here: the highlighted step pill names
+                              the step, the pickup & drop-off card below carries
+                              the instructions, and "Your package" shows the count. */}
                           {hotelGateLocked && (
                             <div className="myop-v2-hint myop-v2-hint--warning small">
                               <FaInfoCircle className="mt-1 flex-shrink-0" />
@@ -3957,9 +3917,9 @@ const [activeAccordion, setActiveAccordion] = useState({});
                               </Row>
                             )}
                             <div className="text-muted small mt-2">
-                              Results below are already loaded for your trip dates — use{" "}
-                              <span className="fw-semibold">Refresh</span> only if you need to run the
-                              search again.
+                              Adding a transfer is optional. Results below are already loaded for
+                              your trip dates — use <span className="fw-semibold">Refresh</span> only
+                              if you need to run the search again.
                             </div>
                           </div>
 
@@ -4224,29 +4184,9 @@ const [activeAccordion, setActiveAccordion] = useState({});
                         <Card.Body>
                           {/* Search form removed — activities are pre-fetched
                               with the criteria from the previous page. */}
-                          <div className="myop-v2-step-intro">
-                            <div className="myop-v2-step-intro__title">
-                              <span className="myop-v2-step-intro__icon">
-                                <FaTicketAlt />
-                              </span>
-                              <div>
-                                <h5 className="fw-bold mb-0">Tours &amp; Activities</h5>
-                                <div className="text-muted small">
-                                  Use <span className="fw-semibold">Add to Package</span> on each
-                                  activity you want. All activities are booked for{" "}
-                                  <span className="fw-semibold text-dark">
-                                    {formatDateToDDMMYYYY(tourDate) || formatDateToDDMMYYYY(travelDate) || "the travel date"}
-                                  </span>
-                                  ; the day-wise itinerary is arranged on the booking page.
-                                </div>
-                              </div>
-                            </div>
-                            <div className="text-end small">
-                              <div className="text-muted">Activities in package</div>
-                              <div className="fw-bold text-dark">{packageActivities.length}</div>
-                            </div>
-                          </div>
-
+                          {/* No step intro (same as Hotel / Transfer); the one
+                              detail it carried that isn't shown elsewhere — the
+                              booking date — sits under the results heading. */}
                           {hotelGateLocked && (
                             <div className="myop-v2-hint myop-v2-hint--warning small">
                               <FaInfoCircle className="mt-1 flex-shrink-0" />
@@ -4299,9 +4239,18 @@ const [activeAccordion, setActiveAccordion] = useState({});
 
                           {hasTourSearched && !tourLoading && tourResults.length > 0 && (
                             <div>
-                              <h6 className="fw-bold mb-3">
-                                Tour &amp; Activity Results ({filteredTours.length})
-                              </h6>
+                              <div className="myop-v2-results-head">
+                                <h6 className="fw-bold mb-1">
+                                  Tour &amp; Activity Results ({filteredTours.length})
+                                </h6>
+                                <div className="text-muted small">
+                                  All activities are booked for{" "}
+                                  <span className="fw-semibold text-dark">
+                                    {formatDateToDDMMYYYY(tourDate) || formatDateToDDMMYYYY(travelDate) || "the travel date"}
+                                  </span>
+                                  ; the day-wise itinerary is arranged on the booking page.
+                                </div>
+                              </div>
                               {filteredTours.length === 0 && (
                                 <div className="text-center text-muted py-4">
                                   No activities found for the selected city.
@@ -4506,29 +4455,6 @@ const [activeAccordion, setActiveAccordion] = useState({});
               </Card>
 
               {/* ═══════════════════════════════════════
-                  RECOMMENDED EXISTING PACKAGES — read-only suggestions
-                  Rendered only after the wizard's own search has completed
-                  (hasSearched) and only when the Package Search rules match
-                  at least one ready-made package for the same criteria.
-                  Never touches the cart or the results above. Hidden on
-                  the add-on detail steps (pure forms) so it sits under
-                  results, not under a Yes/No questionnaire.
-              ═══════════════════════════════════════ */}
-              {currentWizardStep?.type !== "addon" && (
-              <MyopV2PackageSuggestions
-                enabled={hasSearched}
-                criteria={searchCriteria}
-                checkIn={checkIn}
-                checkOut={checkOut}
-                nightsCount={nightsCount}
-                adultCount={adultCount}
-                childCount={childCount}
-                childAges={childAges}
-                agentId={suggestionAgentId}
-              />
-              )}
-
-              {/* ═══════════════════════════════════════
                   WIZARD NAVIGATION — sticky bar below the wizard card
                   (outside the card because the global .card rule clips
                   overflow, which would make position:sticky inert).
@@ -4566,7 +4492,8 @@ const [activeAccordion, setActiveAccordion] = useState({});
                 >
                   {currentStepIdx < wizardSteps.length - 1 ? (
                     <>
-                      Next
+                      {/* Names the step it leads to (was the "Up next" hint). */}
+                      Next: {nextWizardStep?.label}
                       <FaArrowRight className="ms-2" />
                     </>
                   ) : isProceeding ? (
