@@ -200,6 +200,8 @@ import LongStayBookingList from "./pages/list/LongStayBookingList";
 import LongStayBookingDetailView from "./pages/list/LongStayBookingDetailView";
 import LongStayRoomList from "./pages/LongStayRoomList";
 import CopilotWidget from "./components/CopilotWidget";
+// User activity trail (page views + clicks) → backend user-activity.log.
+import ActivityTracker from "./components/ActivityTracker";
 import AiDashboard from "./pages/ai/AiDashboard";
 import DemandForecast from "./pages/ai/DemandForecast";
 import AgentBehavior from "./pages/ai/AgentBehavior";
@@ -372,6 +374,7 @@ import PartnerDashboard from "./pages/PartnerDashboard";
 export default function App() {
   return (
     <div>
+      <ActivityTracker />
       <Routes>
         {/* Public Routes */}
         <Route path="/" element={<Login />} />
