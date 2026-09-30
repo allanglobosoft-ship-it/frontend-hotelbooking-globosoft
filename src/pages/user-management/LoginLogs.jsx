@@ -114,7 +114,7 @@ export default function LoginLogs() {
       setSortKey(key);
       setSortDir("asc");
     }
-  };
+  }; 
 
   const SortHeader = ({ label, k }) => (
     <th
