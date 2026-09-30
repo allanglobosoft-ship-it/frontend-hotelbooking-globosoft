@@ -169,32 +169,30 @@ const getGuestNames = (booking) => {
   return names;
 };
 
+// Status / Notification text — plain coloured words with no pill background,
+// matching the Notification column on /booking-details/24hr-booking-list.
+// Each "/"-separated segment is coloured on its own so a compound label like
+// "Confirmed / Cancelled" reads green then red. Labels outside the shared
+// palette keep their STATUS_META colour.
+const statusSegColor = (part, fallback) => {
+  const p = (part || "").replace(/\s+/g, "").toLowerCase();
+  if (p.startsWith("reconfirmed") || p.startsWith("confirmed")) return "#06a301";
+  if (p.includes("cancelled") || p.includes("canceled") || p.startsWith("rejected")) return "#dc3545";
+  if (p === "onrequest" || p === "requested" || p === "notconfirmed" || p.startsWith("pending")) return "#e67e22";
+  return fallback;
+};
+
 const StatusPill = ({ meta, raw }) => {
   if (!meta) return <span className="text-muted">{raw || "-"}</span>;
+  const parts = String(meta.label ?? "-").split("/");
   return (
-    <span
-      className="d-inline-flex align-items-center gap-1 px-2 py-1 rounded-pill"
-      style={{
-        backgroundColor: meta.bg,
-        color: meta.color,
-        fontSize: "0.7rem",
-        fontWeight: 600,
-        lineHeight: 1,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {meta.dot && (
-        <span
-          style={{
-            width: 6,
-            height: 6,
-            borderRadius: "50%",
-            backgroundColor: meta.dot,
-            display: "inline-block",
-          }}
-        />
-      )}
-      {meta.label}
+    <span style={{ fontSize: "0.82rem", fontWeight: 600, whiteSpace: "nowrap" }}>
+      {parts.map((part, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && <span style={{ color: "#6c757d" }}>/</span>}
+          <span style={{ color: statusSegColor(part, meta.color) }}>{part}</span>
+        </React.Fragment>
+      ))}
     </span>
   );
 };

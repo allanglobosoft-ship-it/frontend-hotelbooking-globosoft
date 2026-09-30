@@ -258,3 +258,24 @@
     text-align: center;
   }
 }
+
+/* All Bookings list: horizontal scroll wrapper with a scrollbar that is
+   actually visible (the shared .thin-scrollbar is only 4px tall). */
+.abl-scroll {
+  scrollbar-width: auto;
+  scrollbar-color: #9aa4ae #eef0f2;
+}
+.abl-scroll::-webkit-scrollbar {
+  height: 10px;
+}
+.abl-scroll::-webkit-scrollbar-track {
+  background: #eef0f2;
+  border-radius: 6px;
+}
+.abl-scroll::-webkit-scrollbar-thumb {
+  background-color: #9aa4ae;
+  border-radius: 6px;
+}
+.abl-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: #6c757d;
+}

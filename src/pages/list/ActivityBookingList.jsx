@@ -689,24 +689,22 @@ const ActivityBookingList = () => {
                                 {(() => {
                                   const raw = String(b.status || "").trim().toUpperCase();
                                   if (!raw) return <span className="text-muted">-</span>;
-                                  const [bg, color] =
+                                  // Plain coloured text, no pill background —
+                                  // same look as the 24hr booking list.
+                                  const color =
                                     raw === "CONFIRMED"
-                                      ? ["#e6f7ea", "#0d7a2f"]
+                                      ? "#06a301"
                                       : raw === "CANCELLED"
-                                        ? ["#fdecea", "#b3241c"]
-                                        : ["#eef2f7", "#425466"];
+                                        ? "#dc3545"
+                                        : "#6c757d";
                                   const label =
                                     raw.charAt(0) + raw.slice(1).toLowerCase();
                                   return (
                                     <span
                                       style={{
-                                        backgroundColor: bg,
                                         color,
-                                        padding: "3px 10px",
-                                        borderRadius: "999px",
-                                        fontSize: "0.72rem",
+                                        fontSize: "0.82rem",
                                         fontWeight: "600",
-                                        display: "inline-block",
                                       }}
                                     >
                                       {label}

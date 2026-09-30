@@ -48,38 +48,41 @@ import "../../styles/HotelBookingListModern.css";
 const PER_PAGE_OPTIONS = [10, 25, 50, 100];
 const SEARCH_ALL_PAGE_SIZE = 10000;
 
-// Widths are proportional hints for the browser (table-layout: fixed +
-// width: 100% below). The layout fits inside the viewport without any
-// horizontal scroll:
-//   * Headers use whiteSpace: normal (see thStyle) so full multi-word
-//     labels wrap onto two lines instead of getting truncated to
-//     "AGENT N...".
-//   * Row cells use whiteSpace: nowrap so dates and short values stay
-//     on one line; anything longer than its column truncates with
-//     ellipsis AND carries a title tooltip so hovering reveals the
-//     full string. Hotel column explicitly re-enables wrapping so its
-//     name + type badge can stack.
-// Sum kept ~1250px so all 16 admin columns land inside the viewport
-// content area without a horizontal scrollbar. Multi-word cell values
-// still wrap (see baseCellStyle) so nothing gets truncated.
+// Column widths in px (table-layout: fixed). The columns are sized so
+// every value has breathing room — dates, codes and status labels stay
+// on one line — and the table's minWidth is their sum (see tableMinWidth).
+// When the viewport is narrower than that, the wrapper scrolls
+// horizontally (visible scrollbar, sticky Action column) instead of
+// squashing all 16 admin columns into the screen width.
 const COLUMN_WIDTHS = {
-  sn: "34px",
-  agentName: "82px",  // admin-only
-  supplier: "72px",   // admin-only (whitelabel invariant — agents never see this)
-  booker: "100px",    // was Customer Name — header now reads "Pax Name"
-  pax: "38px",        // total pax
-  rsvnRef: "90px",    // was Booking Code
-  confirmationNumber: "80px", // header now reads "Hotel Conf"
-  bookDate: "75px",
-  hotel: "130px",     // hotel name + booking-type badge
-  bookedBy: "90px",   // "Booker" column — operator who created the booking (Hotel only)
-  checkIn: "72px",
-  checkOut: "72px",
-  deadlineDate: "80px",
-  paymentMode: "95px",
-  paymentStatus: "90px",
-  status: "90px",     // was Notification — NotificationCell content unchanged
-  action: "50px",
+  sn: 44,
+  agentName: 110,     // admin-only
+  supplier: 110,      // admin-only (whitelabel invariant — agents never see this)
+  booker: 150,        // was Customer Name — header now reads "Pax Name"
+  pax: 50,            // total pax
+  rsvnRef: 110,       // was Booking Code
+  confirmationNumber: 100, // header now reads "Hotel Conf"
+  bookDate: 100,
+  hotel: 220,         // hotel name + booking-type badge
+  bookedBy: 120,      // "Booker" column — operator who created the booking (Hotel only)
+  checkIn: 100,
+  checkOut: 100,
+  deadlineDate: 105,
+  paymentMode: 130,
+  paymentStatus: 125,
+  status: 125,        // was Notification — NotificationCell content unchanged
+  action: 64,
+};
+const ADMIN_ONLY_COLUMNS = ["agentName", "supplier"];
+
+// Action column stays pinned to the right edge while the table scrolls
+// horizontally, so the View icon is always reachable. background
+// "inherit" picks up the row's zebra / hover colour from the <tr>.
+const stickyActionStyle = {
+  position: "sticky",
+  right: 0,
+  zIndex: 1,
+  boxShadow: "-3px 0 5px -2px rgba(0,0,0,0.12)",
 };
 
 const BOOKING_TYPE_OPTIONS = [
@@ -394,6 +397,9 @@ const AllBookingsList = () => {
   // Supplier, so 16 total. Update in sync with the <thead> below.
   // Column count bumped by one — new "Booker" column sits after Hotel.
   const colSpan = role === "admin" ? 17 : 15;
+  const tableMinWidth = Object.entries(COLUMN_WIDTHS)
+    .filter(([key]) => role === "admin" || !ADMIN_ONLY_COLUMNS.includes(key))
+    .reduce((sum, [, w]) => sum + w, 0);
 
   return (
     <div className="min-vh-100 bg-light d-flex flex-column hbl-modern">
@@ -532,21 +538,20 @@ const AllBookingsList = () => {
                     <p className="mt-2 text-muted">Loading bookings...</p>
                   </div>
                 ) : (
-                  <div className="thin-scrollbar" style={{ overflowX: "hidden", width: "100%" }}>
+                  <div className="abl-scroll" style={{ overflowX: "auto", width: "100%" }}>
                     <Table
                       hover
                       size="sm"
                       className="mb-0 align-middle table-bordered hbl-table"
                       style={{
-                        // Fits the viewport without a horizontal scrollbar:
-                        // fixed layout distributes width: 100% across
-                        // every column according to the widths below,
-                        // then whiteSpace:nowrap + ellipsis on th/td
-                        // means labels stay on one line and any overflow
-                        // truncates gracefully instead of wrapping.
+                        // Fixed layout with a minWidth equal to the column
+                        // sum: on wide screens the table fills the card,
+                        // on narrower ones the wrapper scrolls sideways
+                        // rather than crushing the columns.
                         tableLayout: "fixed",
                         width: "100%",
-                        fontSize: "0.75rem",
+                        minWidth: tableMinWidth,
+                        fontSize: "0.8rem",
                         borderCollapse: "separate",
                         borderSpacing: 0,
                       }}
@@ -618,7 +623,7 @@ const AllBookingsList = () => {
                               content unchanged, still rendered by
                               NotificationCell. */}
                           <th style={thStyle("center", COLUMN_WIDTHS.status)}>Status</th>
-                          <th style={thStyle("center", COLUMN_WIDTHS.action)}>Action</th>
+                          <th style={{ ...thStyle("center", COLUMN_WIDTHS.action), ...stickyActionStyle, backgroundColor: "#f8f9fa", zIndex: 2 }}>Action</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -636,8 +641,8 @@ const AllBookingsList = () => {
                         ) : (
                           displayedBookings.map((b, i) => {
                             const baseCellStyle = {
-                              padding: "0.35rem 0.3rem",
-                              fontSize: "0.72rem",
+                              padding: "0.6rem 0.55rem",
+                              fontSize: "0.8rem",
                               border: "1px solid #dee2e6",
                               verticalAlign: "middle",
                               // Cell values wrap onto additional lines
@@ -655,6 +660,9 @@ const AllBookingsList = () => {
                               overflowWrap: "break-word",
                               lineHeight: 1.4,
                             };
+                            // Short single-line values (dates, codes,
+                            // status labels) never break mid-token.
+                            const noWrapCellStyle = { ...baseCellStyle, whiteSpace: "nowrap" };
                             return (
                               <tr
                                 key={`${b.bookingType}-${b.bookingId}-${i}`}
@@ -683,24 +691,24 @@ const AllBookingsList = () => {
                                     <span className="fw-medium text-dark">{b.primaryGuestName || "-"}</span>
                                   </span>
                                 </td>
-                                <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.pax }}>
+                                <td style={{ ...noWrapCellStyle, textAlign: "center", width: COLUMN_WIDTHS.pax }}>
                                   {b.pax != null ? (
                                     <span className="fw-medium text-dark">{b.pax}</span>
                                   ) : (
                                     <span className="text-muted">-</span>
                                   )}
                                 </td>
-                                <td style={{ ...baseCellStyle, width: COLUMN_WIDTHS.rsvnRef }} title={b.bookingCode || ""}>
+                                <td style={{ ...noWrapCellStyle, width: COLUMN_WIDTHS.rsvnRef }} title={b.bookingCode || ""}>
                                   <span className="fw-bold text-primary">{b.bookingCode || "-"}</span>
                                 </td>
-                                <td style={{ ...baseCellStyle, textAlign: "center", fontFamily: "monospace", width: COLUMN_WIDTHS.confirmationNumber }} title={b.confirmationNumber || ""}>
+                                <td style={{ ...noWrapCellStyle, textAlign: "center", fontFamily: "monospace", width: COLUMN_WIDTHS.confirmationNumber }} title={b.confirmationNumber || ""}>
                                   {b.confirmationNumber ? (
                                     <span className="text-dark">{b.confirmationNumber}</span>
                                   ) : (
                                     <span className="text-muted">-</span>
                                   )}
                                 </td>
-                                <td className="text-muted" style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.bookDate }} title={formatDate(b.bookingDate) || ""}>
+                                <td className="text-muted" style={{ ...noWrapCellStyle, textAlign: "center", width: COLUMN_WIDTHS.bookDate }} title={formatDate(b.bookingDate) || ""}>
                                   {formatDate(b.bookingDate) || "-"}
                                 </td>
                                 <td
@@ -742,13 +750,13 @@ const AllBookingsList = () => {
                                     <span className="text-muted">-</span>
                                   )}
                                 </td>
-                                <td className="text-muted" style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.checkIn }} title={formatDate(b.checkInDate) || ""}>
+                                <td className="text-muted" style={{ ...noWrapCellStyle, textAlign: "center", width: COLUMN_WIDTHS.checkIn }} title={formatDate(b.checkInDate) || ""}>
                                   {formatDate(b.checkInDate) || "-"}
                                 </td>
-                                <td className="text-muted" style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.checkOut }} title={formatDate(b.checkOutDate) || ""}>
+                                <td className="text-muted" style={{ ...noWrapCellStyle, textAlign: "center", width: COLUMN_WIDTHS.checkOut }} title={formatDate(b.checkOutDate) || ""}>
                                   {formatDate(b.checkOutDate) || "-"}
                                 </td>
-                                <td className="text-muted" style={{ ...baseCellStyle, textAlign: "center", fontFamily: "monospace", width: COLUMN_WIDTHS.deadlineDate }} title={b.deadlineDate || ""}>
+                                <td className="text-muted" style={{ ...noWrapCellStyle, textAlign: "center", fontFamily: "monospace", width: COLUMN_WIDTHS.deadlineDate }} title={b.deadlineDate || ""}>
                                   {formatDeadlineDate(b.deadlineDate)}
                                 </td>
                                 <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.paymentMode }} title={getPaymentModeLabel(b)}>
@@ -764,7 +772,7 @@ const AllBookingsList = () => {
                                     Paid, a cancellation → Paid or Un-Paid
                                     depending on whether it had been
                                     reconfirmed. See getPaymentStatusLabel. */}
-                                <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.paymentStatus }} title={getPaymentStatusLabel(b)}>
+                                <td style={{ ...noWrapCellStyle, textAlign: "center", width: COLUMN_WIDTHS.paymentStatus }} title={getPaymentStatusLabel(b)}>
                                   {(() => {
                                     const label = getPaymentStatusLabel(b);
                                     if (label === "-") return <span className="text-muted">-</span>;
@@ -784,10 +792,10 @@ const AllBookingsList = () => {
                                     );
                                   })()}
                                 </td>
-                                <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.status }}>
+                                <td style={{ ...noWrapCellStyle, textAlign: "center", width: COLUMN_WIDTHS.status }}>
                                   <NotificationCell booking={b} />
                                 </td>
-                                <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.action }}>
+                                <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.action, ...stickyActionStyle, backgroundColor: "inherit" }}>
                                   <div className="d-flex justify-content-center align-items-center">
                                     <FaEye
                                       role="button"
@@ -882,7 +890,7 @@ const AllBookingsList = () => {
 
 function thStyle(textAlign, width) {
   return {
-    padding: "0.35rem 0.25rem",
+    padding: "0.65rem 0.55rem",
     fontWeight: "600",
     textTransform: "uppercase",
     color: "#495057",
