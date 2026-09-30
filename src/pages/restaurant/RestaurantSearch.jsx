@@ -231,15 +231,12 @@ const RestaurantSearch = () => {
   };
 
   /** Load the City/Place options for ONE country. The picker is
-   *  country-scoped — it never loads the full master list. Two sources,
-   *  kept as separate groups:
-   *    - Places  (POST /api/destination/getCitiesByCountryId/{id}) — each
-   *      place carries its parent state in `state`, rendered as
-   *      "Place / State" (e.g. "Kochi / Kerala").
-   *    - States  (GET /api/province?countryId={id}) — rendered as the bare
-   *      state name (e.g. "Kerala").
-   *  Each option keeps its (destinationId, placeSource = DESTINATION|PROVINCE)
-   *  so the search payload contract is unchanged. */
+   *  country-scoped — it never loads the full master list. Sourced from
+   *  GET /api/province/getByCountryId/{id}, the same list the "City"
+   *  dropdown on Hotel Registration (HotelReg.jsx → loadProvinces) shows,
+   *  rendered by `stateName`. Each option keeps its
+   *  (destinationId, placeSource = PROVINCE) so the search payload
+   *  contract is unchanged. */
   const loadPlacesByCountry = async (countryId) => {
     if (!countryId) {
       setDestinationOptions([]);
@@ -247,40 +244,14 @@ const RestaurantSearch = () => {
     }
     setDestinationLoading(true);
     try {
-      const [placeRes, stateRes] = await Promise.all([
-        axiosInstance
-          .post(`/api/destination/getCitiesByCountryId/${countryId}`)
-          .catch(() => ({ data: [] })),
-        axiosInstance
-          .get(`/api/province?countryId=${countryId}&page=0&limit=50&search=`)
-          .catch(() => ({ data: [] })),
-      ]);
-      const placeRows = Array.isArray(placeRes.data)
-        ? placeRes.data
-        : placeRes.data?.content || [];
-      const stateRows = Array.isArray(stateRes.data)
-        ? stateRes.data
-        : stateRes.data?.content || [];
-      const placeOpts = placeRows
-        .filter((p) => !p.isDeleted)
-        .map((p) => {
-          const placeName = p.name || `Place #${p.id}`;
-          const stateName = p.state || p.stateName || "";
-          // "Place / State" — fall back to just the place when no parent
-          // state is resolved.
-          const label = stateName ? `${placeName} / ${stateName}` : placeName;
-          return {
-            value: `DESTINATION:${p.id}`,
-            id: p.id,
-            source: "DESTINATION",
-            label,
-            stateName: placeName,
-          };
-        });
-      const stateOpts = stateRows
+      const res = await axiosInstance.get(
+        `/api/province/getByCountryId/${countryId}`
+      );
+      const cityRows = Array.isArray(res.data) ? res.data : [];
+      const cityOpts = cityRows
         .filter((s) => !s.isDeleted)
         .map((s) => {
-          const name = s.stateName || s.name || `State #${s.id}`;
+          const name = s.stateName || s.name || `City #${s.id}`;
           return {
             value: `PROVINCE:${s.id}`,
             id: s.id,
@@ -289,10 +260,7 @@ const RestaurantSearch = () => {
             stateName: name,
           };
         });
-      setDestinationOptions([
-        { label: "Cities", options: stateOpts },
-        { label: "Places", options: placeOpts },
-      ]);
+      setDestinationOptions(cityOpts);
     } catch {
       setDestinationOptions([]);
     } finally {
@@ -764,8 +732,8 @@ const RestaurantSearch = () => {
                       )}
                     </Col>
 
-                    {/* City / Place — country-scoped list (destinations +
-                        provinces for the picked country only). Disabled until
+                    {/* City / Place — country-scoped City list (same source as
+                        the Hotel Registration "City" dropdown). Disabled until
                         a country is chosen. Picked option stores
                         destinationId + placeSource on the form so the backend
                         resolves the right master table — payload unchanged. */}
@@ -778,8 +746,8 @@ const RestaurantSearch = () => {
                           !form.countryId
                             ? "Select a country first"
                             : destinationLoading
-                            ? "Loading places..."
-                            : "Search place or city..."
+                            ? "Loading cities..."
+                            : "Search city..."
                         }
                         isClearable
                         isSearchable
