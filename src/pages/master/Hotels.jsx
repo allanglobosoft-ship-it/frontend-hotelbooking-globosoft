@@ -3,9 +3,9 @@ import React, { useEffect, useState } from "react";
 import axiosInstance from "../../components/AxiosInstance";
 
 const Hotels = () => {
-  const [hotels, setHotels] = useState([]);
+  const [hotels, setHotels] = useState([]);  
 
-  const hotelList = async () => {
+  const hotelList = async () => { 
    
 
     try {
