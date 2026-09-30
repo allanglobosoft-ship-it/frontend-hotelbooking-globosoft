@@ -12,12 +12,14 @@ import {
   Row,
   Col,
 } from "react-bootstrap";
-import { FaEye, FaTimesCircle, FaSearch, FaSpa, FaUserMd, FaBookOpen, FaTrashAlt } from "react-icons/fa";
+import { FaEye, FaTimesCircle, FaSearch, FaSpa, FaUserMd, FaBookOpen, FaTrashAlt, FaArrowLeft } from "react-icons/fa";
 import toast from "react-hot-toast";
+import { useNavigate } from "react-router-dom";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
 import "../../styles/Ayurveda.css";
+import DashboardRedirections from "../../components/DashboardRedirections";
 
 const AYURVEDA_API = "/api/v1/ayurveda";
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
@@ -90,6 +92,7 @@ const StatusPill = ({ meta, raw }) => {
 };
 
 const AyurvedaBookingList = () => {
+  const navigate = useNavigate();
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(0);
@@ -209,6 +212,18 @@ const AyurvedaBookingList = () => {
               paddingRight: "0.5rem",
             }}
           >
+            {/* Back to the signed-in user's dashboard — top-left, above the header row */}
+            <div className="mb-3">
+              <Button
+                variant="outline-secondary"
+                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
+              >
+                <FaArrowLeft />
+                Back
+              </Button>
+            </div>
+
             <div className="d-flex justify-content-between align-items-center mb-4">
               <h5 className="mb-0 text-dark fw-semibold">Ayurveda Booking</h5>
             </div>

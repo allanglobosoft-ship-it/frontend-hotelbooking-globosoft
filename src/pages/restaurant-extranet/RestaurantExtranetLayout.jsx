@@ -81,7 +81,14 @@ const RestaurantExtranetLayout = ({ children, title, subtitle }) => {
     fetchMe();
   }, [fetchMe]);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    // Same as TopBar.handleLogout: record logout_date_time server-side while
+    // the Bearer token is still in localStorage, then clear the client.
+    try {
+      await axiosInstance.post("/auth/logout", {}, { withCredentials: true });
+    } catch {
+      // Best-effort: still finish the client-side logout if the call fails.
+    }
     localStorage.removeItem("authToken");
     localStorage.removeItem("userRole");
     localStorage.removeItem("UserName");

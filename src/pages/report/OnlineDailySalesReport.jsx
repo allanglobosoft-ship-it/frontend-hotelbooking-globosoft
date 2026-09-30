@@ -16,6 +16,7 @@ import axiosInstance from "../../components/AxiosInstance";
 import { toast } from "react-hot-toast";
 import Supplier from "../../components/filters/Supplier";
 import DestinationCity from "../../components/filters/DestinationCity";
+import BackButton from "../../components/BackButton";
 
 export default function OnlineDailySalesReport() {
 
@@ -258,7 +259,8 @@ const filteredreports = useMemo(()=>{
 
         <main className="flex-grow-1 p-4" style={{ overflow: "auto" }}>
           <Card className="shadow-sm rounded-xl">
-            <Card.Header>
+            <Card.Header className="d-flex align-items-center gap-2">
+              <BackButton forceFallback fallback={isAgentRole ? "/agentDashboard" : "/adminDashboard"} />
               <span className="fw-semibold">Online Daily Sales Report</span>
             </Card.Header>
 

@@ -9,6 +9,12 @@ import { FaEdit, FaTrash } from "react-icons/fa";
 import axios from "axios";
 import Select from "react-select";
 import BackButton from "../../components/BackButton";
+// Shared pagination pill styling — .pagination-modern is defined in this
+// stylesheet and drives the orange rounded look used on
+// /new-booking/hotel. Every other rule in the file is namespaced under
+// the same class prefixes (.pagination-modern .page-link, etc.) so
+// importing it here does not affect anything else on the master page.
+import "../../styles/HotelSearch.css";
 
 export default function Province() {
   const [items, setItems] = useState([]);
@@ -19,6 +25,15 @@ export default function Province() {
   const [error, setError] = useState("");
   const [page, setPage] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
+  // True row count matching the current filter — sourced from the backend's
+  // X-Total-Count header on /api/province, so "of N" always agrees with what
+  // is actually in the DB. Same wiring the Hotel List page uses (see
+  // src/pages/Registration/HotelList.jsx).
+  const [totalElements, setTotalElements] = useState(0);
+  // Kept as a constant here — matches the Hotel List "pageSize" and the
+  // limit sent to the backend below. If this ever needs to differ per-user,
+  // convert to state; nothing else on the page hard-codes 10.
+  const PAGE_SIZE = 10;
   const [search, setSearch] = useState("");
   const [searchTimeout, setSearchTimeout] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -111,7 +126,7 @@ export default function Province() {
     try {
       const params = new URLSearchParams({
         page: pageNum.toString(),
-        limit: "10",
+        limit: String(PAGE_SIZE),
       });
 
       if (searchTerm && searchTerm.trim()) {
@@ -120,29 +135,39 @@ export default function Province() {
 
       const res = await axiosInstance.get(`/api/province?${params.toString()}`);
 
-      // Check if response has data and pagination info
       if (res.data && Array.isArray(res.data)) {
         setItems(res.data);
-        // Since backend doesn't return totalPages, we'll calculate it based on data length
-        // If we get less than 10 items, it's likely the last page
-        if (res.data.length < 10) {
+
+        // Size the pager from the backend's real match count (X-Total-Count
+        // header) — mirrors the Hotel List page's pagination. Falls back to
+        // the old page-length heuristic only when the header is absent (e.g.
+        // an older backend build). The previous "Math.max(...) + 2" guess
+        // could only ever grow, so after narrowing a search or paging deeper
+        // the pager kept offering pages the filtered set no longer had.
+        const rawTotal = Number(res.headers?.["x-total-count"]);
+        if (Number.isFinite(rawTotal) && rawTotal >= 0) {
+          setTotalElements(rawTotal);
+          setTotalPages(Math.max(1, Math.ceil(rawTotal / PAGE_SIZE)));
+        } else if (res.data.length < PAGE_SIZE) {
+          setTotalElements(pageNum * PAGE_SIZE + res.data.length);
           setTotalPages(pageNum + 1);
         } else {
-          // If we get exactly 10 items, there might be more pages
-          // We'll set a reasonable total or keep the current totalPages
-          setTotalPages(Math.max(totalPages, pageNum + 2));
+          setTotalElements(0);
+          setTotalPages(pageNum + 2);
         }
 
         setPage(pageNum);
       } else {
         setItems([]);
         setTotalPages(0);
+        setTotalElements(0);
         setPage(0);
       }
     } catch (err) {
       toast.error("Failed to load provinces");
       setItems([]);
       setTotalPages(0);
+      setTotalElements(0);
       setPage(0);
     } finally {
       setIsLoading(false);
@@ -251,6 +276,45 @@ export default function Province() {
   };
   const debouncedFetchCountryList = useCallback(debounce(fetchCountryList, 500), []);
 
+  // ── Pagination helpers — same shape as /new-booking/hotel
+  //    (see src/pages/HotelSearch.jsx: effectiveTotalPages, pageNumbers,
+  //    goToPage). Ellipsis-aware windowed page list: when the total is 7
+  //    pages or fewer we show every number; beyond that we anchor 1 and
+  //    N, drop a left/right ellipsis where a gap opens, and only render
+  //    a 3-wide window around the current page. Keeps the pager compact
+  //    on wide result sets. ────────────────────────────────────────────
+  const effectiveTotalPages = useMemo(
+    () => Math.max(1, totalPages),
+    [totalPages],
+  );
+
+  const pageNumbers = useMemo(() => {
+    const current = page + 1;
+    const total = effectiveTotalPages;
+    const nums = [];
+    if (total <= 7) {
+      for (let i = 1; i <= total; i++) nums.push(i);
+    } else {
+      nums.push(1);
+      const left = Math.max(2, current - 1);
+      const right = Math.min(total - 1, current + 1);
+      if (left > 2) nums.push("ellipsis-left");
+      for (let i = left; i <= right; i++) nums.push(i);
+      if (right < total - 1) nums.push("ellipsis-right");
+      nums.push(total);
+    }
+    return nums;
+  }, [page, effectiveTotalPages]);
+
+  // Jump to a specific 0-based page. Bounds-checked so the ellipsis
+  // rendering never triggers an out-of-range fetch. Mirrors the
+  // HotelSearch goToPage helper but drops the smooth-scroll ref call —
+  // the master list is short enough that the scroll would be jarring.
+  const goToPage = (idx) => {
+    if (idx < 0 || idx >= effectiveTotalPages) return;
+    fetchStateList(idx, search);
+  };
+
   useEffect(() => {
     fetchCountryList();
   }, []);
@@ -267,11 +331,17 @@ export default function Province() {
                 <BackButton fallback="/adminDashboard" />
                 <span className="fw-semibold"> Province / City </span>
               </span>
-              {/* State Search */}
+              {/* State Search — one text box, three columns.
+                  Backend (ProvinceService.getAllProvince) matches the
+                  term against Country name, Province name, and Province
+                  code with a case-insensitive contains predicate. The
+                  placeholder tells the operator the scope up-front so
+                  they don't wonder why "India" or "KL" now returns rows
+                  that "province name only" used to hide. */}
               <Form.Group className="hotel-search-bar flex-grow-1 flex-sm-grow-0">
                 <Form.Control
                   type="text"
-                  placeholder="Search province..."
+                  placeholder="Search by country, province, or province code..."
                   className="form-control-modern-sm"
                   value={searchTerm}
                   onChange={(e) => {
@@ -299,7 +369,7 @@ export default function Province() {
                 <tbody>
                   {items.map((item, index) => (
                     <tr key={item.id}>
-                      <td>{index + 1 + page * 10}</td>
+                      <td>{index + 1 + page * PAGE_SIZE}</td>
                        <td>{item.country}</td>
                       <td>{item.stateName}</td>
                       <td>{item.stateCode}</td>
@@ -344,37 +414,47 @@ export default function Province() {
                 </tbody>
               </Table>
 
-              {/* Pagination */}
-              {totalPages > 1 && (
-                <div className="d-flex justify-content-between align-items-center p-3 border-top">
-                  <div>
+              {/* Pagination — mirrors the /new-booking/hotel pager
+                  (src/pages/HotelSearch.jsx). Renders whenever there is
+                  more than one page OR the true match count exceeds one
+                  page's worth. Uses the ellipsis-aware windowed page
+                  list computed above so wide result sets stay compact,
+                  and the `pagination-modern` class picks up the same
+                  visual treatment the booking search page uses. Read
+                  the totalElements from the X-Total-Count header so
+                  "of M" always agrees with the current filter. */}
+              {!isLoading &&
+                (effectiveTotalPages > 1 || totalElements > PAGE_SIZE) && (
+                  <div className="d-flex justify-content-between align-items-center flex-wrap gap-2 p-3 border-top">
                     <small className="text-muted">
-                      Showing {items.length} of {totalPages * 10} provinces
+                      Showing {items.length} provinces
+                      {totalElements > 0 && ` of ${totalElements}`}
                     </small>
-                  </div>
-                  <div>
-                    <Pagination className="mb-0">
+                    <Pagination className="mb-0 pagination-modern">
                       <Pagination.Prev
                         disabled={page === 0}
-                        onClick={() => fetchStateList(page - 1, search)}
+                        onClick={() => goToPage(page - 1)}
                       />
-                      {[...Array(totalPages).keys()].map((num) => (
-                        <Pagination.Item
-                          key={num}
-                          active={num === page}
-                          onClick={() => fetchStateList(num, search)}
-                        >
-                          {num + 1}
-                        </Pagination.Item>
-                      ))}
+                      {pageNumbers.map((n) =>
+                        typeof n === "number" ? (
+                          <Pagination.Item
+                            key={n}
+                            active={n === page + 1}
+                            onClick={() => goToPage(n - 1)}
+                          >
+                            {n}
+                          </Pagination.Item>
+                        ) : (
+                          <Pagination.Ellipsis key={n} disabled />
+                        ),
+                      )}
                       <Pagination.Next
-                        disabled={page === totalPages - 1}
-                        onClick={() => fetchStateList(page + 1, search)}
+                        disabled={page >= effectiveTotalPages - 1}
+                        onClick={() => goToPage(page + 1)}
                       />
                     </Pagination>
                   </div>
-                </div>
-              )}
+                )}
             </Card.Body>
           </Card>
 

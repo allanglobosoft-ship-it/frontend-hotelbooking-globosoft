@@ -51,6 +51,7 @@ import "../../styles/BulkCityMapping.css";
 const SUPPORTED_PROVIDERS = [
   "atharva",
   "grn",
+  "goglobal",
   "iwtx",
   "x3",
   "darina",
@@ -59,11 +60,6 @@ const SUPPORTED_PROVIDERS = [
 
 /** Providers the automatic engine does NOT map today, with the reason shown on hover. */
 const UNSUPPORTED_PROVIDERS = [
-  {
-    key: "goglobal",
-    reason:
-      "GoGlobal's city list isn't stored in this project's database (no goglobal_destinations table), so there is nothing to match against.",
-  },
   {
     key: "jumeirah",
     reason:

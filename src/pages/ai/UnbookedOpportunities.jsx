@@ -28,6 +28,15 @@ const INITIAL_FILTERS = {
   hotelQuery: "",
   type: "HOTEL",
   status: "UNBOOKED",
+  // Stage of the funnel to show:
+  //   "SELECTION" — hotels the agent picked from the search (legacy behaviour)
+  //   "SEARCH"    — raw search contexts the agent submitted, no hotel picked yet
+  //   "ALL"       — both, interleaved by recency
+  // Default "ALL" so a new agent search shows up immediately in this
+  // report without the admin having to switch views. Backwards-compatible:
+  // older backends without stage support ignore the param and return
+  // SELECTION rows only.
+  stage: "ALL",
 };
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
@@ -92,6 +101,7 @@ export default function UnbookedOpportunities() {
       params.hotelQuery = f.hotelQuery.trim();
     }
     if (f.type && f.type !== "") params.type = f.type;
+    if (f.stage && f.stage !== "") params.stage = f.stage;
     if (pageIdx !== undefined) params.page = pageIdx;
     if (pageSize !== undefined) params.size = pageSize;
     return params;
@@ -245,6 +255,43 @@ export default function UnbookedOpportunities() {
             <RegionalClock />
           </div>
 
+          {/* Stage toggle — SELECTION (hotel-booking-page landings) is the
+              legacy view; SEARCH shows raw search contexts; ALL is both. */}
+          <div className="mb-3 d-flex align-items-center gap-2 flex-wrap">
+            <span className="text-muted" style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: 0.5 }}>
+              View
+            </span>
+            <div className="btn-group btn-group-sm" role="group" aria-label="Stage">
+              {[
+                { value: "ALL", label: "All" },
+                { value: "SELECTION", label: "Hotel selections" },
+                { value: "SEARCH", label: "Searches" },
+              ].map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  className={
+                    "btn " +
+                    (filters.stage === opt.value
+                      ? "btn-primary"
+                      : "btn-outline-primary")
+                  }
+                  onClick={() => {
+                    const next = { ...filters, stage: opt.value };
+                    setFilters(next);
+                    setAppliedFilters(next);
+                    setPage(0);
+                    fetchList(next, 0, size);
+                    fetchSummary(next);
+                  }}
+                  disabled={loading}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Filters */}
           <Card className="mb-3 shadow-sm">
             <Card.Body>
@@ -377,13 +424,13 @@ export default function UnbookedOpportunities() {
                   <thead>
                     <tr>
                       <th>Agent name</th>
-                      <th>Hotel name</th>
+                      <th>Hotel / Destination</th>
                       <th>Ref</th>
                       <th className="text-end">Selected price</th>
                       <th>Selected date</th>
                       <th className="text-end">Views</th>
-                      <th>Last selected</th>
-                      <th>Status</th>
+                      <th>Last activity</th>
+                      <th>Stage</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -403,33 +450,51 @@ export default function UnbookedOpportunities() {
                         </td>
                       </tr>
                     ) : (
-                      rows.map((r) => (
-                        <tr key={`${r.agentId}-${r.hotelCode}-${r.id}`}>
-                          <td>{r.agentName || `Agent #${r.agentId ?? "?"}`}</td>
-                          <td>{r.hotelName || "—"}</td>
-                          <td>
-                            <code style={{ fontSize: 12 }}>
-                              {r.hotelCode || "—"}
-                            </code>
-                          </td>
-                          <td className="text-end">
-                            {r.sellingPrice != null
-                              ? `${formatMoney(r.sellingPrice)} ${r.currency || ""}`.trim()
-                              : "—"}
-                          </td>
-                          <td>{formatDayOnly(r.checkIn)}</td>
-                          <td className="text-end">{r.viewCount ?? 0}</td>
-                          <td>{formatDate(r.lastSelectedAt)}</td>
-                          <td>
-                            <span
-                              className="badge bg-warning text-dark"
-                              style={{ fontSize: 11 }}
-                            >
-                              {r.status || "UNBOOKED"}
-                            </span>
-                          </td>
-                        </tr>
-                      ))
+                      rows.map((r) => {
+                        // Backwards compatibility: rows from older backends
+                        // don't carry `stage` — treat them as SELECTION so
+                        // the existing UI keeps rendering exactly as before.
+                        const stage = r.stage || "SELECTION";
+                        const isSearch = stage === "SEARCH";
+                        const hotelCol = isSearch
+                          ? (r.destinationLabel || r.destination || "—")
+                          : (r.hotelName || "—");
+                        const refCol = isSearch
+                          ? (r.nationalityLabel
+                              ? `Nat: ${r.nationalityLabel}`
+                              : "SEARCH")
+                          : (r.hotelCode || "—");
+                        const badgeClass = isSearch
+                          ? "bg-info text-dark"
+                          : "bg-warning text-dark";
+                        return (
+                          <tr
+                            key={`${stage}-${r.agentId}-${r.hotelCode || r.destinationLabel || ""}-${r.id}`}
+                          >
+                            <td>{r.agentName || `Agent #${r.agentId ?? "?"}`}</td>
+                            <td>{hotelCol}</td>
+                            <td>
+                              <code style={{ fontSize: 12 }}>{refCol}</code>
+                            </td>
+                            <td className="text-end">
+                              {r.sellingPrice != null
+                                ? `${formatMoney(r.sellingPrice)} ${r.currency || ""}`.trim()
+                                : "—"}
+                            </td>
+                            <td>{formatDayOnly(r.checkIn)}</td>
+                            <td className="text-end">{r.viewCount ?? 0}</td>
+                            <td>{formatDate(r.lastSelectedAt)}</td>
+                            <td>
+                              <span
+                                className={`badge ${badgeClass}`}
+                                style={{ fontSize: 11 }}
+                              >
+                                {stage}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })
                     )}
                   </tbody>
                 </Table>

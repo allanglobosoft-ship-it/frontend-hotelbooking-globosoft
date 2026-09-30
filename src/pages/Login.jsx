@@ -15,6 +15,10 @@ const Login = () => {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState(null);
+  // "Remember me" persists the USERNAME only (never the password).
+  const [rememberMe, setRememberMe] = useState(false);
+  // Guards against double-submitting the sign-in form while a request is open.
+  const [submitting, setSubmitting] = useState(false);
   const [forgetEmail, setForgetEmail] = useState("");
   const [forgetUsername, setForgetUsername] = useState("");
   const [showRoleModal, setShowRoleModal] = useState(false);
@@ -36,7 +40,7 @@ const Login = () => {
   // (not on resend), so the welcome message stays specifically about the
   // first-time flow and doesn't reappear on later logins from the same page.
   const [otpFirstLogin, setOtpFirstLogin] = useState(false);
-  // ── TOTP (Ente Auth) second factor ──
+  // ── TOTP (Google Authenticator) second factor ──
   // Separate from the emailed-OTP flow above: the code comes from the user's
   // authenticator app, so there is nothing to send and nothing to resend. When
   // /auth/login returns { totpRequired: true } we collect the 6-digit code and
@@ -60,6 +64,20 @@ const Login = () => {
   const [offerIdx, setOfferIdx] = useState(0);
   const navigate = useNavigate();
 
+  // Restore the "Remember me" username on mount. Only the username is ever
+  // persisted — the password is never written to storage.
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("rememberedUsername");
+      if (saved) {
+        setUsername(saved);
+        setRememberMe(true);
+      }
+    } catch (storageErr) {
+      /* storage unavailable (private mode) — nothing to restore */
+    }
+  }, []);
+
   // Fetch both public sources once on mount and flatten them into a single
   // ordered list of slide objects ({ url, title?, description?, validity* }).
   useEffect(() => {
@@ -80,14 +98,27 @@ const Login = () => {
         // bannerImagePah is already a full /images/ URL served publicly.
         if (Array.isArray(offerRes.data)) {
           offerRes.data.forEach((offer) => {
-            if (!offer.bannerImagePah) return;
-            next.push({
-              key: `offer-${offer.offerId}`,
-              url: offer.bannerImagePah,
-              title: offer.title,
-              description: offer.description,
-              validityFrom: offer.validityFrom,
-              validityTo: offer.validityTo,
+            // An offer can carry several banners now, and each one becomes its
+            // own slide sharing that offer's caption. Rows written before the
+            // list existed only have the single bannerImagePah.
+            const urls =
+              Array.isArray(offer.bannerImagePaths) &&
+              offer.bannerImagePaths.length > 0
+                ? offer.bannerImagePaths
+                : offer.bannerImagePah
+                ? [offer.bannerImagePah]
+                : [];
+
+            urls.forEach((url, i) => {
+              if (!url) return;
+              next.push({
+                key: `offer-${offer.offerId}-${i}`,
+                url,
+                title: offer.title,
+                description: offer.description,
+                validityFrom: offer.validityFrom,
+                validityTo: offer.validityTo,
+              });
             });
           });
         }
@@ -184,12 +215,27 @@ const Login = () => {
     // Non-blocking on failure — login itself never fails on a
     // personalProfile hiccup; the lazy fallback in downstream pages
     // remains as a safety net.
+    // Drop any RegionalClock country cached by a previous user whose session
+    // ended without a logout, so this login never inherits their region.
+    localStorage.removeItem("regionalClockProfile");
     try {
       const profile = await axiosInstance.get(
         `/api/personalProfile/${loginedUserName}`,
       );
       if (profile?.data?.id != null) {
         localStorage.setItem("userId", String(profile.data.id));
+      }
+      // Seed the RegionalClock cache with THIS user's country so the
+      // dashboard clock shows it immediately (same shape RegionalClock
+      // writes itself). Skipped when no country came back.
+      if (profile?.data?.countryCode) {
+        localStorage.setItem(
+          "regionalClockProfile",
+          JSON.stringify({
+            countryCode: profile.data.countryCode,
+            countryName: profile.data.countryName || "",
+          }),
+        );
       }
     } catch (profileErr) {
       // Swallow — the per-page lazy fetch will still run.
@@ -214,6 +260,18 @@ const Login = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError(null);
+    setSubmitting(true);
+
+    // Remember-me only ever persists the username, never the password.
+    try {
+      if (rememberMe) {
+        localStorage.setItem("rememberedUsername", username);
+      } else {
+        localStorage.removeItem("rememberedUsername");
+      }
+    } catch (storageErr) {
+      /* storage unavailable — remember-me just won't stick */
+    }
 
     try {
       const loginRequest = { username: `${username}`, password: `${password}` };
@@ -222,7 +280,7 @@ const Login = () => {
       });
 
       // The account has an authenticator enrolled: the backend validated the
-      // password and withheld the token. Collect the code from Ente Auth
+      // password and withheld the token. Collect the code from Google Authenticator
       // instead of completing the login here. Checked before otpRequired to
       // mirror the backend's precedence.
       if (response.data?.totpRequired) {
@@ -258,6 +316,8 @@ const Login = () => {
       await completeLogin(response.data);
     } catch (err) {
       setError("Invalid username or password");
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -637,6 +697,7 @@ const Login = () => {
                 id="username"
                 type="text"
                 placeholder="Enter your username"
+                autoComplete="username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 required
@@ -652,6 +713,7 @@ const Login = () => {
                   id="password"
                   type={showPassword ? "text" : "password"}
                   placeholder="Enter your password"
+                  autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
@@ -681,8 +743,27 @@ const Login = () => {
 
             {error && <div className="lg-error">{error}</div>}
 
-            <button type="submit" className="lg-submit">
-              <i className="fas fa-sign-in-alt"></i> Sign In
+            <div className="form-check mb-3">
+              <input
+                className="form-check-input"
+                type="checkbox"
+                id="rememberMe"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+              />
+              <label className="form-check-label" htmlFor="rememberMe">
+                Remember me
+              </label>
+            </div>
+
+            <button type="submit" className="lg-submit" disabled={submitting}>
+              {submitting ? (
+                "Signing in…"
+              ) : (
+                <>
+                  <i className="fas fa-sign-in-alt"></i> Sign In
+                </>
+              )}
             </button>
 
             <div className="lg-links">
@@ -754,7 +835,7 @@ const Login = () => {
               <i className="fas fa-user-circle me-2"></i>Create Account As
             </h5>
             <div style={{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 28 }}>
-              {["Agent", "Hotel"].map((role) => (
+              {["Agent", "Hotel", "Supplier", "DMC"].map((role) => (
                 <label
                   key={role}
                   style={{
@@ -776,7 +857,17 @@ const Login = () => {
                     onChange={() => setSelectedRole(role)}
                     style={{ accentColor: "#c0392b", width: 18, height: 18 }}
                   />
-                  <i className={`fas ${role === "Agent" ? "fa-briefcase" : "fa-hotel"} me-1`}></i>
+                  <i
+                    className={`fas ${
+                      role === "Agent"
+                        ? "fa-briefcase"
+                        : role === "Hotel"
+                        ? "fa-hotel"
+                        : role === "Supplier"
+                        ? "fa-truck"
+                        : "fa-map-marked-alt"
+                    } me-1`}
+                  ></i>
                   {role}
                 </label>
               ))}
@@ -796,7 +887,12 @@ const Login = () => {
                 type="button"
                 onClick={() => {
                   setShowRoleModal(false);
-                  navigate(selectedRole === "Hotel" ? "/hotel-register" : "/register");
+                  const registerPath = {
+                    Hotel: "/hotel-register",
+                    Supplier: "/supplier-register",
+                    DMC: "/dmc-register",
+                  };
+                  navigate(registerPath[selectedRole] || "/register");
                 }}
                 style={{
                   padding: "8px 22px", borderRadius: 7, border: "none",
@@ -972,7 +1068,7 @@ const Login = () => {
         </div>
       )}
 
-      {/* ── Authenticator (Ente Auth) TOTP Modal ── */}
+      {/* ── Authenticator (Google Authenticator) TOTP Modal ── */}
       {showTotpModal && (
         <div
           style={{
@@ -1003,7 +1099,7 @@ const Login = () => {
                 Two-factor authentication
               </h5>
               <p style={{ margin: "8px 0 0", color: "#6c757d", fontSize: 14 }}>
-                Open <strong>Ente Auth</strong> and enter the 6-digit code shown
+                Open <strong>Google Authenticator</strong> and enter the 6-digit code shown
                 for this account to finish signing in.
               </p>
             </div>

@@ -192,7 +192,10 @@ body{
   border-radius: .75rem;
   box-shadow: 0 20px 25px rgba(0,0,0,0.1);
   padding: .5rem;
-  z-index: 1000;
+  /* Must sit above page-level sticky strips (the /new-booking/hotel
+     .hs-summary-bar is z-index 1020 and used to paint over the first submenu
+     entry). 2000 stays clear of the TopBar and app-level overlays. */
+  z-index: 2000;
   border: 1px solid #e5e7eb;
   font-weight: 300;
 }
@@ -206,6 +209,9 @@ top: auto;
   bottom: 100%;
   left: 100%;
   transform: none;
+  /* Capped so an upward panel cannot run off the TOP of the screen (Report
+     now opens upwards too); the inline overflow-y on .submenu scrolls the rest. */
+  max-height: 250px !important;
 }
 
 /* Flyout panel for the tall menus (Booking List / New Booking /

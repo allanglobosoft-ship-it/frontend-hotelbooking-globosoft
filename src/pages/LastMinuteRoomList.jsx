@@ -493,6 +493,15 @@ export default function LastMinuteRoomList() {
                       alt={hotel.hotelName}
                       className="rounded shadow-sm w-100"
                       style={{ height: 150, objectFit: "cover" }}
+                      // loading="eager" (default is fine for above-fold), but
+                      // decoding="async" lets the browser decode off the main
+                      // thread so a slow/large image cannot keep the tab in
+                      // "loading" state past the point it becomes visible.
+                      // referrerPolicy=no-referrer avoids origin bounces some
+                      // CDNs cause. onError swaps to the local fallback the
+                      // moment the network gives up.
+                      decoding="async"
+                      referrerPolicy="no-referrer"
                       onError={(e) => { e.currentTarget.src = DEFAULT_HOTEL_IMAGE; }}
                     />
                   </Col>
@@ -878,9 +887,24 @@ export default function LastMinuteRoomList() {
                                             selectedRooms[roomSlotIndex]
                                               ?.selectedRate === rate
                                           }
-                                          onChange={() =>
-                                            handleRateSelect(roomSlotIndex, rate)
-                                          }
+                                          // Controlled radio: onChange is
+                                          // kept as a no-op so React does not
+                                          // warn, and onClick drives the state
+                                          // update. onClick fires on every
+                                          // click (including clicks that would
+                                          // otherwise silently re-check an
+                                          // already-selected radio without
+                                          // firing onChange), so the user can
+                                          // switch between rates or clear the
+                                          // selection reliably. stopPropagation
+                                          // shields the click from the parent
+                                          // Accordion, which would otherwise
+                                          // collapse the category on click.
+                                          onChange={() => {}}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleRateSelect(roomSlotIndex, rate);
+                                          }}
                                         />
                                       ) : (
                                         <Button
@@ -991,9 +1015,18 @@ export default function LastMinuteRoomList() {
                                               selectedRooms[roomSlotIndex]
                                                 ?.selectedRate === rate
                                             }
-                                            onChange={() =>
-                                              handleRateSelect(roomSlotIndex, rate)
-                                            }
+                                            // See the grid-mode radio above
+                                            // for the rationale. onClick fires
+                                            // on every click so the user can
+                                            // switch between rates or clear
+                                            // the selection; stopPropagation
+                                            // shields the click from the
+                                            // Accordion parent.
+                                            onChange={() => {}}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleRateSelect(roomSlotIndex, rate);
+                                            }}
                                             style={{ whiteSpace: "nowrap" }}
                                           />
                                         ) : (

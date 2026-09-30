@@ -4,6 +4,7 @@ import { FaCar, FaSearch, FaClock, FaRoad, FaEye } from "react-icons/fa";
 import { useLocation, useNavigate } from "react-router-dom";
 import Select from "react-select";
 import axiosInstance from "../../../components/AxiosInstance";
+import { logAgentSearch } from "../../../utils/agentSearchLog";
 import { toast } from "react-hot-toast";
 import Sidebar from "../../../components/Sidebar";
 import TopBar from "../../../components/TopBar";
@@ -356,6 +357,18 @@ export const SchefferDriverSearch = () => {
         nationality: nationality?.label || null,
         agentId: agentId ? Number(agentId) : null,
       };
+
+      // Agent search log (Unbooked Opportunities → Searches tab) —
+      // chauffeur / limo has a city and pickup date, no check-out.
+      logAgentSearch({
+        agentId: agentId ? Number(agentId) : null,
+        destinationId: city?.value,
+        destinationLabel: city?.label,
+        nationalityLabel: nationality?.label,
+        checkIn: pickupDate,
+        checkOut: pickupDate,
+        source: "chauffeur",
+      });
 
       const res = await axiosInstance.post("/api/scheffer-rental-search/search", payload);
       const data = Array.isArray(res.data) ? res.data : [];

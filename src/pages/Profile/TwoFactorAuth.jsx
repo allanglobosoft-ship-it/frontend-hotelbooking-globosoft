@@ -7,7 +7,7 @@ import { toast } from "react-hot-toast";
 import axiosInstance from "../../components/AxiosInstance";
 
 /**
- * Self-service management of the TOTP second factor (Ente Auth), multi-device.
+ * Self-service management of the TOTP second factor (Google Authenticator), multi-device.
  *
  * Three states drive the layout:
  *   - qrCode set        -> mid-enrollment: show the QR + first-code confirmation
@@ -343,17 +343,17 @@ const TwoFactorAuth = () => {
                 <h4 className="fw-bold mb-2">Two-Factor Authentication</h4>
                 <p className="text-muted mb-0" style={{ fontSize: 14 }}>
                   Add a second step to your sign-in using a code from{" "}
-                  <strong>Ente Auth</strong>.
+                  <strong>Google Authenticator</strong>.
                 </p>
                 <p className="text-muted mb-0 mt-1" style={{ fontSize: 13 }}>
                   Get the app at{" "}
                   <a
-                    href="https://ente.io/auth"
+                    href="https://support.google.com/accounts/answer/1066447"
                     target="_blank"
                     rel="noopener noreferrer"
                     style={{ color: "#EC0B43", textDecoration: "none", fontWeight: 600 }}
                   >
-                    https://ente.io/auth
+                    Google Authenticator
                   </a>
                 </p>
               </div>
@@ -500,7 +500,7 @@ const TwoFactorAuth = () => {
                   {qrCode && (
                     <div className="mb-4">
                       <Alert variant="info" className="mb-3">
-                        <strong>Step 1.</strong> Open Ente Auth and scan this QR
+                        <strong>Step 1.</strong> Open Google Authenticator and scan this QR
                         code — or, on a desktop, use the setup key below.
                         <br />
                         <strong>Step 2.</strong> Enter the 6-digit code it shows
@@ -701,8 +701,8 @@ const TwoFactorAuth = () => {
                       </div>
                       <p className="text-muted small">
                         {isEnabled
-                          ? "Give this device a name and enter your password. We'll then show a QR code to scan with Ente Auth."
-                          : "Enter your password and pick a name for this device. We'll then show a QR code to scan with Ente Auth."}
+                          ? "Give this device a name and enter your password. We'll then show a QR code to scan with Google Authenticator."
+                          : "Enter your password and pick a name for this device. We'll then show a QR code to scan with Google Authenticator."}
                       </p>
                       <Form.Group className="mb-3" controlId="setupPassword">
                         <Form.Label>Password</Form.Label>

@@ -28,6 +28,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import Select from "react-select";
 import AgentSelect from "../../../components/AgentSelect";
 import axiosInstance from "../../../components/AxiosInstance";
+import { logAgentSearch } from "../../../utils/agentSearchLog";
 import { toast } from "react-hot-toast";
 import Sidebar from "../../../components/Sidebar";
 import TopBar from "../../../components/TopBar";
@@ -1285,6 +1286,29 @@ export const CabSearch = () => {
         iwayFinishLabel: iwayReady ? iwayDropSelected.label : null,
         iwayCurrency: iwayReady ? currency?.value || null : null,
       };
+
+      // Agent search log (Unbooked Opportunities → Searches tab) —
+      // transfer has no city; destinationLabel becomes "origin → drop".
+      // Prefer the iway pickup/drop labels when both are set, otherwise
+      // fall back to the origin/destination selects.
+      {
+        const originLabel =
+          (iwayPickupSelected && iwayPickupSelected.label) ||
+          origin?.label ||
+          origin?.locationName;
+        const dropLabel =
+          (iwayDropSelected && iwayDropSelected.label) ||
+          destination?.label ||
+          destination?.locationName;
+        const composite = [originLabel, dropLabel].filter(Boolean).join(" → ");
+        logAgentSearch({
+          agentId: agentId ? Number(agentId) : null,
+          destinationLabel: composite || null,
+          checkIn: transferPickupDate,
+          checkOut: transferPickupDate,
+          source: "transfer",
+        });
+      }
 
       // ── 1) Kick off the async fan-out ─────────────────────────────
       // POST /search publishes one Rabbit message per supplier and

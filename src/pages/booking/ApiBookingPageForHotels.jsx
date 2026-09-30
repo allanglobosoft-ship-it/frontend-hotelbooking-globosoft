@@ -34,6 +34,11 @@ import {
   grnIsBundledSelection,
 } from "../../components/grn/GrnPolicy";
 import QuotationPdfCard from "../../components/quotation/QuotationPdfCard";
+import {
+  RateDeadlinePill,
+  resolveDeadlineDate,
+  isNonRefundable,
+} from "../../utils/rateDeadline";
 
 // Online-payment gateways offered when the agent's credit is short.
 // Mirrors the same list Inhouse HotelBookingPage.jsx uses (line 25) so
@@ -98,79 +103,52 @@ const stripPolicyHtml = (raw) => {
 // free-cancellation window, so the deadline job can release the room at the
 // supplier for free if nobody reconfirms. Add an apiId here only once its
 // backend create path honours bookingConfirmation="Hold & Book Later".
-const HOLD_CAPABLE_API_IDS = new Set([20]); // 20 = GRN
+const GRN_API_ID = 20;
+const HOLD_CAPABLE_API_IDS = new Set([GRN_API_ID]);
 
 /**
  * The booking's overall free-cancellation deadline, as a Date at local
  * midnight, or null when no deadline applies.
  *
- * Extracted verbatim from the create payload's own derivation so the
- * "can this be held?" gate and the deadlineDate we persist can never
- * disagree — a picker offered against one deadline and a booking saved
- * against another is exactly how a hold ends up outside its window.
+ * Delegates to resolveDeadlineDate — the SAME helper RateDeadlinePill renders
+ * — so the date shown, the date persisted, and the "can this be held?" gate
+ * are one value by construction.
  *
- *   • Darina (16) carries a live cut-off on the rate — used as-is.
- *   • Non-refundable rates have no window at all → null.
- *   • Everything else: earliest cancellation-policy fromDate, minus 2 days.
+ * This used to carry its own arithmetic (earliest cancellation-policy fromDate
+ * minus 2 days, plus a Darina special case), while the pill resolved
+ * fromDate − 1. The two therefore disagreed by a day for every supplier that
+ * falls back to policy rows: the operator was shown one cut-off and a
+ * different one was saved against the booking. Delegating removes the second
+ * copy of the rule rather than trying to keep two in step.
  *
- * The overall deadline is the EARLIEST across the selected rates.
+ * The old Darina (16) special case is gone because resolveDeadlineDate already
+ * prefers rate.deadlineDate over the policy rows, which is exactly what that
+ * branch existed to force — and it now picks it up for Atharva and GoGlobal
+ * too, which the old code did not.
+ *
+ * Non-refundable rates have no free-cancellation window at all → null, rather
+ * than a fabricated past date that anything reading deadlineDate literally
+ * would misinterpret. Matches what the pill shows for the same rate.
+ *
+ * The overall deadline is the EARLIEST across the selected rates. The
+ * SUPPLIER_DEADLINE_BUFFER_DAYS / GRN_DEADLINE_BUFFER_DAYS buffer is already
+ * baked into what resolveDeadlineDate returns — do NOT subtract it again here.
+ *
+ * Note this also moves GRN's "Hold Room and Pay Later" gate, since
+ * isHoldEligible calls this function and HOLD_CAPABLE_API_IDS is GRN-only.
+ * That is the intended behaviour: a hold is offered only while buffered
+ * free-cancellation time remains, and the backend re-checks the same persisted
+ * deadlineDate before holding.
  */
-const deriveDeadlineDate = (selectedRates, apiId) => {
+const deriveDeadlineDate = (selectedRates) => {
   const deadlines = (selectedRates || [])
-    .map((rate) => {
-      const nonRefundable =
-        rate.nonRefundable === true ||
-        rate.nonRefundable === "true" ||
-        rate.nonRefundable === "Y";
-
-      // Darina (apiId=16): rate.deadlineDate is the LIVE
-      // free-cancellation cut-off carried from
-      // CheckAvailabilityWithCancellation_NoCache_LiveCalculation
-      // (BE parses the "Free Cancellation" band's toDate). It is
-      // the deadline the operator sees in the room accordion.
-      // Use it verbatim — the generic "earliest cancellationPolicy
-      // fromDate minus 2 days" fallback below picks up the Free
-      // Cancellation band's FromDate instead of the cut-off, which
-      // reports a wildly earlier date (September vs December).
-      if (apiId === 16 && !nonRefundable && rate.deadlineDate) {
-        const iso = String(rate.deadlineDate).slice(0, 10);
-        const parts = iso.split("-");
-        if (parts.length === 3) {
-          const d = new Date(
-            Number(parts[0]),
-            Number(parts[1]) - 1,
-            Number(parts[2]),
-          );
-          if (!isNaN(d.getTime())) {
-            d.setHours(0, 0, 0, 0);
-            return d;
-          }
-        }
-      }
-
-      if (nonRefundable === true) {
-        // Non-refundable rates have no free-cancellation window, so
-        // no deadline applies — send nothing rather than a fabricated
-        // "today - 2 days" date (which always lands in the past and
-        // confuses anything that reads deadlineDate literally).
-        return null;
-      }
-      const policies = rate.cancellationPolicy || [];
-      if (policies.length === 0) return null;
-      const dates = policies
-        .map((p) => (p.fromDate ? new Date(p.fromDate) : null))
-        .filter((date) => date !== null && !isNaN(date.getTime()));
-      if (dates.length === 0) return null;
-      const earliestDate = new Date(Math.min(...dates.map((d) => d.getTime())));
-      const deadline = new Date(earliestDate);
-      deadline.setDate(earliestDate.getDate() - 2);
-      deadline.setHours(0, 0, 0, 0);
-      return deadline;
-    })
+    .map((rate) => (isNonRefundable(rate?.nonRefundable) ? null : resolveDeadlineDate(rate)))
     .filter((d) => d !== null);
 
   if (deadlines.length === 0) return null;
-  return new Date(Math.min(...deadlines.map((d) => d.getTime())));
+  const earliest = new Date(Math.min(...deadlines.map((d) => d.getTime())));
+  earliest.setHours(0, 0, 0, 0);
+  return earliest;
 };
 
 /**
@@ -238,7 +216,7 @@ const toDeadlinePayloadString = (d) => {
 const isHoldEligible = (bookingData) => {
   const apiId = bookingData?.payload?.apiId;
   if (!HOLD_CAPABLE_API_IDS.has(apiId)) return false;
-  const deadline = deriveDeadlineDate(bookingData?.selectedRate || [], apiId);
+  const deadline = deriveDeadlineDate(bookingData?.selectedRate || []);
   if (!deadline) return false;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -1152,10 +1130,7 @@ const requiresPan = () => requiresAtharvaPan() || requiresGrnPan();
         // Same derivation the hold-eligibility gate uses — see
         // deriveDeadlineDate at the top of this file.
         deadlineDate: toDeadlinePayloadString(
-          deriveDeadlineDate(
-            bookingData.selectedRate,
-            bookingData?.payload?.apiId,
-          ),
+          deriveDeadlineDate(bookingData.selectedRate),
         ),
         isBookandVoucher: bookingConfirmation === "Book & Voucher",
         primaryGuest: {
@@ -1627,15 +1602,13 @@ const requiresPan = () => requiresAtharvaPan() || requiresGrnPan();
       r?.nonRefundable === "true" ||
       r?.nonRefundable === "Y",
   );
-  const cancellationDeadline = (() => {
-    const dates = selectedRate
-      .map((r) => r?.deadlineDate)
-      .filter(Boolean)
-      .map((d) => new Date(d))
-      .filter((d) => !Number.isNaN(d.getTime()));
-    if (dates.length === 0) return null;
-    return new Date(Math.min(...dates.map((d) => d.getTime())));
-  })();
+  // Display + gate deadline for the confirm modal. Routed through the SAME
+  // deriveDeadlineDate helper that isHoldEligible and the persisted deadline
+  // use, so every screen and the saved booking agree — the previous inline
+  // "r?.deadlineDate only" read fired only for Atharva / Darina / GoGlobal and
+  // silently returned null for IWTX / X3 / RateHawk / Jumeirah / GRN, leaving
+  // the "Passed" badge invisible for a rate whose window HAD already closed.
+  const cancellationDeadline = deriveDeadlineDate(selectedRate);
   const isOutsideDeadline = (() => {
     if (!cancellationDeadline) return false;
     const today = new Date();
@@ -1734,7 +1707,7 @@ const requiresPan = () => requiresAtharvaPan() || requiresGrnPan();
     if (apiId === 20) {
       cancellationPolicy.push(...buildGrnPolicyLines(selectedRate));
     } else {
-      const deadline = deriveDeadlineDate(selectedRate, payload.apiId);
+      const deadline = deriveDeadlineDate(selectedRate);
       if (deadline) {
         cancellationPolicy.push(
           `Cancellation deadline: ${deadline.toLocaleDateString("en-GB", {
@@ -1852,6 +1825,21 @@ const requiresPan = () => requiresAtharvaPan() || requiresGrnPan();
               )}
             </div>
 
+            {isOutsideDeadline && !isNonRefundableRate && (
+              <Alert variant="danger" className="mb-3 py-2">
+                <strong>Free-cancellation window has passed</strong>
+                {cancellationDeadline
+                  ? ` (${cancellationDeadline.toLocaleDateString("en-GB", {
+                      day: "2-digit",
+                      month: "short",
+                      year: "numeric",
+                    })})`
+                  : ""}
+                {" "}— this rate was flagged as refundable at search time, but the
+                free-cancellation cut-off is now in the past. Cancellation charges
+                will apply if the booking is cancelled after confirmation.
+              </Alert>
+            )}
             <Form onSubmit={openPolicyConsent}>
               <Row className="g-3">
                 {/* ────────────── Left column ────────────── */}
@@ -1863,7 +1851,7 @@ const requiresPan = () => requiresAtharvaPan() || requiresGrnPan();
                         <Button
                           variant="outline-secondary"
                           size="sm"
-                          onClick={() => navigate(-1)}
+                          onClick={() => navigate("/api-room-list")}
                           className="me-3"
                         >
                           ← Back
@@ -1905,168 +1893,22 @@ const requiresPan = () => requiresAtharvaPan() || requiresGrnPan();
                                       {slot.mealPlan}
                                     </Badge>
                                   )}
-                                  {/* ATHARVA (apiId 3): show the backend-computed
-                                      display deadline (raw supplier deadline
-                                      minus 2 days). Rendered as an inline
-                                      "| Deadline: DD MMM YYYY, 11:59 PM (UAE)"
-                                      string per the operator's requested look;
-                                      time is intentionally static at 11:59 PM. */}
-                                  {bookingData?.payload?.apiId === 3 &&
-                                    slot.atharvaDisplayDeadlineDate &&
-                                    (() => {
-                                      const parts =
-                                        slot.atharvaDisplayDeadlineDate.split(
-                                          "-",
-                                        );
-                                      if (parts.length !== 3) return null;
-                                      const [y, m, d] = parts;
-                                      const monthNames = [
-                                        "Jan",
-                                        "Feb",
-                                        "Mar",
-                                        "Apr",
-                                        "May",
-                                        "Jun",
-                                        "Jul",
-                                        "Aug",
-                                        "Sep",
-                                        "Oct",
-                                        "Nov",
-                                        "Dec",
-                                      ];
-                                      const idx = parseInt(m, 10) - 1;
-                                      if (
-                                        !y ||
-                                        !d ||
-                                        Number.isNaN(idx) ||
-                                        idx < 0 ||
-                                        idx > 11
-                                      )
-                                        return null;
-                                      return (
-                                        <span
-                                          className="ms-2 small fw-normal"
-                                          style={{ opacity: 0.95 }}
-                                          title="Cancel by this date/time to avoid charges"
-                                        >
-                                          | Deadline: {d} {monthNames[idx]}{" "}
-                                          {y}, 11:59 PM (UAE)
-                                        </span>
-                                      );
-                                    })()}
-                                  {/* Darina (apiId 16) free-cancellation deadline
-                                      — slot.deadlineDate is ISO yyyy-MM-dd from
-                                      the search-time cancellation ladder (the
-                                      "Free cancellation until X" band's toDate). */}
-                                  {bookingData?.payload?.apiId === 16 &&
-                                    slot.deadlineDate &&
-                                    (() => {
-                                      const parts =
-                                        slot.deadlineDate.split("-");
-                                      if (parts.length !== 3) return null;
-                                      const [y, m, d] = parts;
-                                      const monthNames = [
-                                        "Jan",
-                                        "Feb",
-                                        "Mar",
-                                        "Apr",
-                                        "May",
-                                        "Jun",
-                                        "Jul",
-                                        "Aug",
-                                        "Sep",
-                                        "Oct",
-                                        "Nov",
-                                        "Dec",
-                                      ];
-                                      const idx = parseInt(m, 10) - 1;
-                                      if (
-                                        !y ||
-                                        !d ||
-                                        Number.isNaN(idx) ||
-                                        idx < 0 ||
-                                        idx > 11
-                                      )
-                                        return null;
-                                      return (
-                                        <span
-                                          className="ms-2 small fw-normal"
-                                          style={{ opacity: 0.95 }}
-                                          title="Free cancellation until this date/time"
-                                        >
-                                          | Free cancellation until{" "}
-                                          {parseInt(d, 10)} {monthNames[idx]}{" "}
-                                          {y}, 11:59 PM (UAE)
-                                        </span>
-                                      );
-                                    })()}
-                                  {/* GoGlobal (apiId 21) cancellation deadline.
-                                      slot.deadlineDate is either the availability
-                                      CxlDeadLine "dd/MMM/yyyy" (e.g. 18/Nov/2026)
-                                      or the valuation CancellationDeadline in ISO
-                                      yyyy-MM-dd — handle both. Rendered inline like
-                                      the other suppliers, static 11:59 PM (UAE). */}
-                                  {Number(bookingData?.payload?.apiId) === 21 &&
-                                    slot.deadlineDate &&
-                                    (() => {
-                                      const monthNames = [
-                                        "Jan",
-                                        "Feb",
-                                        "Mar",
-                                        "Apr",
-                                        "May",
-                                        "Jun",
-                                        "Jul",
-                                        "Aug",
-                                        "Sep",
-                                        "Oct",
-                                        "Nov",
-                                        "Dec",
-                                      ];
-                                      const raw = String(
-                                        slot.deadlineDate,
-                                      ).trim();
-                                      let d, monLabel, y;
-                                      if (raw.includes("/")) {
-                                        // dd/MMM/yyyy (availability CxlDeadLine)
-                                        const [dd, mon, yy] = raw.split("/");
-                                        if (!dd || !mon || !yy) return null;
-                                        d = parseInt(dd, 10);
-                                        monLabel = mon;
-                                        y = yy;
-                                      } else if (raw.includes("-")) {
-                                        const parts = raw.split("-");
-                                        if (parts.length !== 3) return null;
-                                        if (parts[0].length === 4) {
-                                          // ISO yyyy-MM-dd (valuation deadline)
-                                          const idx =
-                                            parseInt(parts[1], 10) - 1;
-                                          if (idx < 0 || idx > 11) return null;
-                                          d = parseInt(parts[2], 10);
-                                          monLabel = monthNames[idx];
-                                          y = parts[0];
-                                        } else {
-                                          // dd-MMM-yyyy
-                                          d = parseInt(parts[0], 10);
-                                          monLabel = parts[1];
-                                          y = parts[2];
-                                        }
-                                      } else {
-                                        return null;
-                                      }
-                                      if (Number.isNaN(d) || !monLabel || !y)
-                                        return null;
-                                      return (
-                                        <span
-                                          className="ms-2 small fw-normal"
-                                          style={{ opacity: 0.95 }}
-                                          title="Cancel by this date/time to avoid charges"
-                                        >
-                                          | Deadline: {d} {monLabel} {y}, 11:59
-                                          PM (UAE)
-                                        </span>
-                                      );
-                                    })()}
+                                  {/* Free-cancellation cut-off. Rendered by the
+                                      SAME resolver the room list uses, over the
+                                      same rate fields, so /api-room-list and this
+                                      page cannot print different dates. Replaces
+                                      three per-supplier blocks that each parsed a
+                                      different field their own way — Atharva even
+                                      showed a deadline with 2 days subtracted.
+                                      GRN keeps its own IST pill just below. */}
+                                  {Number(bookingData?.payload?.apiId) !== 20 && (
+                                    <span
+                                      className="ms-2 small fw-normal"
+                                      style={{ opacity: 0.95 }}
+                                    >
+                                      | <RateDeadlinePill rate={slot} />
+                                    </span>
+                                  )}
 
                                   {/* GRN (apiId 20): "Free cancellation until
                                       dd MMM yyyy, hh:mm AM/PM IST" straight from
@@ -2823,7 +2665,7 @@ const requiresPan = () => requiresAtharvaPan() || requiresGrnPan();
                     <div className="hbp-action-bar mt-3 d-flex gap-2">
                       <Button
                         variant="outline-secondary"
-                        onClick={() => navigate(-1)}
+                        onClick={() => navigate("/api-room-list")}
                         className="flex-grow-1"
                       >
                         Back
@@ -3394,34 +3236,43 @@ const requiresPan = () => requiresAtharvaPan() || requiresGrnPan();
                         )}
 
                         <Col xs={12}>
-                          {/* ✅ Show Selling Price only if ADMIN */}
-                          {activeUserRole === "ADMIN" && (
-                            <div className="p-2 rounded bg-white border mt-2">
-                              <div className="d-flex justify-content-between align-items-center">
-                                <h6 className="mb-0 text-muted">
-                                  Selling Price
-                                </h6>
-                                <h5 className="mb-0 text-success fw-bold">
-                                  {formatPrice(totalPrice)}
-                                </h5>
-                              </div>
+                          {/* Selling price — the figure every login may see,
+                              so it is shown to all. Matches the Price Details
+                              sidebar, where "Selling Price" is ungated. */}
+                          <div className="p-2 rounded bg-white border mt-2">
+                            <div className="d-flex justify-content-between align-items-center">
+                              <h6 className="mb-0 text-muted">Selling Price</h6>
+                              <h5 className="mb-0 text-success fw-bold">
+                                {formatPrice(totalPrice)}{" "}
+                                <span className="text-muted small fw-normal">
+                                  for {pendingPayload.rooms.length}{" "}
+                                  {pendingPayload.rooms.length > 1
+                                    ? "rooms"
+                                    : "room"}
+                                </span>
+                              </h5>
+                            </div>
+                          </div>
+
+                          {/* Payable — the internal total, so ADMIN only. It
+                              used to show for every login while the selling
+                              price above was admin-gated, which is the
+                              opposite of the sidebar and led an agent's
+                              confirm dialog with an internal label. */}
+                          {isAdmin && (
+                            <div className="p-2 rounded bg-white border mt-2 d-flex justify-content-between align-items-center">
+                              <h6 className="mb-0 fw-bold">Payable</h6>
+                              <h5 className="mb-0 fw-bold">
+                                {formatPrice(newTotal)}{" "}
+                                <span className="text-muted small fw-normal">
+                                  for {pendingPayload.rooms.length}{" "}
+                                  {pendingPayload.rooms.length > 1
+                                    ? "rooms"
+                                    : "room"}
+                                </span>
+                              </h5>
                             </div>
                           )}
-
-                          {/* Payable row — plain border, no green
-                              highlight. Single-line layout. */}
-                          <div className="p-2 rounded bg-white border mt-2 d-flex justify-content-between align-items-center">
-                            <h6 className="mb-0 fw-bold">Payable</h6>
-                            <h5 className="mb-0 fw-bold">
-                              {formatPrice(newTotal)}{" "}
-                              <span className="text-muted small fw-normal">
-                                for {pendingPayload.rooms.length}{" "}
-                                {pendingPayload.rooms.length > 1
-                                  ? "rooms"
-                                  : "room"}
-                              </span>
-                            </h5>
-                          </div>
                         </Col>
                       </Row>
 

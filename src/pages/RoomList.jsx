@@ -37,6 +37,12 @@ import { useLocation, useNavigate } from "react-router-dom";
 import "../styles/RoomList.css";
 import axiosInstance from "../components/AxiosInstance";
 import { formatFlexibleDate } from "../utils/dateUtils";
+import {
+  RateDeadlinePill,
+  resolveInhouseDeadline,
+  isDeadlinePassed,
+  DEADLINE_TIME_EOD,
+} from "../utils/rateDeadline";
 
 /**
  * Builds the "Valid: <from> - <to>" label for a policy validity period.
@@ -118,7 +124,17 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
   // than the grid tiles. Operator can still toggle to grid via the icon
   // buttons in the "Available Room Categories" header.
   const [viewMode, setViewMode] = useState("list");
+  // `agentBalance` stays in AED — every credit-check comparison further
+  // down (isInsufficientBalance, handleBooking) is done against AED amounts,
+  // so the value used for the *gate* MUST remain the raw AED figure the
+  // backend already returns on `effectiveAvailableCreditLimit`.
   const [agentBalance, setAgentBalance] = useState(null);
+  // Display-only companions: the same figure rendered in the agent's
+  // configured currency (populated from the backend's
+  // effectiveAvailableCreditLimitInAgentCurrency + currencyCode). Purely
+  // for the "Available Balance" chip; NOT read by any gating logic.
+  const [agentBalanceDisplay, setAgentBalanceDisplay] = useState(null);
+  const [agentBalanceCurrency, setAgentBalanceCurrency] = useState("AED");
   // Filter state
   const [refundFilter, setRefundFilter] = useState({
     refundable: false,
@@ -126,6 +142,11 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
   });
   const [roomTypeOptions, setRoomTypeOptions] = useState([]);
   const [selectedRoomTypes, setSelectedRoomTypes] = useState([]);
+  // Room-category search box (above the accordion). Case-insensitive
+  // substring match against the roomCategory name, with a few common
+  // abbreviations (DLX → deluxe, SUT/STE → suite, STD → standard, etc.)
+  // so operators can type shorthand and still hit the right room.
+  const [roomSearch, setRoomSearch] = useState("");
 
   // Insufficient-credit warning modal. When the picked rate (single-room)
   // or the combined rate (multi-room) exceeds the agent's available
@@ -698,19 +719,6 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
     }
   };
 
-  const sampleGallery = [
-    "/images/01.png",
-    "/images/02.png",
-    "/images/03.png",
-    "/images/04.jpg",
-    "/images/04.png",
-    "/images/05.jpg",
-    "/images/06.png",
-    "/images/07.png",
-    "/images/main-slider.jpg",
-    "/images/small-img.jpg",
-  ];
-
   const getMealPlanIcon = (mealPlan) => {
     switch (mealPlan.toLowerCase()) {
       case "room only":
@@ -724,11 +732,25 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
     }
   };
 
-  const getRefundStatusBadgeInRoomList = (nonRefundable) => {
+  // `deadlinePassed` (derived from isDeadlinePassed(inhouseDeadline) at the
+  // call site) downgrades a supplier-flagged Flexible rate whose free-
+  // cancellation window has already closed — otherwise the room list keeps
+  // promising green while the cancel gate on the saved booking already
+  // refuses.
+  const getRefundStatusBadgeInRoomList = (nonRefundable, deadlinePassed = false) => {
     const value = String(nonRefundable).toLowerCase();
     switch (value) {
       case "false":
-        return <Badge bg="success">Flexible</Badge>;
+        return deadlinePassed ? (
+          <Badge
+            bg="danger"
+            title="The free-cancellation window has already closed for this stay."
+          >
+            Deadline passed
+          </Badge>
+        ) : (
+          <Badge bg="success">Flexible</Badge>
+        );
       case "true":
         return <Badge bg="danger">Non-Refundable</Badge>;
       default:
@@ -809,6 +831,8 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
     const aId = roomData?.payload?.agentId;
     if (!aId) {
       setAgentBalance(null);
+      setAgentBalanceDisplay(null);
+      setAgentBalanceCurrency("AED");
       return;
     }
     let cancelled = false;
@@ -819,21 +843,75 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
         // currently-Active Temporary Credit Limit (same combined figure the
         // backend's check-sufficient-credit / booking-create flow use).
         // Falls back to availableCreditLimit for older cached responses.
-        if (!cancelled) {
-          setAgentBalance(
+        if (cancelled) return;
+        setAgentBalance(
+          res?.data?.effectiveAvailableCreditLimit ??
+            res?.data?.availableCreditLimit ??
+            null,
+        );
+        // Agent-currency display value + code from the same backend fields
+        // this fix added on AgentCreditLimitResponseDTO. When the backend is
+        // older (fields missing) both `??` chains land on the AED number
+        // and the chip renders identically to before this fix.
+        setAgentBalanceDisplay(
+          res?.data?.effectiveAvailableCreditLimitInAgentCurrency ??
+            res?.data?.availableCreditLimitInAgentCurrency ??
             res?.data?.effectiveAvailableCreditLimit ??
-              res?.data?.availableCreditLimit ??
-              null,
-          );
-        }
+            res?.data?.availableCreditLimit ??
+            null,
+        );
+        setAgentBalanceCurrency(res?.data?.currencyCode || "AED");
       })
       .catch(() => {
-        if (!cancelled) setAgentBalance(null);
+        if (!cancelled) {
+          setAgentBalance(null);
+          setAgentBalanceDisplay(null);
+          setAgentBalanceCurrency("AED");
+        }
       });
     return () => {
       cancelled = true;
     };
   }, [roomData]);
+
+  // Max cancellation nights for this hotel — MAX(noOfNights) across the
+  // cancellation-policy rows configured at /hotel-actions/{id}/hotel-policy.
+  // Fetched here for the same reason HotelBookingPage fetches it: the
+  // free-cancellation deadline is checkInDate − maxCancellationNights, which
+  // is exactly what the backend stores on the booking, so the room list, the
+  // booking page, the Booking List and the voucher all show one date.
+  const [maxCancellationNights, setMaxCancellationNights] = useState(null);
+
+  useEffect(() => {
+    const hotelId = roomData?.hotels?.[0]?.hotelId;
+    if (!hotelId || roomData?.payload?.apiId !== 1) {
+      setMaxCancellationNights(null);
+      return undefined;
+    }
+    let cancelled = false;
+    axiosInstance
+      .get(`/api/hotels/${hotelId}/max-cancellation-nights`)
+      .then((res) => {
+        if (cancelled) return;
+        const n = Number(res?.data);
+        setMaxCancellationNights(Number.isFinite(n) ? n : 0);
+      })
+      .catch(() => {
+        // No policy configured / call failed — leave null so the pill falls
+        // back to "Non-refundable" rather than inventing a date.
+        if (!cancelled) setMaxCancellationNights(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [roomData]);
+
+  // One deadline for every rate on the page: it is a property of the hotel's
+  // cancellation policy and the stay dates, not of the individual rate.
+  const inhouseDeadline = resolveInhouseDeadline(
+    roomData?.payload?.checkInDate,
+    maxCancellationNights,
+  );
 
   // Second useEffect to fetch policy details when roomData is available
   useEffect(() => {
@@ -908,6 +986,44 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
       if (!hit) return false;
     }
     return true;
+  };
+
+  // Room-name search — matches on full name, and expands a handful of
+  // common trade abbreviations so shorthand like "DLX" hits "Deluxe".
+  const ROOM_ABBREVIATIONS = {
+    dlx: "deluxe",
+    dlux: "deluxe",
+    del: "deluxe",
+    sut: "suite",
+    ste: "suite",
+    std: "standard",
+    stnd: "standard",
+    sup: "superior",
+    supr: "superior",
+    exe: "executive",
+    exec: "executive",
+    pre: "premium",
+    prem: "premium",
+    pres: "presidential",
+    jr: "junior",
+    apt: "apartment",
+    twn: "twin",
+    kng: "king",
+    qn: "queen",
+    fmy: "family",
+  };
+  const matchesRoomSearch = (name) => {
+    const q = String(roomSearch || "").trim().toLowerCase();
+    if (!q) return true;
+    const n = String(name || "").toLowerCase();
+    if (n.includes(q)) return true;
+    // token-by-token: each token can be a substring OR an abbreviation.
+    const tokens = q.split(/\s+/).filter(Boolean);
+    return tokens.every((t) => {
+      if (n.includes(t)) return true;
+      const expanded = ROOM_ABBREVIATIONS[t];
+      return expanded ? n.includes(expanded) : false;
+    });
   };
 
   if (loading) {
@@ -1057,7 +1173,30 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
               <Button
                 variant="outline-primary"
                 size="sm"
-                onClick={() => navigate("/new-booking/hotel")}
+                onClick={() => {
+                  // HotelSearch's "View Rooms" opens this page via
+                  // window.open in a new tab, so this tab's own
+                  // history is empty and navigate(-1) is a no-op.
+                  // Prefer window.close() (the opener refocuses to
+                  // the search tab it already has); fall back to
+                  // in-app navigation for the direct-URL / refresh
+                  // cases where window.close is blocked.
+                  try {
+                    if (window.opener && !window.opener.closed) {
+                      try {
+                        window.opener.focus();
+                      } catch (_) {
+                        /* cross-origin — best effort only */
+                      }
+                      window.close();
+                      return;
+                    }
+                  } catch (_) {
+                    /* ignore and fall through */
+                  }
+                  if (window.history.length > 1) navigate(-1);
+                  else navigate("/new-booking/hotel");
+                }}
                 className="back-to-search-btn"
               >
                 ← Back to Search
@@ -1067,7 +1206,7 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
                   className="fw-bold"
                   style={{ color: "#dc3545", fontSize: "0.95rem" }}
                 >
-                  Available Balance: {Number(agentBalance).toFixed(2)}
+                  Available Balance: {Number(agentBalanceDisplay ?? agentBalance).toFixed(2)} {agentBalanceCurrency || "AED"}
                 </span>
               )}
             </div>
@@ -1332,8 +1471,18 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
 
             {/* Room Categories Accordion */}
             <div className="room-categories-section">
-              <div className="d-flex justify-content-between align-items-center mb-4">
+              <div className="d-flex justify-content-between align-items-center mb-4 gap-2 flex-wrap">
                 <h4 className="mb-0">Available Room Categories</h4>
+                <div className="d-flex align-items-center gap-2 flex-wrap ms-auto">
+                  <Form.Control
+                    type="search"
+                    size="sm"
+                    placeholder="Search room (e.g. DLX, SUT)"
+                    value={roomSearch}
+                    onChange={(e) => setRoomSearch(e.target.value)}
+                    style={{ width: 220 }}
+                    aria-label="Search room categories"
+                  />
                 <div className="btn-group shadow-sm gap-1" role="group">
                   <Button
                     variant={viewMode === "grid" ? "primary" : "outline-primary"}
@@ -1351,6 +1500,7 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
                   >
                     <span className="fs-5" style={{ lineHeight: 1 }}>☰</span>
                   </Button>
+                </div>
                 </div>
               </div>
 
@@ -1446,18 +1596,46 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
                     ...prev,
                     [roomSlotIndex]: key,
                   }));
+                // Sort room categories ascending by their cheapest rate,
+                // and — inside each category — sort the individual rate
+                // cards the same way, so the operator always sees the
+                // most affordable option first. Falls back gracefully
+                // when a category has no rates.
+                const priceOf = (r) => {
+                  const v = Number(r?.rate);
+                  return Number.isFinite(v) ? v : Number.POSITIVE_INFINITY;
+                };
+                const sortedRoomCategories = [
+                  ...(hotel.roomCategories || []),
+                ]
+                  .map((cat) => ({
+                    ...cat,
+                    availableRates: [...(cat.availableRates || [])].sort(
+                      (a, b) => priceOf(a) - priceOf(b),
+                    ),
+                  }))
+                  .sort((a, b) => {
+                    const minA = a.availableRates.length
+                      ? priceOf(a.availableRates[0])
+                      : Number.POSITIVE_INFINITY;
+                    const minB = b.availableRates.length
+                      ? priceOf(b.availableRates[0])
+                      : Number.POSITIVE_INFINITY;
+                    return minA - minB;
+                  });
                 const inner = (
               <Accordion
                 activeKey={slotActiveKey}
                 onSelect={(key) => setSlotActiveKey(key)}
               >
-                {hotel.roomCategories.map((category, index) => {
+                {sortedRoomCategories.map((category, index) => {
                   const eventKey = index.toString();
                   const isActive = slotActiveKey === eventKey;
                   const filteredRates = (category.availableRates || []).filter(
                     matchesFilters,
                   );
                   if (filteredRates.length === 0) return null;
+                  if (!matchesRoomSearch(category.roomCategory)) return null;
 
                   return (
                     <Accordion.Item
@@ -1473,9 +1651,6 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
                         <div className="d-flex justify-content-between align-items-center w-100">
                           <div className="room-category-info">
                             <h5 className="mb-1">{category.roomCategory}</h5>
-                            <p className="mb-0 text-muted small">
-                              {category.baseRoomType}
-                            </p>
                           </div>
 
                           <div className="d-flex align-items-center gap-3">
@@ -1601,6 +1776,7 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
 
                                       {getRefundStatusBadgeInRoomList(
                                         rate.nonRefundable,
+                                        isDeadlinePassed(inhouseDeadline),
                                       )}
                                     </div>
 
@@ -1650,6 +1826,17 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
                                         {rate.contractLabel}
                                       </div>
 
+                                      {/* Same deadline the booking page shows:
+                                          checkIn − the hotel's max cancellation
+                                          nights, at 2 PM UAE. */}
+                                      <div className="feature-item">
+                                        <RateDeadlinePill
+                                          rate={rate}
+                                          deadline={inhouseDeadline}
+                                          timeLabel={DEADLINE_TIME_EOD}
+                                        />
+                                      </div>
+
                                       <div className="feature-item">
                                         <Button
                                           variant="link"
@@ -1688,14 +1875,29 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
                                           selectedRooms[roomSlotIndex]
                                             ?.selectedRate === rate
                                         }
-                                        onChange={() =>
+                                        // Controlled radio: onChange is a
+                                        // no-op so React does not warn, and
+                                        // onClick drives the state update.
+                                        // onClick fires on every click
+                                        // (including clicks that would
+                                        // otherwise silently re-check an
+                                        // already-selected radio without
+                                        // firing onChange), so the user can
+                                        // switch between rates or clear the
+                                        // selection reliably. stopPropagation
+                                        // shields the click from the parent
+                                        // Accordion, which would otherwise
+                                        // collapse the category on click.
+                                        onChange={() => {}}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
                                           handleRateSelect(
                                             roomSlotIndex,
                                             rate,
                                             hotel.hotelId,
                                             hotel.hotelName,
-                                          )
-                                        }
+                                          );
+                                        }}
                                       />
                                     ) : (
                                       <Button
@@ -1729,14 +1931,23 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
                                             selectedRooms[roomSlotIndex]
                                               ?.selectedRate === rate
                                           }
-                                          onChange={() =>
+                                          // See the grid-mode radio above for
+                                          // the rationale. onClick fires on
+                                          // every click so the user can
+                                          // switch between rates or clear
+                                          // the selection; stopPropagation
+                                          // shields the click from the
+                                          // Accordion parent.
+                                          onChange={() => {}}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
                                             handleRateSelect(
                                               roomSlotIndex,
                                               rate,
                                               hotel.hotelId,
                                               hotel.hotelName,
-                                            )
-                                          }
+                                            );
+                                          }}
                                           style={{ whiteSpace: "nowrap" }}
                                         />
                                       </div>
@@ -1761,6 +1972,7 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
                                         <div className="d-flex align-items-center gap-2 flex-shrink-0">
                                           {getRefundStatusBadgeInRoomList(
                                             rate.nonRefundable,
+                                            isDeadlinePassed(inhouseDeadline),
                                           )}
                                           {rate.roomStatus === "On Request" ? (
                                             <Badge
@@ -1784,6 +1996,14 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
                                           <span className="text-truncate">
                                             {rate.contractLabel}
                                           </span>
+                                        </div>
+                                        <div className="feature-item d-flex align-items-center">
+                                          <FaInfoCircle className="me-2 flex-shrink-0" />
+                                          <RateDeadlinePill
+                                            rate={rate}
+                                            deadline={inhouseDeadline}
+                                            timeLabel={DEADLINE_TIME_EOD}
+                                          />
                                         </div>
                                         <div className="feature-item d-flex align-items-center">
                                           <Button
@@ -2202,61 +2422,14 @@ const RoomList = ({ force24Hour = false, religiousMode = false } = {}) => {
         <Modal.Body>
           {selectedRate && (
             <Row className="g-4">
-              <Col md={6}>
-                <div
-                  id="roomGallery"
-                  className="carousel slide"
-                  data-bs-ride="carousel"
-                >
-                  <div className="carousel-inner rounded">
-                    {sampleGallery.map((img, idx) => (
-                      <div
-                        key={idx}
-                        className={`carousel-item ${idx === 0 ? "active" : ""}`}
-                      >
-                        <img src={img} className="d-block w-100" alt="Room" />
-                      </div>
-                    ))}
-                  </div>
-                  <button
-                    className="carousel-control-prev"
-                    type="button"
-                    data-bs-target="#roomGallery"
-                    data-bs-slide="prev"
-                    aria-label="Previous image"
-                  >
-                    <span
-                      className="carousel-control-prev-icon"
-                      aria-hidden="true"
-                    ></span>
-                    <span className="visually-hidden">Previous</span>
-                  </button>
-                  <button
-                    className="carousel-control-next"
-                    type="button"
-                    data-bs-target="#roomGallery"
-                    data-bs-slide="next"
-                    aria-label="Next image"
-                  >
-                    <span
-                      className="carousel-control-next-icon"
-                      aria-hidden="true"
-                    ></span>
-                    <span className="visually-hidden">Next</span>
-                  </button>
-                </div>
-              </Col>
-              <Col md={6}>
+              {/* Stock room photos and the hardcoded amenity badges used to sit
+                  here. Both were identical for every hotel, so the modal now
+                  shows only what the search actually returned for this rate. */}
+              <Col md={12}>
                 <h5 className="mb-2">{selectedRate.roomCategory}</h5>
                 <p className="text-muted">{selectedRate.roomTypeDescription}</p>
-                <div className="d-flex flex-wrap gap-2 mb-3">
-                  <Badge bg="secondary">High speed internet</Badge>
-                  <Badge bg="secondary">Private bathroom</Badge>
-                  <Badge bg="secondary">Kitchen</Badge>
-                  <Badge bg="secondary">TV</Badge>
-                </div>
                 <div className="booking-details-modal">
-                  <div className="d-flex justify-content-between mb-2">
+                  <div className="d-flex align-items-center gap-2 mb-2">
                     <span>Meal Plan:</span>
                     <span className="fw-semibold">{selectedRate.mealPlan}</span>
                   </div>

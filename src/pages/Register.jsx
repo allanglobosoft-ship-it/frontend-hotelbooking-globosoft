@@ -30,60 +30,159 @@ const sortMarkupTypesByPercentage = (items = []) => {
   });
 };
 
+// Full blank form. Shared by the initial state and the post-success reset so
+// the reset can never drop a key (the old inline reset omitted the newer
+// salutation / trade-licence / timezone / vatNumber fields).
+const INITIAL_FORM = {
+  companyName: "",
+  businessType: "",
+  agentCategoryId: "",
+  firstName: "",
+  lastName: "",
+  mobileNumber: "",
+  personalEmail: "",
+  countryId: "",
+  provinceId: "",
+  placeId: "",
+  address: "",
+  agentClassification: "registered",
+  agentGstIn: "",
+  agentProvisionalGstno: "",
+  agentCorrespondmail: "",
+  agentRegisterstatus: "",
+  agentHsncode: "",
+  agentStatus: "yes",
+  currency: "",
+  // Agent-level markup — matches the admin AgentReg field. Was missing on
+  // this public form so agents registered here landed with markup_id=null,
+  // which then breaks their room-list search (some agent works / some
+  // doesn't, depending on whether markup was set later via admin).
+  markup: "",
+  // Finance Manager + GM details (required by backend, mirrors AgentReg).
+  financeManagerName: "",
+  financeManagerContactNo: "",
+  financeManagerEmail: "",
+  gmName: "",
+  gmContactNo: "",
+  gmEmail: "",
+  // Incentive claim preference: "" | "CREDIT_LIMIT" | "BANK_TRANSFER".
+  preferredClaimMethod: "",
+  // Self-service login credentials. Collected here now (previously admin
+  // did this via the AgentView Login button). Backend creates a pending
+  // agent_external_registration row that admin approves on
+  // /admin/approval/agents to provision the AGENT UserAccount.
+  username: "",
+  password: "",
+  repassword: "",
+  // Extended public-registration fields (Contact Info step) — surfaced to
+  // the admin on /admin/approval/agents/:id and on AgentView after approval.
+  salutation: "",
+  tradeLicenseNo: "",
+  /** Base64 data URL of the uploaded trade-license file (PDF/image). */
+  tradeLicenseFile: "",
+  tradeLicenseFileName: "",
+  tradeLicenseExpiry: "",
+  timezone: "",
+  // Optional VAT registration number (free text).
+  vatNumber: "",
+};
+
+// Which wizard step renders each field. Used to jump the user to the first
+// step that still has an error — previously a failed submit only set the
+// error text on inputs living on a hidden step, so "Create Account"
+// appeared to do nothing when the user had skipped ahead via the step
+// indicator (it allows jumping to any step).
+const FIELD_STEP = {
+  companyName: 1, businessType: 1, agentCategoryId: 1, currency: 1, markup: 1,
+  salutation: 2, firstName: 2, lastName: 2, mobileNumber: 2, personalEmail: 2,
+  tradeLicenseNo: 2, tradeLicenseFile: 2, tradeLicenseExpiry: 2, vatNumber: 2, timezone: 2,
+  countryId: 3, provinceId: 3, placeId: 3, address: 3,
+  username: 4, password: 4, repassword: 4,
+  financeManagerName: 5, financeManagerContactNo: 5, financeManagerEmail: 5,
+  gmName: 5, gmContactNo: 5, gmEmail: 5, preferredClaimMethod: 5,
+  agentClassification: 6, agentGstIn: 6, agentProvisionalGstno: 6,
+  agentCorrespondmail: 6, agentRegisterstatus: 6, agentHsncode: 6, agentStatus: 6,
+};
+
+const firstStepWithErrors = (errs) => {
+  const steps = Object.keys(errs || {})
+    .filter((k) => errs[k])
+    .map((k) => FIELD_STEP[k])
+    .filter(Boolean);
+  return steps.length ? Math.min(...steps) : null;
+};
+
+// Backend rule for every phone field is `\+?\d{6,15}` on the RAW value. The
+// form lets people type "+971 50 123 4567" / "050-123-4567", so strip the
+// separators before validating and before sending — otherwise a number the
+// form accepted is rejected by the server.
+const normalisePhone = (value) => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const plus = raw.startsWith("+") ? "+" : "";
+  return plus + raw.replace(/[^\d]/g, "");
+};
+const PHONE_RE = /^\+?\d{6,15}$/;
+
+// Map backend error-field names onto this form's keys. The backend reports
+// GST fields as "agentGSTDetailsDTO.agentGstIn" (nested DTO) while this form
+// keeps them flat.
+const toFormFieldName = (name) => String(name || "").replace(/^agentGSTDetailsDTO\./, "");
+
+/**
+ * Turn an axios error into { message, fieldErrors } using every shape the
+ * backend produces: ErrorResponse {message}, FieldErrorResponse {message,
+ * errors:{field:msg}}, a plain-string body, the container's default error
+ * page ({error, status} with no message), and transport failures.
+ */
+const describeServerError = (error) => {
+  const res = error?.response;
+  const data = res?.data;
+  let message = "";
+  let fieldErrors = null;
+
+  if (typeof data === "string" && data.trim()) {
+    message = data.trim();
+  } else if (data && typeof data === "object") {
+    if (data.errors && typeof data.errors === "object" && !Array.isArray(data.errors)) {
+      fieldErrors = {};
+      Object.entries(data.errors).forEach(([k, v]) => {
+        if (v) fieldErrors[toFormFieldName(k)] = String(v);
+      });
+      if (!Object.keys(fieldErrors).length) fieldErrors = null;
+    }
+    if (data.message) message = String(data.message);
+    else if (Array.isArray(data.errors) && data.errors.length) {
+      message = data.errors
+        .map((e) => (typeof e === "string" ? e : e?.defaultMessage || e?.message))
+        .filter(Boolean)
+        .join(", ");
+    } else if (fieldErrors) {
+      message = Object.values(fieldErrors).join(", ");
+    } else if (data.error) {
+      message = `${data.error}${data.status ? ` (HTTP ${data.status})` : ""}`;
+    }
+  }
+
+  if (!message) {
+    if (res) {
+      if (res.status === 413) message = "The uploaded file is too large. Please choose a smaller file (max 10 MB).";
+      else if (res.status === 401 || res.status === 403) message = "The registration service refused the request. Please reload the page and try again.";
+      else if (res.status >= 500) message = `The server could not process the registration (HTTP ${res.status}). Please try again in a moment.`;
+      else message = `Registration failed (HTTP ${res.status}).`;
+    } else if (error?.code === "ECONNABORTED" || /timeout/i.test(error?.message || "")) {
+      message = "The request timed out before the server replied. Please check your connection and try again.";
+    } else if (error?.request) {
+      message = "Could not reach the server. Please check your internet connection and try again.";
+    } else {
+      message = error?.message || "An unexpected error occurred.";
+    }
+  }
+  return { message, fieldErrors };
+};
+
 const Register = () => {
-  const [formData, setFormData] = useState({
-    companyName: "",
-    businessType: "",
-    agentCategoryId: "",
-    firstName: "",
-    lastName: "",
-    mobileNumber: "",
-    personalEmail: "",
-    countryId: "",
-    provinceId: "",
-    placeId: "",
-    address: "",
-    agentClassification: "registered",
-    agentGstIn: "",
-    agentProvisionalGstno: "",
-    agentCorrespondmail: "",
-    agentRegisterstatus: "",
-    agentHsncode: "",
-    agentStatus: "yes",
-    currency: "",
-    // Agent-level markup — matches the admin AgentReg field. Was missing on
-    // this public form so agents registered here landed with markup_id=null,
-    // which then breaks their room-list search (some agent works / some
-    // doesn't, depending on whether markup was set later via admin).
-    markup: "",
-    // Finance Manager + GM details (required by backend, mirrors AgentReg).
-    financeManagerName: "",
-    financeManagerContactNo: "",
-    financeManagerEmail: "",
-    gmName: "",
-    gmContactNo: "",
-    gmEmail: "",
-    // Incentive claim preference: "" | "CREDIT_LIMIT" | "BANK_TRANSFER".
-    preferredClaimMethod: "",
-    // Self-service login credentials. Collected here now (previously admin
-    // did this via the AgentView Login button). Backend creates a pending
-    // agent_external_registration row that admin approves on
-    // /admin/approval/agents to provision the AGENT UserAccount.
-    username: "",
-    password: "",
-    repassword: "",
-    // Extended public-registration fields (Contact Info step) — surfaced to
-    // the admin on /admin/approval/agents/:id and on AgentView after approval.
-    salutation: "",
-    tradeLicenseNo: "",
-    /** Base64 data URL of the uploaded trade-license file (PDF/image). */
-    tradeLicenseFile: "",
-    tradeLicenseFileName: "",
-    tradeLicenseExpiry: "",
-    timezone: "",
-    // Optional VAT registration number (free text).
-    vatNumber: "",
-  });
+  const [formData, setFormData] = useState({ ...INITIAL_FORM });
 
   const [showPassword, setShowPassword] = useState(false);
   const [showRePassword, setShowRePassword] = useState(false);
@@ -129,6 +228,8 @@ const Register = () => {
   // Holds the timer for debounced country search so we don't hammer /api/country
   // on every keystroke.
   const countrySearchTimer = useRef(null);
+  // Text currently typed into the country box (see onInputChange/onMenuOpen).
+  const countrySearchText = useRef("");
   // Debounced agent-email availability check (table agent.personal_email).
   const emailCheckTimer = useRef(null);
   const [emailExists, setEmailExists] = useState(false);
@@ -158,11 +259,19 @@ const Register = () => {
   // Calls the /api/country endpoint. If a `search` term is provided it's
   // passed as a query param so the BACKEND filters (CountryController already
   // supports `?search=...`); otherwise the full list is loaded as before.
+  // Sequence guard: onMenuOpen fires the UNFILTERED fetch and typing fires the
+  // filtered one 300ms later. The full list is ~250 rows and often arrives
+  // after the 1-row search result, overwriting it — so typing "United Arab"
+  // showed India/Afghanistan/... and the agent had to scroll for their
+  // country. Only the newest request may update the list.
+  const countryReqSeq = useRef(0);
   const countryList = async (search = "") => {
+    const seq = ++countryReqSeq.current;
     try {
       const params = {};
       if (search && search.trim()) params.search = search.trim();
       const response = await axiosInstance.get("/api/country", { params });
+      if (seq !== countryReqSeq.current) return; // a newer request superseded this one
       setCountries(Array.isArray(response.data) ? response.data : []);
     } catch (error) {
       console.log("error for country list :", error);
@@ -353,14 +462,13 @@ const Register = () => {
       // else if (emailExists) {
       //   newErrors.personalEmail = "An agent with this email already exists";
       // }
-      if (formData.mobileNumber && !/^\+?\d{10,15}$/.test(formData.mobileNumber.replace(/\s/g, ""))) {
+      if (formData.mobileNumber && !/^\+?\d{10,15}$/.test(normalisePhone(formData.mobileNumber))) {
         newErrors.mobileNumber = "Mobile Number must be 10-15 digits";
       }
       if (!formData.timezone) newErrors.timezone = "Timezone is required.";
     } else if (currentStep === 3) {
       if (!formData.countryId) newErrors.countryId = "Country is required";
       if (!formData.provinceId) newErrors.provinceId = "City is required";
-      if (!formData.placeId) newErrors.placeId = "Location is required";
       if (!formData.address.trim()) newErrors.address = "Address is required";
     } else if (currentStep === 4) {
       // Step 4 — Login credentials (used to provision the AGENT UserAccount
@@ -392,6 +500,8 @@ const Register = () => {
         newErrors.financeManagerName = "Finance Manager name is required";
       if (!formData.financeManagerContactNo.trim())
         newErrors.financeManagerContactNo = "Finance Manager mobile number is required";
+      else if (!PHONE_RE.test(normalisePhone(formData.financeManagerContactNo)))
+        newErrors.financeManagerContactNo = "Finance Manager mobile number must be 6-15 digits (optional leading +)";
       if (!formData.financeManagerEmail.trim())
         newErrors.financeManagerEmail = "Finance Manager email is required";
       if (formData.financeManagerEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.financeManagerEmail))
@@ -400,6 +510,8 @@ const Register = () => {
         newErrors.gmName = "GM name is required";
       if (!formData.gmContactNo.trim())
         newErrors.gmContactNo = "GM mobile number is required";
+      else if (!PHONE_RE.test(normalisePhone(formData.gmContactNo)))
+        newErrors.gmContactNo = "GM mobile number must be 6-15 digits (optional leading +)";
       if (!formData.gmEmail.trim())
         newErrors.gmEmail = "GM email is required";
       if (formData.gmEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.gmEmail))
@@ -450,7 +562,6 @@ const Register = () => {
     if (!formData.timezone) newErrors.timezone = "Timezone is required.";
     if (!formData.countryId) newErrors.countryId = "Country is required";
     if (!formData.provinceId) newErrors.provinceId = "Province is required";
-    if (!formData.placeId) newErrors.placeId = "City is required";
     if (!formData.address.trim()) newErrors.address = "Address is required";
 
     // Additional format validations
@@ -464,7 +575,7 @@ const Register = () => {
     //   newErrors.personalEmail = "An agent with this email already exists";
     if (
       formData.mobileNumber &&
-      !/^\+?\d{10,15}$/.test(formData.mobileNumber.replace(/\s/g, ""))
+      !/^\+?\d{10,15}$/.test(normalisePhone(formData.mobileNumber))
     )
       newErrors.mobileNumber = "Mobile Number must be 10-15 digits";
 
@@ -497,6 +608,8 @@ const Register = () => {
       newErrors.financeManagerName = "Finance Manager name is required";
     if (!formData.financeManagerContactNo.trim())
       newErrors.financeManagerContactNo = "Finance Manager mobile number is required";
+    else if (!PHONE_RE.test(normalisePhone(formData.financeManagerContactNo)))
+      newErrors.financeManagerContactNo = "Finance Manager mobile number must be 6-15 digits (optional leading +)";
     if (!formData.financeManagerEmail.trim())
       newErrors.financeManagerEmail = "Finance Manager email is required";
     if (formData.financeManagerEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.financeManagerEmail))
@@ -505,6 +618,8 @@ const Register = () => {
       newErrors.gmName = "GM name is required";
     if (!formData.gmContactNo.trim())
       newErrors.gmContactNo = "GM mobile number is required";
+    else if (!PHONE_RE.test(normalisePhone(formData.gmContactNo)))
+      newErrors.gmContactNo = "GM mobile number must be 6-15 digits (optional leading +)";
     if (!formData.gmEmail.trim())
       newErrors.gmEmail = "GM email is required";
     if (formData.gmEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.gmEmail))
@@ -532,14 +647,51 @@ const Register = () => {
     return newErrors;
   };
 
+  // Last wizard step: the GST step only exists for India (countryId "1").
+  const isFinalStep = (step) =>
+    formData.countryId === "1" ? step === 6 : step === 5;
+
+  // Show the errors AND move to the first step that has one, so a failed
+  // submit never leaves the user staring at a step with no visible problem.
+  const showErrorsAndJump = (errs, summary) => {
+    setErrors(errs);
+    const step = firstStepWithErrors(errs);
+    if (step && step !== currentStep) setCurrentStep(step);
+    if (summary) toast.error(summary, { duration: 6000 });
+  };
+
+  // Enter inside a text input submits the <form>. On a non-final step that
+  // used to run the FULL validation and silently mark fields on later,
+  // hidden steps; treat it like the Next button instead.
+  const handleFormKeyDown = (e) => {
+    if (e.key !== "Enter") return;
+    const target = e.target;
+    const tag = (target?.tagName || "").toLowerCase();
+    if (tag !== "input" || target?.type === "file") return;
+    // react-select (Country / City / Timezone) already consumed this Enter to
+    // pick the highlighted option — leave it alone.
+    if (e.isDefaultPrevented?.() || e.nativeEvent?.defaultPrevented) return;
+    // Enter on a dropdown's search box with its menu closed: neither submit
+    // nor advance, it is not a text field.
+    if (target.getAttribute("role") === "combobox") {
+      e.preventDefault();
+      return;
+    }
+    if (!isFinalStep(currentStep)) {
+      e.preventDefault();
+      handleNextStep();
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return; // guard against a double click / double Enter
     setIsSubmitting(true);
 
     const formErrors = validateForm();
 
     if (Object.keys(formErrors).length > 0) {
-      setErrors(formErrors);
+      showErrorsAndJump(formErrors, "Please fix the highlighted fields before submitting.");
       setIsSubmitting(false);
       return;
     }
@@ -552,12 +704,62 @@ const Register = () => {
          accept it. */
       const { repassword: _rp, ...payload } = formData;
 
+      // Send phone numbers exactly the way the backend validates them
+      // (`\+?\d{6,15}`, no spaces/dashes). The inputs accept separators for
+      // readability; the server pattern does not.
+      payload.mobileNumber = normalisePhone(payload.mobileNumber);
+      payload.financeManagerContactNo = normalisePhone(payload.financeManagerContactNo);
+      payload.gmContactNo = normalisePhone(payload.gmContactNo);
+
+      // Trim free-text identity fields so "john " / " Acme Ltd" don't land in
+      // the DB with stray whitespace (the username is also what the agent
+      // will type at login).
+      ["companyName", "firstName", "lastName", "personalEmail", "username",
+        "financeManagerName", "financeManagerEmail", "gmName", "gmEmail",
+        "agentCorrespondmail"].forEach((k) => {
+        if (typeof payload[k] === "string") payload[k] = payload[k].trim();
+      });
+
+      // Trim the password too. The user's client-side validator enforces
+      // length + character rules on the raw value, so a pasted "Passw0rd "
+      // passes here but gets BCrypt-hashed WITH the trailing space on the
+      // server — the agent's login page later sends "Passw0rd" (no space)
+      // and BCrypt.matches returns false. Trimming here mirrors what
+      // AgentView's admin credentials modal now does, and the backend also
+      // trims defensively in AgentExternalRegistrationService.
+      if (typeof payload.password === "string") {
+        payload.password = payload.password.trim();
+      }
+
       // Coerce markup to a plain integer (matches the admin AgentReg
       // submit — line 880 there. Backend AgentServiceImpl.registerAgent
       // calls Long.parseLong on request.getMarkup() and Jackson coerces
       // the number-shaped value to the String DTO field.)
       if (payload.markup) {
         payload.markup = parseInt(payload.markup, 10);
+      }
+
+      // Location is optional. When the user doesn't pick one the state
+      // value is "" — send null so Jackson doesn't fail to coerce an
+      // empty string into the Long placeId field on the backend DTO.
+      if (payload.placeId === "" || payload.placeId === undefined) {
+        payload.placeId = null;
+      }
+
+      // GST details: the backend DTO only knows the nested
+      // `agentGSTDetailsDTO` object (what the admin AgentReg form sends).
+      // This form kept the fields flat, so everything typed on the GST step
+      // was silently discarded. Nest them — India only, where the step is
+      // shown; other countries keep sending no GST block, as before.
+      const gstKeys = ["agentClassification", "agentGstIn", "agentProvisionalGstno",
+        "agentCorrespondmail", "agentRegisterstatus", "agentHsncode", "agentStatus"];
+      const gstBlock = {};
+      gstKeys.forEach((k) => {
+        gstBlock[k] = typeof payload[k] === "string" ? payload[k].trim() : payload[k];
+        delete payload[k];
+      });
+      if (formData.countryId === "1") {
+        payload.agentGSTDetailsDTO = gstBlock;
       }
 
       // When the operator picked a trade-license file, upgrade the request to
@@ -572,6 +774,13 @@ const Register = () => {
         Object.entries(payload).forEach(([k, v]) => {
           if (k === "tradeLicenseFile" || k === "tradeLicenseFileName") return;
           if (v === undefined || v === null) return;
+          if (k === "agentGSTDetailsDTO") {
+            // Spring's @ModelAttribute binds nested properties by dotted name.
+            Object.entries(v).forEach(([gk, gv]) => {
+              if (gv !== undefined && gv !== null) fd.append(`agentGSTDetailsDTO.${gk}`, gv);
+            });
+            return;
+          }
           fd.append(k, v);
         });
         // Distinct form-field name so Spring's @ModelAttribute doesn't try to
@@ -583,7 +792,14 @@ const Register = () => {
         registerResponse = await axiosInstance.post(
           "/api/agent/register",
           fd,
-          { headers: { "Content-Type": "multipart/form-data" } },
+          {
+            headers: { "Content-Type": "multipart/form-data" },
+            // The shared instance times out at 30s, which a 10 MB licence on
+            // a slow link can exceed — the server would then finish the
+            // registration while the browser reports a network error and
+            // the agent retries into a "username already taken".
+            timeout: 180000,
+          },
         );
       } else {
         // No file — send flat JSON as before (the tradeLicenseFile field is
@@ -616,55 +832,21 @@ const Register = () => {
       }, 1000);
 
       // Reset form on success
-      setFormData({
-        companyName: "",
-        businessType: "",
-        agentCategoryId: "",
-        firstName: "",
-        lastName: "",
-        mobileNumber: "",
-        personalEmail: "",
-        countryId: "",
-        provinceId: "",
-        placeId: "",
-        address: "",
-        agentClassification: "registered",
-        agentGstIn: "",
-        agentProvisionalGstno: "",
-        agentCorrespondmail: "",
-        agentRegisterstatus: "",
-        agentHsncode: "",
-        currency: "",
-        markup: "",
-        agentStatus: "yes",
-        financeManagerName: "",
-        financeManagerContactNo: "",
-        financeManagerEmail: "",
-        gmName: "",
-        gmContactNo: "",
-        gmEmail: "",
-        preferredClaimMethod: "",
-        username: "",
-        password: "",
-        repassword: "",
-      });
+      setFormData({ ...INITIAL_FORM });
+      setBusinessTypeOther(false);
       setErrors({});
       setCurrentStep(1);
     } catch (error) {
-      if (error.response) {
-        if (error.response.data.message) {
-          toast.error(error.response.data.message);
-        } else {
-          toast.error("An error occurred during registration");
-        }
-
-        if (error.response.data.errors) {
-          setErrors(error.response.data.errors);
-        }
-      } else if (error.request) {
-        toast.error("Network error - please try again");
+      // Surface the server's exact reason (status-aware fallbacks when it
+      // sent none) and highlight the field(s) it named, jumping to their
+      // step — e.g. a taken username lands the user back on step 4 with the
+      // message under the Username input.
+      const { message, fieldErrors } = describeServerError(error);
+      console.error("Agent registration failed:", error?.response?.status, error?.response?.data || error?.message);
+      if (fieldErrors) {
+        showErrorsAndJump(fieldErrors, message);
       } else {
-        toast.error("An unexpected error occurred");
+        toast.error(message, { duration: 8000 });
       }
     } finally {
       setIsSubmitting(false);
@@ -788,7 +970,7 @@ const Register = () => {
 
               {/* Form */}
               <div className="register-form-container">
-                <Form onSubmit={handleSubmit} className="register-form" noValidate autoComplete="off">
+                <Form onSubmit={handleSubmit} onKeyDown={handleFormKeyDown} className="register-form" noValidate autoComplete="off">
                   <Card className="form-card">
                     <Card.Body className="p-4">
 
@@ -1340,6 +1522,10 @@ const Register = () => {
                                    ignore 'menu-close'/'set-value' so the list isn't
                                    refetched when the dropdown closes after a pick. */
                                 onInputChange={(value, meta) => {
+                                  // Whatever we return becomes the input text —
+                                  // remember it so onMenuOpen can re-query for
+                                  // the SAME text instead of the full list.
+                                  countrySearchText.current = value || "";
                                   if (meta.action !== "input-change") return value;
                                   if (countrySearchTimer.current) clearTimeout(countrySearchTimer.current);
                                   countrySearchTimer.current = setTimeout(() => {
@@ -1348,11 +1534,14 @@ const Register = () => {
                                   return value;
                                 }}
                                 onMenuOpen={() => {
-                                  // Refresh the list when the menu opens so it
-                                  // shows the unfiltered results (helps after a
-                                  // previous filtered search).
+                                  // Refresh the list when the menu opens (helps
+                                  // after a previous filtered search). Query
+                                  // for the text currently typed, if any: a
+                                  // blank query here used to wipe the filtered
+                                  // results while "United Arab" was still in
+                                  // the box, so the agent saw the whole list.
                                   if (countrySearchTimer.current) clearTimeout(countrySearchTimer.current);
-                                  countryList("");
+                                  countryList(countrySearchText.current);
                                 }}
                                 onChange={(opt) =>
                                   handleChange({
@@ -1485,7 +1674,7 @@ const Register = () => {
                           <Col md={4}>
                             <Form.Group>
                               <Form.Label className="form-label">
-                                Location <span className="required">*</span>
+                                Location
                               </Form.Label>
                               <Form.Select
                                 name="placeId"

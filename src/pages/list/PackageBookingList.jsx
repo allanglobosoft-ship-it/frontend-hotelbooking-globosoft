@@ -17,6 +17,7 @@ import {
   FaEye,
   FaInbox,
   FaUser,
+  FaArrowLeft,
 } from "react-icons/fa";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
@@ -26,6 +27,7 @@ import toast from "react-hot-toast";
 // pagination styling). Same skin the /booking-details/hotel-booking-list,
 // long-stay, and last-minute lists use — the four pages line up visually.
 import "../../styles/HotelBookingListModern.css";
+import DashboardRedirections from "../../components/DashboardRedirections";
 
 const PER_PAGE_OPTIONS = [10, 25, 50, 100];
 
@@ -498,6 +500,18 @@ const PackageBookingList = () => {
               paddingRight: "0.5rem",
             }}
           >
+            {/* Back to the signed-in user's dashboard — top-left, above the header row */}
+            <div className="mb-3">
+              <Button
+                variant="outline-secondary"
+                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
+              >
+                <FaArrowLeft />
+                Back
+              </Button>
+            </div>
+
             <div className="d-flex justify-content-between align-items-end mb-3 hbl-header">
               <div className="hbl-header-left">
                 <h3 className="fw-bold text-dark mb-2">Package Booking</h3>

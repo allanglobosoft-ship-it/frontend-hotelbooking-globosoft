@@ -39,6 +39,7 @@ import toast from "react-hot-toast";
 import { formatFlexibleDate } from "../utils/dateUtils";
 import RoomFilters from "../components/roomlist/RoomFilters";
 import useRoomFilters from "../hooks/useRoomFilters";
+import { roomTypeNameForRate } from "../utils/mealPlanCategory";
 import {
   GrnRefundBadge,
   GrnDeadlinePill,
@@ -46,6 +47,11 @@ import {
   GrnChangeNoticeModal,
   grnPolicyFromRate,
 } from "../components/grn/GrnPolicy";
+import {
+  RateDeadlinePill,
+  resolveDeadlineDate,
+  isDeadlinePassed,
+} from "../utils/rateDeadline";
 
 /**
  * Renders "Valid: <from> - <to>" for a policy validity period, or null when
@@ -59,104 +65,13 @@ const renderPolicyValidity = (fromDate, toDate) => {
   return `Valid: ${from || "N/A"} - ${to || "N/A"}`;
 };
 
-/**
- * ATHARVA-only per-rate deadline pill for the room list card. Source is the
- * raw supplier DeadLineDate carried on rate.deadlineDate as "DD-MMM-YYYY"
- * (e.g. "18-Jun-2023") — see AtharvaSingleHotelOrchestrator.java. We format
- * to "DD MMM YYYY" and stamp a static "11:59 PM (UAE)" time per the operator
- * spec. Returns null when the field is missing or the string doesn't parse,
- * so the pill silently disappears for non-Atharva rates and malformed rows.
- */
-/**
- * Darina (apiId 16) per-rate free-cancellation deadline pill.
- * BE emits `rate.deadlineDate` as ISO `yyyy-MM-dd` — the toDate of the
- * "Free cancellation until X" band from Darina's WithFullResponseControl
- * search response. We render "Free cancellation until DD MMM YYYY, 11:59 PM UAE"
- * so the operator sees the exact cut-off before opening the policy modal.
- * Returns null for missing / malformed input.
- */
-const renderDarinaDeadlinePill = (deadlineDate) => {
-  if (!deadlineDate || typeof deadlineDate !== "string") return null;
-  const parts = deadlineDate.trim().split("-");
-  if (parts.length !== 3) return null;
-  const [y, mm, d] = parts;
-  const monthNames = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-  ];
-  const monIdx = parseInt(mm, 10) - 1;
-  if (!y || !d || Number.isNaN(monIdx) || monIdx < 0 || monIdx > 11) return null;
-  return (
-    <span
-      className="text-danger fw-normal"
-      title="deadline date"
-    >
-      Deadline Date:  {parseInt(d, 10)} {monthNames[monIdx]} {y}
-    </span>
-  );
-};
-
-const renderAtharvaDeadlinePill = (deadlineDate) => {
-  if (!deadlineDate || typeof deadlineDate !== "string") return null;
-  const parts = deadlineDate.trim().split("-");
-  if (parts.length !== 3) return null;
-  const [d, monShort, y] = parts;
-  const monthMap = {
-    jan: "Jan",
-    feb: "Feb",
-    mar: "Mar",
-    apr: "Apr",
-    may: "May",
-    jun: "Jun",
-    jul: "Jul",
-    aug: "Aug",
-    sep: "Sep",
-    oct: "Oct",
-    nov: "Nov",
-    dec: "Dec",
-  };
-  const mon = monthMap[String(monShort || "").toLowerCase().slice(0, 3)];
-  if (!d || !mon || !y) return null;
-  return (
-    <span
-      bg="warning"
-      text="dark"
-      className="fw-normal"
-      title="Cancel by this date/time to avoid charges"
-    >
-      Deadline: {d} {mon} {y}, 23:59
-    </span>
-  );
-};
-
-/**
- * GoGlobal (apiId 21) per-rate cancellation deadline pill. GoGlobal's
- * availability offer carries CxlDeadLine as "dd/MMM/yyyy" (e.g. "18/Nov/2026"),
- * surfaced on rate.deadlineDate. Rendered in red directly above the
- * Cancellation Policies link so the operator sees the cut-off before opening
- * the modal. Falls back to the raw string if the format is unexpected so a
- * deadline is never silently hidden.
- */
-const renderGoGlobalDeadlinePill = (deadlineDate) => {
-  if (!deadlineDate || typeof deadlineDate !== "string") return null;
-  const s = deadlineDate.trim();
-  if (!s) return null;
-  let label = s;
-  const parts = s.split("/");
-  if (parts.length === 3) {
-    const [d, mon, y] = parts;
-    const dd = parseInt(d, 10);
-    label = `${Number.isNaN(dd) ? d : dd} ${mon} ${y}`;
-  }
-  return (
-    <span
-      className="text-danger fw-semibold"
-      title="Cancel by this date to avoid charges"
-    >
-      Deadline Date: {label}
-    </span>
-  );
-};
+/* The per-supplier Atharva / Darina / GoGlobal deadline pills that used to
+   live here are gone. Every supplier except GRN now renders the shared
+   RateDeadlinePill from utils/rateDeadline, which reads the same
+   rate.deadlineDate those three used, falls back to the earliest
+   cancellation-policy fromDate for the suppliers that send no deadline
+   field at all, and prints one format in one colour. GRN keeps its own
+   IST-based, colour-coded pill. */
 
 /**
  * Strip HTML markup out of a policy string so the modal shows plain text.
@@ -263,7 +178,16 @@ const ExternalApiRoomList = () => {
   // Agent credit gate. Same pattern as Inhouse — soft warning, never
   // blocks; user clicks "OK, continue" and we resume the queued booking
   // handler with skipCreditCheck=true so downstream flow is unchanged.
+  // `agentBalance` stays in AED — every credit gate below compares against
+  // AED-denominated totals, so the value used by the gates MUST remain the
+  // raw AED number the backend already exposed on
+  // `effectiveAvailableCreditLimit`. See RoomList.jsx for the same rule.
   const [agentBalance, setAgentBalance] = useState(null);
+  // Display-only companions: the same figure rendered in the agent's
+  // configured currency (populated from the backend's
+  // effectiveAvailableCreditLimitInAgentCurrency + currencyCode).
+  const [agentBalanceDisplay, setAgentBalanceDisplay] = useState(null);
+  const [agentBalanceCurrency, setAgentBalanceCurrency] = useState("AED");
   const [showInsufficientCreditModal, setShowInsufficientCreditModal] =
     useState(false);
   const [pendingBookingFn, setPendingBookingFn] = useState(null);
@@ -766,11 +690,25 @@ const ExternalApiRoomList = () => {
     }
   };
 
-  const getRefundStatusBadgeInRoomList = (nonRefundable) => {
+  // `deadlinePassed` is derived by the caller (isDeadlinePassed on the rate's
+  // resolved deadline) and lets the badge downgrade a supplier-flagged
+  // Flexible rate whose free-cancellation window has already closed —
+  // otherwise the card promises green while BookingDetailedView's cancel
+  // gate will refuse. Non-refundable and unknown cases are unchanged.
+  const getRefundStatusBadgeInRoomList = (nonRefundable, deadlinePassed = false) => {
     const value = String(nonRefundable).toLowerCase();
     switch (value) {
       case "false":
-        return <Badge bg="success">Flexible</Badge>;
+        return deadlinePassed ? (
+          <Badge
+            bg="danger"
+            title="The free-cancellation window has already closed for this rate."
+          >
+            Deadline passed
+          </Badge>
+        ) : (
+          <Badge bg="success">Flexible</Badge>
+        );
       case "true":
         return <Badge bg="danger">Non-Refundable</Badge>;
       default:
@@ -980,11 +918,65 @@ const ExternalApiRoomList = () => {
   const filters = useRoomFilters();
 
   // Rate → normalised shape the shared predicate understands.
-  const rateMatches = (rate) =>
-    filters.rateMatches({
-      isNonRefundable: String(rate.nonRefundable).toLowerCase() === "true",
-      mealPlan: rate.mealPlan,
+  //
+  // Refund: read the same value the card badge shows. For ATHARVA the search
+  // response always says refundable and the truth only arrives with the
+  // prebook (cached per rateKey), so without this the "Non Refundable"
+  // filter never matched an Atharva rate the badge already marked as such.
+  //
+  // Room Type: the checkboxes are the inhouse master names ("Room with
+  // BreakFast", …) while suppliers send "Bed and Breakfast", "BB",
+  // "half-board", "nomeal", … — the shared predicate compares names exactly,
+  // so ticking any Room Type used to hide every API rate. Map the supplier
+  // meal plan onto the master name of the same board category first.
+  const rateMatches = (rate) => {
+    const nonRefundable =
+      atharvaPrebookCache?.[rate?.rateKey]?.nonRefundable ?? rate?.nonRefundable;
+    return filters.rateMatches({
+      isNonRefundable:
+        nonRefundable === true ||
+        ["true", "y", "yes"].includes(String(nonRefundable).toLowerCase()),
+      mealPlan: roomTypeNameForRate(rate, filters.roomTypeOptions),
     });
+  };
+
+  // Room-name search — matches on full name, and expands a handful of
+  // common trade abbreviations so shorthand like "DLX" hits "Deluxe".
+  const [roomSearch, setRoomSearch] = useState("");
+  const ROOM_ABBREVIATIONS = {
+    dlx: "deluxe",
+    dlux: "deluxe",
+    del: "deluxe",
+    sut: "suite",
+    ste: "suite",
+    std: "standard",
+    stnd: "standard",
+    sup: "superior",
+    supr: "superior",
+    exe: "executive",
+    exec: "executive",
+    pre: "premium",
+    prem: "premium",
+    pres: "presidential",
+    jr: "junior",
+    apt: "apartment",
+    twn: "twin",
+    kng: "king",
+    qn: "queen",
+    fmy: "family",
+  };
+  const matchesRoomSearch = (name) => {
+    const q = String(roomSearch || "").trim().toLowerCase();
+    if (!q) return true;
+    const n = String(name || "").toLowerCase();
+    if (n.includes(q)) return true;
+    const tokens = q.split(/\s+/).filter(Boolean);
+    return tokens.every((t) => {
+      if (n.includes(t)) return true;
+      const expanded = ROOM_ABBREVIATIONS[t];
+      return expanded ? n.includes(expanded) : false;
+    });
+  };
 
   // ─────────────────────────── effects ────────────────────────────────
   useEffect(() => {
@@ -1098,22 +1090,35 @@ const ExternalApiRoomList = () => {
     const aId = roomData?.payload?.agentId;
     if (!aId) {
       setAgentBalance(null);
+      setAgentBalanceDisplay(null);
+      setAgentBalanceCurrency("AED");
       return;
     }
     let cancelled = false;
     axiosInstance
       .get(`/api/agent-credit-limit/agent/${aId}`)
       .then((res) => {
-        if (!cancelled) {
-          setAgentBalance(
+        if (cancelled) return;
+        setAgentBalance(
+          res?.data?.effectiveAvailableCreditLimit ??
+            res?.data?.availableCreditLimit ??
+            null,
+        );
+        setAgentBalanceDisplay(
+          res?.data?.effectiveAvailableCreditLimitInAgentCurrency ??
+            res?.data?.availableCreditLimitInAgentCurrency ??
             res?.data?.effectiveAvailableCreditLimit ??
-              res?.data?.availableCreditLimit ??
-              null,
-          );
-        }
+            res?.data?.availableCreditLimit ??
+            null,
+        );
+        setAgentBalanceCurrency(res?.data?.currencyCode || "AED");
       })
       .catch(() => {
-        if (!cancelled) setAgentBalance(null);
+        if (!cancelled) {
+          setAgentBalance(null);
+          setAgentBalanceDisplay(null);
+          setAgentBalanceCurrency("AED");
+        }
       });
     return () => {
       cancelled = true;
@@ -1125,6 +1130,17 @@ const ExternalApiRoomList = () => {
   // view-mode toggles.
   const numRooms = (roomData?.payload?.rooms || []).length || 1;
   const isMultiRoom = numRooms > 1;
+
+  // Amount a rate card prints as its price (multi-room: the rate's total;
+  // single room: rate × rooms, falling back to the total). All suppliers
+  // put the MARKED-UP figure in these two fields, so the accordion header
+  // ("From …") reads the same number as the cards beneath it.
+  const displayTotalOf = (rate) =>
+    Number(
+      isMultiRoom
+        ? rate?.totalRate || 0
+        : rate?.roomRateBasedOnRoomCount || rate?.totalRate || 0,
+    ) || 0;
 
   // Nights across the searched stay — derived once at the render scope so
   // both the rate-card breakdown ("N nights × M rooms") and the Booking
@@ -2597,19 +2613,6 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
     }
   };
 
-  const sampleGallery = [
-    "/images/01.png",
-    "/images/02.png",
-    "/images/03.png",
-    "/images/04.jpg",
-    "/images/04.png",
-    "/images/05.jpg",
-    "/images/06.png",
-    "/images/07.png",
-    "/images/main-slider.jpg",
-    "/images/small-img.jpg",
-  ];
-
   // ─────────────────── loading / error / empty ────────────────────────
   if (loading) {
     return (
@@ -2693,6 +2696,37 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
   const hotel = roomData.hotels[0];
   const payload = roomData.payload || {};
 
+  // GRN: the room-list response carries the hotel's own description from
+  // GRN's /availability/{sid}?hcode= refetch (hotelDescription, HTML). The
+  // header shows it instead of the generic "Please note" text. Other
+  // suppliers (and GRN hotels with no description) keep the static text.
+  const isGrnHotel =
+    String(hotel?.apiType || "").toUpperCase() === "GRN" ||
+    Number(payload?.apiId) === apiIdMapping.GRN;
+  const grnHotelDescription = (() => {
+    if (!isGrnHotel) return null;
+    const raw = typeof hotel?.hotelDescription === "string"
+      ? hotel.hotelDescription.trim()
+      : "";
+    if (!raw) return null;
+    // Supplier HTML — drop script blocks and inline event handlers before
+    // rendering; GRN's descriptions are plain <p>/<b>/<br /> markup.
+    const safe = raw
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+    // Show only the "Property Location" section. GRN's full description
+    // (Attractions, Amenities, Business Amenities, Rooms, Dining …) runs to
+    // dozens of lines and pushed the room list below the fold. The section
+    // ends at its closing </p> or at the next paragraph/heading tag.
+    const location = safe.match(
+      /<b>\s*Property Location\s*<\/b>[\s\S]*?(?=<\/p>|<p\b|<b>|$)/i,
+    );
+    if (location) return `<p>${location[0]}</p>`;
+    // No headed sections — fall back to the first paragraph, else as-is.
+    const firstParagraph = safe.match(/<p\b[^>]*>[\s\S]*?<\/p>/i);
+    return firstParagraph ? firstParagraph[0] : safe;
+  })();
+
   return (
     <div className="min-vh-100 bg-light d-flex flex-column room-list-container">
       <TopBar />
@@ -2713,7 +2747,28 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
               <Button
                 variant="outline-primary"
                 size="sm"
-                onClick={() => navigate("/new-booking/hotel")}
+                onClick={() => {
+                  // HotelSearch's "View Rooms" opens this page via
+                  // window.open in a new tab, so navigate(-1) is a
+                  // no-op here. Close the new tab (opener refocuses)
+                  // and fall back to in-app navigation only when
+                  // window.close is unavailable.
+                  try {
+                    if (window.opener && !window.opener.closed) {
+                      try {
+                        window.opener.focus();
+                      } catch (_) {
+                        /* cross-origin — best effort only */
+                      }
+                      window.close();
+                      return;
+                    }
+                  } catch (_) {
+                    /* ignore and fall through */
+                  }
+                  if (window.history.length > 1) navigate(-1);
+                  else navigate("/new-booking/hotel");
+                }}
                 className="back-to-search-btn"
               >
                 ← Back to Search
@@ -2723,7 +2778,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                   className="fw-bold"
                   style={{ color: "#dc3545", fontSize: "0.95rem" }}
                 >
-                  Available Balance: {Number(agentBalance).toFixed(2)}
+                  Available Balance: {Number(agentBalanceDisplay ?? agentBalance).toFixed(2)} {agentBalanceCurrency || "AED"}
                 </span>
               )}
             </div>
@@ -2858,17 +2913,31 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                             </p>
                           )}
                           <div className="mt-2">
-                            <small className="text-muted">
-                              <strong>Please note:</strong>{" "}
-                              <p className="someproperties">
-                                Some properties may collect additional charges
-                                such as city tax, resort fees, or security
-                                deposits during check-in. Policies such as
-                                check-in time, child accommodation, and
-                                cancellation rules can vary by room and
-                                provider.
-                              </p>
-                            </small>
+                            {grnHotelDescription ? (
+                              /* GRN: hotel description exactly as returned by
+                                 GRN's availability refetch, in place of the
+                                 generic note. */
+                              <small className="text-muted">
+                                <div
+                                  className="someproperties grn-hotel-description"
+                                  dangerouslySetInnerHTML={{
+                                    __html: grnHotelDescription,
+                                  }}
+                                />
+                              </small>
+                            ) : (
+                              <small className="text-muted">
+                                <strong>Please note:</strong>{" "}
+                                <p className="someproperties">
+                                  Some properties may collect additional charges
+                                  such as city tax, resort fees, or security
+                                  deposits during check-in. Policies such as
+                                  check-in time, child accommodation, and
+                                  cancellation rules can vary by room and
+                                  provider.
+                                </p>
+                              </small>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -3047,33 +3116,44 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                 </div>
               )}
 
-              <div className="d-flex justify-content-between align-items-center mb-4">
+              <div className="d-flex justify-content-between align-items-center mb-4 gap-2 flex-wrap">
                 <h4 className="mb-0">Available Room Categories</h4>
-                <div className="btn-group shadow-sm gap-1" role="group">
-                  <Button
-                    variant={
-                      viewMode === "grid" ? "primary" : "outline-primary"
-                    }
-                    onClick={() => setViewMode("grid")}
-                    className="d-flex align-items-center gap-2"
+                <div className="d-flex align-items-center gap-2 flex-wrap ms-auto">
+                  <Form.Control
+                    type="search"
                     size="sm"
-                  >
-                    <span className="fs-5" style={{ lineHeight: 1 }}>
-                      ⊞
-                    </span>
-                  </Button>
-                  <Button
-                    variant={
-                      viewMode === "list" ? "primary" : "outline-primary"
-                    }
-                    onClick={() => setViewMode("list")}
-                    className="d-flex align-items-center gap-2"
-                    size="sm"
-                  >
-                    <span className="fs-5" style={{ lineHeight: 1 }}>
-                      ☰
-                    </span>
-                  </Button>
+                    placeholder="Search room (e.g. DLX, SUT)"
+                    value={roomSearch}
+                    onChange={(e) => setRoomSearch(e.target.value)}
+                    style={{ width: 220 }}
+                    aria-label="Search room categories"
+                  />
+                  <div className="btn-group shadow-sm gap-1" role="group">
+                    <Button
+                      variant={
+                        viewMode === "grid" ? "primary" : "outline-primary"
+                      }
+                      onClick={() => setViewMode("grid")}
+                      className="d-flex align-items-center gap-2"
+                      size="sm"
+                    >
+                      <span className="fs-5" style={{ lineHeight: 1 }}>
+                        ⊞
+                      </span>
+                    </Button>
+                    <Button
+                      variant={
+                        viewMode === "list" ? "primary" : "outline-primary"
+                      }
+                      onClick={() => setViewMode("list")}
+                      className="d-flex align-items-center gap-2"
+                      size="sm"
+                    >
+                      <span className="fs-5" style={{ lineHeight: 1 }}>
+                        ☰
+                      </span>
+                    </Button>
+                  </div>
                 </div>
               </div>
 
@@ -3093,12 +3173,41 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                           [roomSlotIndex]: key,
                         }));
 
+                      // Sort room categories ascending by their cheapest
+                      // rate, and — inside each category — sort the
+                      // individual rate cards the same way, so the
+                      // operator always sees the most affordable option
+                      // first. Same helper as the inhouse /room-list.
+                      const priceOf = (r) => {
+                        const v = Number(r?.rate);
+                        return Number.isFinite(v)
+                          ? v
+                          : Number.POSITIVE_INFINITY;
+                      };
+                      const sortedRoomCategories = [
+                        ...(hotel.roomCategories || []),
+                      ]
+                        .map((cat) => ({
+                          ...cat,
+                          availableRates: [
+                            ...(cat.availableRates || []),
+                          ].sort((a, b) => priceOf(a) - priceOf(b)),
+                        }))
+                        .sort((a, b) => {
+                          const minA = a.availableRates.length
+                            ? priceOf(a.availableRates[0])
+                            : Number.POSITIVE_INFINITY;
+                          const minB = b.availableRates.length
+                            ? priceOf(b.availableRates[0])
+                            : Number.POSITIVE_INFINITY;
+                          return minA - minB;
+                        });
                       const inner = (
                         <Accordion
                           activeKey={slotActiveKey}
                           onSelect={(key) => setSlotActiveKey(key)}
                         >
-                          {hotel.roomCategories.map((category, index) => {
+                          {sortedRoomCategories.map((category, index) => {
                             const eventKey = index.toString();
                             const isActive = slotActiveKey === eventKey;
                             const filteredRates = (
@@ -3256,6 +3365,8 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                 });
                               });
                             if (filteredRates.length === 0) return null;
+                            if (!matchesRoomSearch(category.roomCategory))
+                              return null;
 
                             return (
                               <Accordion.Item
@@ -3272,23 +3383,21 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                       <h5 className="mb-1">
                                         {category.roomCategory}
                                       </h5>
-                                      <p className="mb-0 text-muted small">
-                                        {category.baseRoomType}
-                                      </p>
                                     </div>
 
                                     <div className="d-flex align-items-center gap-3">
                                       <div className="room-category-price text-end">
                                         <div className="price-range">
                                           From{" "}
+                                          {/* Cheapest card in this category, read
+                                              through the same expression the cards
+                                              use (marked-up total). `rate.rate` was
+                                              used before, and GRN / GoGlobal fill
+                                              that field with the PRE-markup price,
+                                              so their headers under-quoted. */}
                                           {formatPrice(
                                             Math.min(
-                                              ...filteredRates.map(
-                                                (rate) =>
-                                                  rate.rate ||
-                                                  rate.totalRate ||
-                                                  0,
-                                              ),
+                                              ...filteredRates.map(displayTotalOf),
                                             ),
                                           )}
                                         </div>
@@ -3424,6 +3533,9 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                           rate.rateKey
                                                         ]?.nonRefundable ??
                                                           rate.nonRefundable,
+                                                        isDeadlinePassed(
+                                                          resolveDeadlineDate(rate),
+                                                        ),
                                                       )}
                                                 </div>
 
@@ -3496,54 +3608,21 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                     {rate.contractLabel}
                                                   </div>
 
-                                                  {/* ATHARVA (apiId 3) per-rate DeadLineDate pill,
-                                                      sourced from HSearchByHotelCode_V2. Sits directly
-                                                      above the Cancellation link so the operator
-                                                      sees the cut-off before opening the policy
-                                                      modal. Guarded on apiId now that Darina also
-                                                      populates rate.deadlineDate (ISO yyyy-MM-dd) —
-                                                      the Atharva helper expects DD-MMM-YYYY. */}
-                                                  {resolveApiId(hotel) ===
-                                                    apiIdMapping.ATHARVA &&
-                                                    rate.deadlineDate && (
-                                                      <div className="feature-item">
-                                                        {renderAtharvaDeadlinePill(
-                                                          rate.deadlineDate,
-                                                        )}
-                                                      </div>
-                                                    )}
-
-                                                  {/* Darina (apiId 16) free-cancellation deadline —
-                                                      BE emits rate.deadlineDate in ISO yyyy-MM-dd
-                                                      as the "Free cancellation until X" band's
-                                                      toDate. Hidden for non-refundable / no-free
-                                                      band rates (deadlineDate is null there). */}
-                                                  {resolveApiId(hotel) ===
-                                                    apiIdMapping.DARINA &&
-                                                    rate.deadlineDate && (
-                                                      <div className="feature-item">
-                                                        {renderDarinaDeadlinePill(
-                                                          rate.deadlineDate,
-                                                        )}
-                                                      </div>
-                                                    )}
-
-                                                  {/* GoGlobal (apiId 21) cancellation deadline —
-                                                      CxlDeadLine (dd/MMM/yyyy) shown in red directly
-                                                      above the Cancellation Policies link. */}
-                                                  {resolveApiId(hotel) ===
-                                                    apiIdMapping.GOGLOBAL &&
-                                                    rate.deadlineDate && (
-                                                      <div className="feature-item">
-                                                        {renderGoGlobalDeadlinePill(
-                                                          rate.deadlineDate,
-                                                        )}
-                                                      </div>
-                                                    )}
-
-                                                  {resolveApiId(hotel) === apiIdMapping.GRN && (
+                                                  {/* Free-cancellation cut-off, shown for every
+                                                      supplier. GRN keeps its own colour-coded,
+                                                      IST-based pill; everything else goes through
+                                                      the shared red one, which falls back to the
+                                                      earliest cancellation-policy fromDate for the
+                                                      suppliers that send no deadline field. */}
+                                                  {resolveApiId(hotel) === apiIdMapping.GRN ? (
                                                     <div className="feature-item">
                                                       <GrnDeadlinePill rate={rate} />
+                                                    </div>
+                                                  ) : (
+                                                    <div className="feature-item">
+                                                      <RateDeadlinePill
+                                                        rate={rate}
+                                                      />
                                                     </div>
                                                   )}
                                                   {renderPayableAtHotelPill(rate)}
@@ -3686,6 +3765,9 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                               rate.rateKey
                                                             ]?.nonRefundable ??
                                                               rate.nonRefundable,
+                                                            isDeadlinePassed(
+                                                              resolveDeadlineDate(rate),
+                                                            ),
                                                           )}
                                                       {rate.roomStatus ===
                                                       "On Request" ? (
@@ -3715,51 +3797,20 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                         </span>
                                                       </div>
                                                     )}
-                                                    {/* ATHARVA (apiId 3) per-rate DeadLineDate pill,
-                                                        sourced from HSearchByHotelCode_V2. Guarded
-                                                        on apiId now that Darina also populates
-                                                        rate.deadlineDate (different format). */}
-                                                    {resolveApiId(hotel) ===
-                                                      apiIdMapping.ATHARVA &&
-                                                      rate.deadlineDate && (
-                                                        <div className="feature-item d-flex align-items-center">
-                                                          <FaInfoCircle className="me-2 flex-shrink-0" />
-                                                          {renderAtharvaDeadlinePill(
-                                                            rate.deadlineDate,
-                                                          )}
-                                                        </div>
-                                                      )}
-                                                    {/* Darina (apiId 16) free-cancellation deadline
-                                                        pill. BE emits ISO yyyy-MM-dd; helper renders
-                                                        "Free cancellation until DD MMM YYYY,
-                                                        11:59 PM UAE". */}
-                                                    {resolveApiId(hotel) ===
-                                                      apiIdMapping.DARINA &&
-                                                      rate.deadlineDate && (
-                                                        <div className="feature-item d-flex align-items-center">
-                                                          <FaInfoCircle className="me-2 flex-shrink-0" />
-                                                          {renderDarinaDeadlinePill(
-                                                            rate.deadlineDate,
-                                                          )}
-                                                        </div>
-                                                      )}
-                                                    {/* GoGlobal (apiId 21) cancellation deadline —
-                                                        CxlDeadLine (dd/MMM/yyyy) in red above the link. */}
-                                                    {resolveApiId(hotel) ===
-                                                      apiIdMapping.GOGLOBAL &&
-                                                      rate.deadlineDate && (
-                                                        <div className="feature-item d-flex align-items-center">
-                                                          <FaInfoCircle className="me-2 flex-shrink-0" />
-                                                          {renderGoGlobalDeadlinePill(
-                                                            rate.deadlineDate,
-                                                          )}
-                                                        </div>
-                                                      )}
-                                                    {resolveApiId(hotel) === apiIdMapping.GRN && (
-                                                    <div className="feature-item">
-                                                      <GrnDeadlinePill rate={rate} />
-                                                    </div>
-                                                  )}
+                                                    {/* Free-cancellation cut-off for every supplier;
+                                                        GRN keeps its own colour-coded IST pill. */}
+                                                    {resolveApiId(hotel) === apiIdMapping.GRN ? (
+                                                      <div className="feature-item">
+                                                        <GrnDeadlinePill rate={rate} />
+                                                      </div>
+                                                    ) : (
+                                                      <div className="feature-item d-flex align-items-center">
+                                                        <FaInfoCircle className="me-2 flex-shrink-0" />
+                                                        <RateDeadlinePill
+                                                          rate={rate}
+                                                        />
+                                                      </div>
+                                                    )}
                                                   {renderPayableAtHotelPill(rate)}
                                                     <div className="feature-item d-flex align-items-center">
                                                       <Button
@@ -4235,38 +4286,16 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                   const perNight = perRoomStayTotal / stayNights;
                   return (
                     <Row key={index} className="g-4 mb-4">
-                      <Col md={6}>
+                      {/* Stock room photos and the hardcoded amenity badges
+                          used to sit here. Both were the same for every hotel,
+                          so the modal now shows only what the supplier
+                          actually returned for this rate. */}
+                      <Col md={12}>
                         <h5>Room {index + 1}</h5>
-                        <div
-                          id={`roomGallery-${index}`}
-                          className="carousel slide acuurate-rate-details-modal"
-                          data-bs-ride="carousel"
-                        >
-                          <div className="carousel-inner rounded">
-                            {sampleGallery
-                              .slice(index * 3, index * 3 + 3)
-                              .map((img, idx) => (
-                                <div
-                                  key={idx}
-                                  className={`carousel-item ${idx === 0 ? "active" : ""}`}
-                                >
-                                  <img src={img} className="d-block w-100" alt="Room" />
-                                </div>
-                              ))}
-                          </div>
-                        </div>
-                      </Col>
-                      <Col md={6}>
                         <h5 className="mb-2">{rate.roomCategory}</h5>
                         <p className="text-muted">{rate.roomTypeDescription}</p>
-                        <div className="d-flex flex-wrap gap-2 mb-3">
-                          <Badge bg="secondary">High speed internet</Badge>
-                          <Badge bg="secondary">Private bathroom</Badge>
-                          <Badge bg="secondary">Kitchen</Badge>
-                          <Badge bg="secondary">TV</Badge>
-                        </div>
                         <div className="booking-details-modal">
-                          <div className="d-flex justify-content-between mb-2">
+                          <div className="d-flex align-items-center gap-2 mb-2">
                             <span>Meal Plan:</span>
                             <span className="fw-semibold">{rate.mealPlan}</span>
                           </div>
@@ -4315,7 +4344,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                               note={
                                 rate.grnPriceChanged || rate.grnPolicyChanged
                                   ? "Updated by GRN since your search — accepted."
-                                  : "Verified with GRN."
+                                  : "Verified."
                               }
                             />
                           )}
@@ -4546,7 +4575,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                 policy={policiesModalData.grnPolicy}
                 note={
                   policiesModalData.grnVerified
-                    ? "Verified with GRN just now — this is the policy that will apply to the booking."
+                    ? "Verified just now — this is the policy that will apply to the booking."
                     : prebookLoading
                       ? "Search-time policy shown; verifying with GRN…"
                       : "Search-time policy shown."

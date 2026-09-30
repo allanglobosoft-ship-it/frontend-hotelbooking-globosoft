@@ -20,6 +20,7 @@ import {
   FaInbox,
   FaUser,
   FaUsers,
+  FaArrowLeft,
 } from "react-icons/fa";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
@@ -31,6 +32,7 @@ import { formatDateTime } from "../../utils/dateUtils";
 // /booking-details/hotel-booking-list and long-stay list use, so all three
 // pages share one uniform look. Visual only; no logic change.
 import "../../styles/HotelBookingListModern.css";
+import DashboardRedirections from "../../components/DashboardRedirections";
 
 // Rows-per-page choices — same set as /booking-details/hotel-booking-list.
 const PER_PAGE_OPTIONS = [10, 25, 50, 100];
@@ -412,6 +414,18 @@ export default function LastMinuteBookingList() {
               paddingRight: "0.5rem",
             }}
           >
+            {/* Back to the signed-in user's dashboard — top-left, above the header row */}
+            <div className="mb-3">
+              <Button
+                variant="outline-secondary"
+                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
+              >
+                <FaArrowLeft />
+                Back
+              </Button>
+            </div>
+
             {/* Header: Title + Search (left) | Time Period (right) — mirrors
                 /booking-details/hotel-booking-list */}
             <div className="d-flex justify-content-between align-items-end mb-3 hbl-header">

@@ -242,7 +242,7 @@ const SearchableSelect = ({
   );
 };
 
-const AgentReg = () => {
+const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {}) => {
   const navigate = useNavigate();
   const location = useLocation();
   const [items, setItems] = useState([]);
@@ -959,6 +959,11 @@ const AgentReg = () => {
     setShowModal(false);
     setEditing(null);
     setIsViewMode(false); // Reset view mode
+    // In embedded mode (rendered inline from AgentView), let the parent know
+    // the edit modal has closed so it can refresh its data / hide the wrapper.
+    if (embedded && typeof onClose === "function") {
+      onClose();
+    }
     setFormData({
       dateOfBirth: "",
       companyName: "",
@@ -1138,6 +1143,20 @@ const AgentReg = () => {
     navigate(location.pathname, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.search]);
+
+  // Embedded mode: when AgentView renders this component inline and passes
+  // `initialEditId`, auto-open the same edit modal without changing the URL
+  // (so the admin stays on /registration/agent/view/{id}). Same sentinel
+  // pattern as the ?edit query above.
+  const autoEmbeddedEditFiredRef = useRef(false);
+  useEffect(() => {
+    if (!embedded) return;
+    if (autoEmbeddedEditFiredRef.current) return;
+    if (!initialEditId) return;
+    autoEmbeddedEditFiredRef.current = true;
+    openEdit({ id: Number(initialEditId) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embedded, initialEditId]);
 
   // Close roles dropdown when clicking outside
   useEffect(() => {
@@ -2331,12 +2350,12 @@ const AgentReg = () => {
     setShowApiDropdown(false);
   };
 
-  return (
-    <div className="min-vh-100 bg-light d-flex flex-column">
-      <Topbar />
-      <div className="d-flex flex-grow-1">
-        <Sidebar />
-        <main className="flex-grow-1 p-4">
+  // Everything below (Card list + all Modals) is the shared body of this
+  // page. In embedded mode (rendered inline from AgentView), we skip the
+  // Topbar/Sidebar chrome AND the list Card — the host page already has
+  // its own chrome, and only the Update-Agent modal is relevant there.
+  const listCard = (
+    <>
           <Card className="shadow-sm rounded-xl">
             <Card.Header className="d-flex flex-column flex-sm-row gap-2 justify-content-between align-items-stretch align-items-sm-center">
               <span className="fw-semibold">Agent</span>
@@ -2540,7 +2559,11 @@ const AgentReg = () => {
               )}
             </Card.Body>
           </Card>
+    </>
+  );
 
+  const modals = (
+    <>
           <Modal
             show={showModal}
             onHide={closeModal}
@@ -2979,9 +3002,12 @@ const AgentReg = () => {
                     <Row>
                       <Col md={6}>
                         <Form.Group className="mb-3">
-                          <Form.Label>Markup</Form.Label>
+                          <Form.Label>
+                            Markup <span className="text-danger">*</span>
+                          </Form.Label>
                           <Form.Select
                             value={formData.markup}
+                            required
                             className={`form-input ${
                               validationErrors.markup ? "is-invalid" : ""
                             } ${isViewMode ? "bg-light" : ""}`}
@@ -3017,9 +3043,12 @@ const AgentReg = () => {
                       </Col>
                       <Col md={6}>
                         <Form.Group className="mb-3">
-                          <Form.Label>Currency</Form.Label>
+                          <Form.Label>
+                            Currency <span className="text-danger">*</span>
+                          </Form.Label>
                           <Form.Select
                             value={formData.currency}
+                            required
                             className={`form-input ${
                               validationErrors.currency ? "is-invalid" : ""
                             } ${isViewMode ? "bg-light" : ""}`}
@@ -5047,6 +5076,21 @@ const AgentReg = () => {
               </Button>
             </Modal.Footer>
           </Modal>
+    </>
+  );
+
+  if (embedded) {
+    return modals;
+  }
+
+  return (
+    <div className="min-vh-100 bg-light d-flex flex-column">
+      <Topbar />
+      <div className="d-flex flex-grow-1">
+        <Sidebar />
+        <main className="flex-grow-1 p-4">
+          {listCard}
+          {modals}
         </main>
       </div>
     </div>

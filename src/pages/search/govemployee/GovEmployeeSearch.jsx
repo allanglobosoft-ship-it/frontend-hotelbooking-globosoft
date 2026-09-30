@@ -29,6 +29,7 @@ import AgentSelect from "../../../components/AgentSelect";
 import Sidebar from "../../../components/Sidebar";
 import TopBar from "../../../components/TopBar";
 import axiosInstance from "../../../components/AxiosInstance";
+import { logAgentSearch } from "../../../utils/agentSearchLog";
 import AdvertisementCarousel from "../../../components/AdvertisementCarousel";
 import AgentCreditBalance from "../../../components/AgentCreditBalance";
 import DateInput from "../../../components/DateInput";
@@ -371,11 +372,17 @@ export default function GovEmployeeSearch() {
     return aed && Number.isFinite(aed.rate) && aed.rate > 0 ? aed.rate : 1;
   }, [currencyOptions]);
 
+  // factor = AED → target multiplier. master_currency.value is "AED per 1 unit"
+  // of the target, so the multiplier is aedBaseRate / value (= 1/value when AED
+  // itself has value 1), NOT value / aedBaseRate.
   const displayCurrency = useMemo(() => ({
     code: selectedCurrency?.code || "AED",
     factor:
-      selectedCurrency && Number.isFinite(selectedCurrency.rate) && aedBaseRate
-        ? selectedCurrency.rate / aedBaseRate
+      selectedCurrency &&
+      Number.isFinite(selectedCurrency.rate) &&
+      selectedCurrency.rate > 0 &&
+      aedBaseRate
+        ? aedBaseRate / selectedCurrency.rate
         : 1,
   }), [selectedCurrency, aedBaseRate]);
   const displayCurrencyCode = displayCurrency.code;
@@ -688,6 +695,20 @@ export default function GovEmployeeSearch() {
           adultAges: room.adultAges?.length ? room.adultAges : [25],
         })),
       };
+
+      // Agent search log (Unbooked Opportunities → Searches tab) —
+      // fire-and-forget, agent-only, non-blocking. See utils/agentSearchLog.js.
+      logAgentSearch({
+        agentId: effectiveAgentId,
+        agentName: loggedInAgentName,
+        destinationId: selectedDestination?.value,
+        destinationLabel: selectedDestination?.label,
+        nationalityLabel: selectedNationality?.label,
+        checkIn,
+        checkOut,
+        rooms,
+        source: "gov-employee",
+      });
 
       const { data } = await axiosInstance.post(
         "/api/gov-employee-hotel-search/search",

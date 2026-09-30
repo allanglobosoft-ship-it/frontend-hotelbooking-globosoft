@@ -12,6 +12,7 @@ import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import Select from "react-select";
 import axiosInstance from "../../components/AxiosInstance";
+import { logAgentSearch } from "../../utils/agentSearchLog";
 import AgentBalanceDisplay from "../../components/AgentBalanceDisplay";
 import AgentSelect from "../../components/AgentSelect";
 import AdvertisementCarousel from "../../components/AdvertisementCarousel";
@@ -663,11 +664,17 @@ export default function LongStaySearch() {
   }, [currencyOptions]);
 
   // {code, factor} threaded downstream. factor = AED→target multiplier.
+  // master_currency.value is "AED per 1 unit" of the target, so the multiplier
+  // is aedBaseRate / value (= 1/value when AED itself has value 1),
+  // NOT value / aedBaseRate.
   const displayCurrency = useMemo(() => ({
     code: selectedCurrency?.code || "AED",
     factor:
-      selectedCurrency && Number.isFinite(selectedCurrency.rate) && aedBaseRate
-        ? selectedCurrency.rate / aedBaseRate
+      selectedCurrency &&
+      Number.isFinite(selectedCurrency.rate) &&
+      selectedCurrency.rate > 0 &&
+      aedBaseRate
+        ? aedBaseRate / selectedCurrency.rate
         : 1,
   }), [selectedCurrency, aedBaseRate]);
   const displayCurrencyCode = displayCurrency.code;
@@ -900,6 +907,20 @@ export default function LongStaySearch() {
         roomConfigurations,
         agentId,
       };
+
+      // Agent search log (Unbooked Opportunities → Searches tab) —
+      // fire-and-forget, agent-only, non-blocking. See utils/agentSearchLog.js.
+      logAgentSearch({
+        agentId,
+        agentName: loggedInAgentName,
+        destinationId: destinationCityId,
+        destinationLabel: selectedDestination?.label,
+        nationalityLabel: selectedNationality?.label,
+        checkIn,
+        checkOut,
+        rooms,
+        source: "long-stay",
+      });
 
       const searchKeyRes = await axiosInstance.post(
         "/api/long-stay-search/search",
