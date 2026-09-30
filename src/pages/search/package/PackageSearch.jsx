@@ -15,6 +15,7 @@ import { ENABLE_MAP_PREVIEW } from "../../../config/featureFlags";
 import { resolveApproxLocation } from "../../../utils/locationCentroids";
 import Select from "react-select";
 import axiosInstance from "../../../components/AxiosInstance";
+import { logAgentSearch } from "../../../utils/agentSearchLog";
 import AgentBalanceDisplay from "../../../components/AgentBalanceDisplay";
 import AgentCreditBalance from "../../../components/AgentCreditBalance";
 import AgentSelect from "../../../components/AgentSelect";
@@ -802,6 +803,20 @@ const PackageSearch = () => {
       };
 
       console.log("Package search payload:", payload);
+      // Agent search log (Unbooked Opportunities → Searches tab) —
+      // package search has optional flight dates; use arrival as
+      // checkIn / departure as checkOut so admins see the window.
+      logAgentSearch({
+        agentId: effectiveAgentId,
+        destinationId: selectedDestination?.value,
+        destinationLabel: selectedDestination?.label,
+        nationalityLabel: selectedNationality?.label,
+        checkIn: arrivalDateTime || null,
+        checkOut: departureDateTime || null,
+        rooms,
+        source: "package",
+      });
+
       const response = await axiosInstance.post(
         "/api/v1/package-booking/search",
         payload,

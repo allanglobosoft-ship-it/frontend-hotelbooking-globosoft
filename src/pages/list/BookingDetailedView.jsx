@@ -140,6 +140,30 @@ const voucherIndicatesDeferredCredit = (vg) => {
 // detail view and the list agree on wording for every persisted value
 // ("CREDITLIMIT" / "ONLINE" / "CASH" / "CARD" + legacy aliases). Boolean
 // fallbacks kept for rows that pre-date the paymentMode string column.
+/**
+ * Refund status to show for the booking as a whole.
+ *
+ * `booking.refundStatus` is a single value the create flow sets to
+ * "Non-Refundable" as soon as ANY room is (GrnHotelBookingService). On a GRN
+ * NON-BUNDLED booking each room carries its own cancellation policy, so that
+ * one label described the whole booking as non-refundable when only one room
+ * was — the refundable rooms looked unrefundable.
+ *
+ * When the rooms carry their own policies (GRN only today) they are the truth:
+ * show the shared status if they agree, and say "Mixed" if they do not, so the
+ * per-room cards below are read rather than the summary.
+ */
+const getRefundStatusLabel = (booking) => {
+  const rooms = Array.isArray(booking?.rooms) ? booking.rooms : [];
+  const perRoom = rooms
+    .map((r) => r?.refundStatus || r?.refundCategory)
+    .filter((v) => v != null && String(v).trim() !== "");
+  if (perRoom.length === 0) return booking?.refundStatus || "-";
+  const distinct = [...new Set(perRoom.map((v) => String(v).trim()))];
+  if (distinct.length === 1) return distinct[0];
+  return `Mixed — ${distinct.join(" / ")} (see per-room policy)`;
+};
+
 const getPaymentModeLabel = (booking) => {
   const raw =
     booking?.paymentMode ||
@@ -312,6 +336,10 @@ export default function BookingDetailedView() {
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [cancellingBooking, setCancellingBooking] = useState(false);
   const [cancellationReason, setCancellationReason] = useState("");
+  // Ticked by the operator when cancelling past the free-cancellation
+  // deadline; sent to the backend, which refuses that cancel without it.
+  const [acceptCancellationCharges, setAcceptCancellationCharges] =
+    useState(false);
 
   // Reconfirm (Confirm / Reject popup)
   const [showConfirmModal, setShowConfirmModal] = useState(false);
@@ -633,6 +661,20 @@ export default function BookingDetailedView() {
     priorStatus === "CONFIRMED" ||
     priorStatus === "RECONFIRMED" ||
     priorStatus === "COMPLETED";
+
+  // Mirrors the backend rule at HotelBookingController.resendMailToAgent:
+  //   useFinalVoucher = reconfirmed || completed || cancelled
+  // so the preview PDF the modal fetches (via /pdf?type=…) and the copy the
+  // modal shows are always the exact document that will actually be emailed.
+  // A CONFIRMED (still-tentative) booking resends the Proforma Voucher; once
+  // it has been ReConfirmed / Completed — or is Cancelled — it resends the
+  // real Voucher.
+  const resendUsesFinalDoc =
+    isCancelled || isReconfirmed || normalizedStatus === "COMPLETED";
+  const resendDocLabel = resendUsesFinalDoc
+    ? "Voucher"
+    : "Hotel Booking Proforma Voucher";
+  const resendDocType = resendUsesFinalDoc ? "VOUCHER" : "PROFORMA_VOUCHER";
   // const isCancellationAllowed =
   //   String(booking?.refundStatus || "").toLowerCase() !== "non-refundable";
 
@@ -654,8 +696,27 @@ export default function BookingDetailedView() {
   // Cancel
   const openCancelModal = () => {
     setCancellationReason("");
+    setAcceptCancellationCharges(false);
     setShowCancelModal(true);
   };
+
+  /**
+   * True when this booking is past its free-cancellation deadline — the case
+   * the backend used to refuse outright. Mirrors the backend's own test
+   * (BookingCancellationServiceImpl): API bookings only, and never for a
+   * non-refundable rate, whose deadline is stamped in the past at create time
+   * and so is meaningless.
+   */
+  const isPastCancellationDeadline = (() => {
+    if (!booking?.deadlineDate) return false;
+    if (booking.apiBooking === false) return false;
+    if (String(booking.refundStatus || "").toLowerCase() === "non-refundable") {
+      return false;
+    }
+    const deadline = new Date(booking.deadlineDate);
+    if (Number.isNaN(deadline.getTime())) return false;
+    return new Date() > deadline;
+  })();
 
   const cancelBooking = async () => {
     // Cancellation reason is now mandatory — the modal marks the field
@@ -674,6 +735,11 @@ export default function BookingDetailedView() {
       // fallback also failed; the BE treats null as "no capture" and the
       // "Booking Cancelled" history row renders "-".
       const params = { reason, bookingLocation: operatorLocation };
+      // Only sent when it actually applies, so nothing changes for a booking
+      // still inside its free-cancellation window.
+      if (isPastCancellationDeadline) {
+        params.acceptCancellationCharges = acceptCancellationCharges;
+      }
       const response = await axiosInstance.delete(
         `/api/hotel-booking/${id}/cancel`,
         { params },
@@ -685,6 +751,7 @@ export default function BookingDetailedView() {
       ) {
         setShowCancelModal(false);
         setCancellationReason("");
+        setAcceptCancellationCharges(false);
         // Atharva certification bug #3 (Case 3): once a booking has been
         // created AND cancelled, the ORIGINAL search's session artefacts
         // (tokenId / hKey / per-room rateKey) are stale — pricing and
@@ -1212,7 +1279,7 @@ export default function BookingDetailedView() {
       const [docRes, agentRes] = await Promise.all([
         axiosInstance
           .get(`/api/bookings/${id}/pdf`, {
-            params: { type: "VOUCHER" },
+            params: { type: resendDocType },
           })
           .catch(() => null),
         agentId
@@ -1672,6 +1739,20 @@ export default function BookingDetailedView() {
                       </Col>
                       <Col md={6}>
                         <InfoRow label="Agent" value={booking.agentName} />
+                        {/* Supplier — which external API fulfilled this
+                            booking (INHOUSE / IWTX / GRN / X3 / GOGLOBAL /
+                            RATEHAWK / ATHARVA / DARINA / JUMEIRAH / JUNIPER).
+                            ADMIN-only so agents never see it — mirrors the
+                            "agent must never know the supplier" whitelabel
+                            invariant applied on the All Bookings list. Non-
+                            hotel-supplier rows fall back to "Inhouse" so the
+                            cell never renders blank. */}
+                        {(isAdmin || isSuperAdmin) && (
+                          <InfoRow
+                            label="Supplier"
+                            value={booking.apiId || "Inhouse"}
+                          />
+                        )}
                         {/* Contact — "Booking done for" value entered on the
                             booking page, shown as "<value>/<agentName>". Only
                             rendered when a value was entered. */}
@@ -1728,7 +1809,7 @@ export default function BookingDetailedView() {
                         />
                         <InfoRow
                           label="Refund Status"
-                          value={booking.refundStatus}
+                          value={getRefundStatusLabel(booking)}
                         />
                         {/* Payment Mode — same source of truth the Booking
                             List uses (booking.paymentMode). Label helper is
@@ -2095,7 +2176,7 @@ export default function BookingDetailedView() {
                     })()}
                     <span>
                       <span style={{ fontWeight: "600" }}>Refund Type: </span>
-                      {booking.refundStatus || "-"}
+                      {getRefundStatusLabel(booking)}
                     </span>
                     {/* Payable at Hotel — persisted from GRN's
                         price_details.hotel_charges[] with included:false at
@@ -3287,6 +3368,48 @@ export default function BookingDetailedView() {
                             </div>
                           );
                         })()}
+                      {/* Past the free-cancellation deadline the booking can
+                          still be cancelled — the supplier may charge only a
+                          partial penalty — but the operator has to accept that
+                          charges may apply before the button unlocks. */}
+                      {isPastCancellationDeadline && (
+                        <div
+                          className="mb-3 text-start"
+                          style={{
+                            border: "1px solid #f5c2c7",
+                            backgroundColor: "#fff5f5",
+                            color: "#842029",
+                            borderRadius: "4px",
+                            padding: "10px 12px",
+                            fontSize: "0.9rem",
+                          }}
+                        >
+                          <div className="fw-semibold mb-1">
+                            <FaExclamationCircle className="me-2" />
+                            The free-cancellation deadline has passed
+                          </div>
+                          <div className="mb-2">
+                            You can still cancel this booking, but the supplier may
+                            apply cancellation charges. Any charge is settled
+                            separately from the amount shown above.
+                          </div>
+                          <Form.Check
+                            type="checkbox"
+                            id="acceptCancellationCharges"
+                            checked={acceptCancellationCharges}
+                            disabled={cancellingBooking}
+                            onChange={(e) =>
+                              setAcceptCancellationCharges(e.target.checked)
+                            }
+                            label={
+                              <span className="fw-semibold">
+                                I understand that cancellation charges may apply.
+                              </span>
+                            }
+                          />
+                        </div>
+                      )}
+
                       <Form.Group controlId="cancellationReason" className="text-start">
                         <Form.Label className="fw-semibold">
                           Cancellation Reason{" "}
@@ -3321,6 +3444,7 @@ export default function BookingDetailedView() {
                       onClick={() => {
                         setShowCancelModal(false);
                         setCancellationReason("");
+                        setAcceptCancellationCharges(false);
                       }}
                       disabled={cancellingBooking}
                     >
@@ -3329,7 +3453,11 @@ export default function BookingDetailedView() {
                     <Button
                       variant="danger"
                       onClick={cancelBooking}
-                      disabled={cancellingBooking || !cancellationReason.trim()}
+                      disabled={
+                        cancellingBooking ||
+                        !cancellationReason.trim() ||
+                        (isPastCancellationDeadline && !acceptCancellationCharges)
+                      }
                     >
                       {cancellingBooking ? (
                         <>
@@ -4279,7 +4407,7 @@ export default function BookingDetailedView() {
       >
         <Modal.Header closeButton={!resendingMail}>
           <Modal.Title style={{ fontSize: "1rem", fontWeight: 700 }}>
-            Resend Voucher to Agent
+            Resend {resendDocLabel} to Agent
             {booking?.bookingCode ? ` — ${booking.bookingCode}` : ""}
           </Modal.Title>
         </Modal.Header>
@@ -4288,14 +4416,14 @@ export default function BookingDetailedView() {
             <div className="d-flex align-items-center justify-content-center h-100">
               <Spinner animation="border" variant="primary" />
               <span className="ms-2 text-muted">
-                Preparing voucher attachment…
+                Preparing {resendDocLabel.toLowerCase()} attachment…
               </span>
             </div>
           ) : resendMailPdfUrl ? (
             <iframe
               key={resendMailPdfUrl}
               src={resendMailPdfUrl}
-              title="Voucher preview"
+              title={`${resendDocLabel} preview`}
               style={{
                 width: "100%",
                 height: "100%",

@@ -16,6 +16,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import Select from "react-select";
 import AgentSelect from "../../../components/AgentSelect";
 import axiosInstance from "../../../components/AxiosInstance";
+import { logAgentSearch } from "../../../utils/agentSearchLog";
 import { toast } from "react-hot-toast";
 import Sidebar from "../../../components/Sidebar";
 import TopBar from "../../../components/TopBar";
@@ -581,6 +582,24 @@ const ActivitySearch = () => {
         adult: String(tourAdults || 1),
         child: String(tourChildren || 0),
       };
+
+      // Agent search log (Unbooked Opportunities → Searches tab) —
+      // tours & activities uses tourDate and multi-city destinations.
+      logAgentSearch({
+        agentId: agentId ? Number(agentId) : null,
+        destinationId: firstDest?.value,
+        destinationLabel: firstDest?.label,
+        nationalityLabel: nationality?.label,
+        checkIn: tourDate,
+        checkOut: tourDate,
+        rooms: [
+          {
+            adults: Number(tourAdults) || 1,
+            children: Number(tourChildren) || 0,
+          },
+        ],
+        source: "tours-and-activities",
+      });
 
       const response = await axiosInstance.post(
         "/api/makeYourOwnPackage/getActivityInhouse",

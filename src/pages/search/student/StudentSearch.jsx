@@ -18,17 +18,19 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Card, Button, Row, Col, Form, Spinner } from "react-bootstrap";
-import { FaSearch, FaStar, FaGraduationCap } from "react-icons/fa";
+import { FaSearch, FaStar, FaGraduationCap, FaArrowLeft } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
 import Select from "react-select";
 import AgentSelect from "../../../components/AgentSelect";
 import Sidebar from "../../../components/Sidebar";
 import TopBar from "../../../components/TopBar";
 import axiosInstance from "../../../components/AxiosInstance";
+import { logAgentSearch } from "../../../utils/agentSearchLog";
 import AdvertisementCarousel from "../../../components/AdvertisementCarousel";
 import AgentCreditBalance from "../../../components/AgentCreditBalance";
 import DateInput from "../../../components/DateInput";
 import "../../../styles/HotelSearch.css";
+import DashboardRedirections from "../../../components/DashboardRedirections";
 
 // ─────────────────────────────────────────────
 // Counter — same +/- counter as HotelSearch.jsx.
@@ -410,14 +412,18 @@ export default function StudentSearch() {
     return aed && Number.isFinite(aed.rate) && aed.rate > 0 ? aed.rate : 1;
   }, [currencyOptions]);
 
+  // factor = AED → target multiplier. master_currency.value is "AED per 1 unit"
+  // of the target, so the multiplier is aedBaseRate / value (= 1/value when AED
+  // itself has value 1), NOT value / aedBaseRate.
   const displayCurrency = useMemo(
     () => ({
       code: selectedCurrency?.code || "AED",
       factor:
         selectedCurrency &&
         Number.isFinite(selectedCurrency.rate) &&
+        selectedCurrency.rate > 0 &&
         aedBaseRate
-          ? selectedCurrency.rate / aedBaseRate
+          ? aedBaseRate / selectedCurrency.rate
           : 1,
     }),
     [selectedCurrency, aedBaseRate],
@@ -626,6 +632,20 @@ export default function StudentSearch() {
           childAges: r.childAges || [],
         })),
       };
+      // Agent search log (Unbooked Opportunities → Searches tab) —
+      // fire-and-forget, agent-only, non-blocking. See utils/agentSearchLog.js.
+      logAgentSearch({
+        agentId: effectiveAgentId,
+        agentName: loggedInAgentName,
+        destinationId: selectedDestination?.value,
+        destinationLabel: selectedDestination?.label,
+        nationalityLabel: selectedNationality?.label,
+        checkIn,
+        checkOut,
+        rooms,
+        source: "student",
+      });
+
       const { data } = await axiosInstance.post(
         "/api/student-hotel-search/search",
         payload,
@@ -730,6 +750,18 @@ export default function StudentSearch() {
       <div className="d-flex flex-grow-1">
         <Sidebar />
         <main className="flex-grow-1 p-4 hs-page">
+          {/* Back to the signed-in user's dashboard — top-left, above the page content */}
+          <div className="mb-3">
+            <Button
+              variant="outline-secondary"
+              onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+              className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
+            >
+              <FaArrowLeft />
+              Back
+            </Button>
+          </div>
+
           {/* ── Results-page heading ──
               Shown once actual results have arrived (not just on search
               click), above the search summary / form. Matches the heading

@@ -48,18 +48,38 @@ import "../../styles/HotelBookingListModern.css";
 const PER_PAGE_OPTIONS = [10, 25, 50, 100];
 const SEARCH_ALL_PAGE_SIZE = 10000;
 
+// Widths are proportional hints for the browser (table-layout: fixed +
+// width: 100% below). The layout fits inside the viewport without any
+// horizontal scroll:
+//   * Headers use whiteSpace: normal (see thStyle) so full multi-word
+//     labels wrap onto two lines instead of getting truncated to
+//     "AGENT N...".
+//   * Row cells use whiteSpace: nowrap so dates and short values stay
+//     on one line; anything longer than its column truncates with
+//     ellipsis AND carries a title tooltip so hovering reveals the
+//     full string. Hotel column explicitly re-enables wrapping so its
+//     name + type badge can stack.
+// Sum kept ~1250px so all 16 admin columns land inside the viewport
+// content area without a horizontal scrollbar. Multi-word cell values
+// still wrap (see baseCellStyle) so nothing gets truncated.
 const COLUMN_WIDTHS = {
-  sn: "40px",
-  agentName: "90px",
-  customerName: "120px",
-  bookingCode: "95px",
-  bookDate: "90px",
-  bookingDetails: "230px",
-  deadlineDate: "105px",
-  paymentMode: "110px",
-  paymentStatus: "110px",
-  notification: "100px",
-  action: "110px",
+  sn: "34px",
+  agentName: "82px",  // admin-only
+  supplier: "72px",   // admin-only (whitelabel invariant — agents never see this)
+  booker: "100px",    // was Customer Name — header now reads "Pax Name"
+  pax: "38px",        // total pax
+  rsvnRef: "90px",    // was Booking Code
+  confirmationNumber: "80px", // header now reads "Hotel Conf"
+  bookDate: "75px",
+  hotel: "130px",     // hotel name + booking-type badge
+  bookedBy: "90px",   // "Booker" column — operator who created the booking (Hotel only)
+  checkIn: "72px",
+  checkOut: "72px",
+  deadlineDate: "80px",
+  paymentMode: "95px",
+  paymentStatus: "90px",
+  status: "90px",     // was Notification — NotificationCell content unchanged
+  action: "50px",
 };
 
 const BOOKING_TYPE_OPTIONS = [
@@ -370,7 +390,10 @@ const AllBookingsList = () => {
   };
 
   // +1 for the Payment Status column.
-  const colSpan = role === "admin" ? 11 : 10;
+  // 14 columns visible to every role; admins additionally see Agent Name and
+  // Supplier, so 16 total. Update in sync with the <thead> below.
+  // Column count bumped by one — new "Booker" column sits after Hotel.
+  const colSpan = role === "admin" ? 17 : 15;
 
   return (
     <div className="min-vh-100 bg-light d-flex flex-column hbl-modern">
@@ -509,18 +532,23 @@ const AllBookingsList = () => {
                     <p className="mt-2 text-muted">Loading bookings...</p>
                   </div>
                 ) : (
-                  <div className="thin-scrollbar" style={{ overflowX: "auto", width: "100%" }}>
+                  <div className="thin-scrollbar" style={{ overflowX: "hidden", width: "100%" }}>
                     <Table
                       hover
                       size="sm"
                       className="mb-0 align-middle table-bordered hbl-table"
                       style={{
-                        tableLayout: "auto",
+                        // Fits the viewport without a horizontal scrollbar:
+                        // fixed layout distributes width: 100% across
+                        // every column according to the widths below,
+                        // then whiteSpace:nowrap + ellipsis on th/td
+                        // means labels stay on one line and any overflow
+                        // truncates gracefully instead of wrapping.
+                        tableLayout: "fixed",
                         width: "100%",
-                        fontSize: "0.78rem",
+                        fontSize: "0.75rem",
                         borderCollapse: "separate",
                         borderSpacing: 0,
-                        wordBreak: "break-word",
                       }}
                     >
                       <thead
@@ -533,21 +561,63 @@ const AllBookingsList = () => {
                         }}
                       >
                         <tr>
-                          <th style={thStyle("center", COLUMN_WIDTHS.sn)}>S.N</th>
+                          <th style={thStyle("center", COLUMN_WIDTHS.sn)}>SN</th>
                           {role === "admin" && (
                             <th style={thStyle(undefined, COLUMN_WIDTHS.agentName)}>Agent Name</th>
                           )}
-                          <th style={thStyle(undefined, COLUMN_WIDTHS.customerName)}>Customer Name</th>
-                          <th style={thStyle(undefined, COLUMN_WIDTHS.bookingCode)}>Booking Code</th>
+                          {/* Supplier column — admin-only so agents never
+                              see which supplier fulfilled the booking
+                              (whitelabel invariant). */}
+                          {role === "admin" && (
+                            <th style={thStyle("center", COLUMN_WIDTHS.supplier)}>Supplier</th>
+                          )}
+                          {/* Column renamed from "Booker" → "Pax Name".
+                              Data source unchanged (b.primaryGuestName) —
+                              this column always showed the guest name, the
+                              old header was misleading. A dedicated
+                              "Booker" column (operator who created the
+                              booking) now sits after Hotel below. */}
+                          <th style={thStyle(undefined, COLUMN_WIDTHS.booker)}>Pax Name</th>
+                          <th style={thStyle("center", COLUMN_WIDTHS.pax)}>Pax</th>
+                          <th style={thStyle(undefined, COLUMN_WIDTHS.rsvnRef)}>Rsvn Ref</th>
+                          {/* Confirmation No. — the supplier-side ref the
+                              operator entered on the booking detail page.
+                              Blank cell renders when unset. Shown to
+                              everyone since agents enter it themselves. */}
+                          {/* Full-text headers restored; multi-word
+                              labels wrap onto two lines (thStyle uses
+                              whiteSpace: normal) so nothing gets
+                              truncated to "AGENT N..." and no
+                              horizontal scroll is needed. */}
+                          {/* Header shortened from "Confirmation No." →
+                              "Hotel Conf". Data source unchanged
+                              (b.confirmationNumber, supplier-side ref
+                              entered on the detail page). */}
+                          <th style={thStyle("center", COLUMN_WIDTHS.confirmationNumber)}>Hotel Conf</th>
                           <th style={thStyle("center", COLUMN_WIDTHS.bookDate)}>Book Date</th>
-                          <th style={thStyle(undefined, COLUMN_WIDTHS.bookingDetails)}>Booking Details</th>
+                          <th style={thStyle(undefined, COLUMN_WIDTHS.hotel)}>Hotel</th>
+                          {/* Booker — the operator who created the
+                              booking (agent-staff picked in the search
+                              form, or created_by as fallback). Populated
+                              by UnifiedBookingListServiceImpl in the
+                              Hotel section; other booking-type rows show
+                              "-" because they don't currently capture an
+                              agent-staff attribution. Sits after Hotel
+                              per spec, distinct from Agent Name (agency)
+                              and Pax Name (guest). */}
+                          <th style={thStyle(undefined, COLUMN_WIDTHS.bookedBy)}>Booker</th>
+                          <th style={thStyle("center", COLUMN_WIDTHS.checkIn)}>Check In</th>
+                          <th style={thStyle("center", COLUMN_WIDTHS.checkOut)}>Check Out</th>
                           <th style={thStyle("center", COLUMN_WIDTHS.deadlineDate)}>Deadline Date</th>
                           <th style={thStyle("center", COLUMN_WIDTHS.paymentMode)}>Payment Mode</th>
                           {/* Payment Status — same mapping as
                               /booking-details/hotel-booking-list. See
                               getPaymentStatusLabel. */}
                           <th style={thStyle("center", COLUMN_WIDTHS.paymentStatus)}>Payment Status</th>
-                          <th style={thStyle("center", COLUMN_WIDTHS.notification)}>Notification</th>
+                          {/* Status — renamed from "Notification". Cell
+                              content unchanged, still rendered by
+                              NotificationCell. */}
+                          <th style={thStyle("center", COLUMN_WIDTHS.status)}>Status</th>
                           <th style={thStyle("center", COLUMN_WIDTHS.action)}>Action</th>
                         </tr>
                       </thead>
@@ -566,13 +636,23 @@ const AllBookingsList = () => {
                         ) : (
                           displayedBookings.map((b, i) => {
                             const baseCellStyle = {
-                              padding: "0.5rem 0.6rem",
-                              fontSize: "0.8rem",
+                              padding: "0.35rem 0.3rem",
+                              fontSize: "0.72rem",
                               border: "1px solid #dee2e6",
                               verticalAlign: "middle",
+                              // Cell values wrap onto additional lines
+                              // when they don't fit the column — so
+                              // nothing truncates with "..." and every
+                              // detail stays fully visible. overflowWrap
+                              // "break-word" only splits words when a
+                              // token is genuinely wider than the cell
+                              // (long booking codes); short words like
+                              // "Credit", "Limit", "Payment" break at
+                              // spaces first, so nothing renders as
+                              // "Credit Lim it".
                               whiteSpace: "normal",
                               overflow: "visible",
-                              wordBreak: "break-word",
+                              overflowWrap: "break-word",
                               lineHeight: 1.4,
                             };
                             return (
@@ -586,23 +666,57 @@ const AllBookingsList = () => {
                                   {serialNumberBase + i + 1}
                                 </td>
                                 {role === "admin" && (
-                                  <td style={{ ...baseCellStyle, width: COLUMN_WIDTHS.agentName }}>
+                                  <td style={{ ...baseCellStyle, width: COLUMN_WIDTHS.agentName }} title={b.agentName || ""}>
                                     <span className="fw-medium text-dark">{b.agentName || "-"}</span>
                                   </td>
                                 )}
-                                <td style={{ ...baseCellStyle, width: COLUMN_WIDTHS.customerName }}>
+                                {role === "admin" && (
+                                  <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.supplier }} title={b.supplierName || ""}>
+                                    <span className="fw-medium text-dark">
+                                      {b.supplierName || "-"}
+                                    </span>
+                                  </td>
+                                )}
+                                <td style={{ ...baseCellStyle, width: COLUMN_WIDTHS.booker }} title={b.primaryGuestName || ""}>
                                   <span className="d-inline-flex align-items-center" style={{ gap: "0.3rem" }}>
                                     <FaUser style={{ color: "#6c757d", fontSize: "0.78rem", flexShrink: 0 }} />
                                     <span className="fw-medium text-dark">{b.primaryGuestName || "-"}</span>
                                   </span>
                                 </td>
-                                <td style={{ ...baseCellStyle, width: COLUMN_WIDTHS.bookingCode }}>
+                                <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.pax }}>
+                                  {b.pax != null ? (
+                                    <span className="fw-medium text-dark">{b.pax}</span>
+                                  ) : (
+                                    <span className="text-muted">-</span>
+                                  )}
+                                </td>
+                                <td style={{ ...baseCellStyle, width: COLUMN_WIDTHS.rsvnRef }} title={b.bookingCode || ""}>
                                   <span className="fw-bold text-primary">{b.bookingCode || "-"}</span>
                                 </td>
-                                <td className="text-muted" style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.bookDate }}>
+                                <td style={{ ...baseCellStyle, textAlign: "center", fontFamily: "monospace", width: COLUMN_WIDTHS.confirmationNumber }} title={b.confirmationNumber || ""}>
+                                  {b.confirmationNumber ? (
+                                    <span className="text-dark">{b.confirmationNumber}</span>
+                                  ) : (
+                                    <span className="text-muted">-</span>
+                                  )}
+                                </td>
+                                <td className="text-muted" style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.bookDate }} title={formatDate(b.bookingDate) || ""}>
                                   {formatDate(b.bookingDate) || "-"}
                                 </td>
-                                <td style={{ ...baseCellStyle, width: COLUMN_WIDTHS.bookingDetails }}>
+                                <td
+                                  style={{
+                                    ...baseCellStyle,
+                                    width: COLUMN_WIDTHS.hotel,
+                                    // Hotel column keeps normal wrapping so
+                                    // the type badge can drop to a second
+                                    // line under a long hotel name — the
+                                    // rest of the row stays no-wrap.
+                                    whiteSpace: "normal",
+                                    overflow: "visible",
+                                    textOverflow: "clip",
+                                    wordBreak: "break-word",
+                                  }}
+                                >
                                   <div className="d-flex align-items-center" style={{ gap: "0.35rem", flexWrap: "wrap" }}>
                                     <span className="fw-semibold text-dark" style={{ fontSize: "0.875rem" }}>
                                       {b.hotelName || "-"}
@@ -614,17 +728,30 @@ const AllBookingsList = () => {
                                     >
                                       {b.bookingType || "-"}
                                     </span>
-                                    {formatDate(b.checkInDate) && formatDate(b.checkOutDate) && (
-                                      <span className="text-muted" style={{ fontSize: "0.75rem" }}>
-                                        ({formatDate(b.checkInDate)} - {formatDate(b.checkOutDate)})
-                                      </span>
-                                    )}
                                   </div>
                                 </td>
-                                <td className="text-muted" style={{ ...baseCellStyle, textAlign: "center", fontFamily: "monospace", width: COLUMN_WIDTHS.deadlineDate }}>
+                                {/* Booker cell — mirrors the new "Booker"
+                                    header above. b.bookerName is null on
+                                    non-Hotel rows and legacy hotel rows
+                                    without agent_staff_name / created_by,
+                                    so we render "-" for those. */}
+                                <td style={{ ...baseCellStyle, width: COLUMN_WIDTHS.bookedBy }} title={b.bookerName || ""}>
+                                  {b.bookerName ? (
+                                    <span className="fw-medium text-dark">{b.bookerName}</span>
+                                  ) : (
+                                    <span className="text-muted">-</span>
+                                  )}
+                                </td>
+                                <td className="text-muted" style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.checkIn }} title={formatDate(b.checkInDate) || ""}>
+                                  {formatDate(b.checkInDate) || "-"}
+                                </td>
+                                <td className="text-muted" style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.checkOut }} title={formatDate(b.checkOutDate) || ""}>
+                                  {formatDate(b.checkOutDate) || "-"}
+                                </td>
+                                <td className="text-muted" style={{ ...baseCellStyle, textAlign: "center", fontFamily: "monospace", width: COLUMN_WIDTHS.deadlineDate }} title={b.deadlineDate || ""}>
                                   {formatDeadlineDate(b.deadlineDate)}
                                 </td>
-                                <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.paymentMode }}>
+                                <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.paymentMode }} title={getPaymentModeLabel(b)}>
                                   {(() => {
                                     const label = getPaymentModeLabel(b);
                                     if (label === "-") return <span className="text-muted">-</span>;
@@ -637,7 +764,7 @@ const AllBookingsList = () => {
                                     Paid, a cancellation → Paid or Un-Paid
                                     depending on whether it had been
                                     reconfirmed. See getPaymentStatusLabel. */}
-                                <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.paymentStatus }}>
+                                <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.paymentStatus }} title={getPaymentStatusLabel(b)}>
                                   {(() => {
                                     const label = getPaymentStatusLabel(b);
                                     if (label === "-") return <span className="text-muted">-</span>;
@@ -657,7 +784,7 @@ const AllBookingsList = () => {
                                     );
                                   })()}
                                 </td>
-                                <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.notification }}>
+                                <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.status }}>
                                   <NotificationCell booking={b} />
                                 </td>
                                 <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.action }}>
@@ -755,14 +882,21 @@ const AllBookingsList = () => {
 
 function thStyle(textAlign, width) {
   return {
-    padding: "0.45rem 0.6rem",
+    padding: "0.35rem 0.25rem",
     fontWeight: "600",
     textTransform: "uppercase",
     color: "#495057",
     ...(textAlign ? { textAlign } : {}),
     border: "1px solid #dee2e6",
+    // Headers wrap onto up to two lines when they don't fit their
+    // column — so "Confirmation No." reads as
+    //     CONFIRMATION
+    //     NO.
+    // instead of being truncated to "CONFIRMAT...". Data cells still
+    // wrap when needed via baseCellStyle below.
     whiteSpace: "normal",
-    lineHeight: 1.2,
+    wordBreak: "keep-all",
+    lineHeight: 1.15,
     width,
   };
 }

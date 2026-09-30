@@ -1,6 +1,7 @@
 import React, {useEffect, useState,useMemo} from "react";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
+import BackButton from "../../components/BackButton";
 import { Row, Col, Card, Form,Button,Table,Modal, Pagination } from "react-bootstrap";
 import { toast } from "react-hot-toast";
 import axiosInstance from "../../components/AxiosInstance";
@@ -543,7 +544,8 @@ const currentApibooking = filteredapiBookings.slice(apiStartIndex,apiEndIndex);
 
         <main className="flex-grow-1 p-4" style={{ overflow: "auto" }}>
           <Card className="shadow-sm rounded-xl">
-            <Card.Header>
+            <Card.Header className="d-flex align-items-center gap-2">
+              <BackButton forceFallback fallback="/adminDashboard" />
               <span className="fw-semibold">Monthly Wise Report</span>
             </Card.Header>
 

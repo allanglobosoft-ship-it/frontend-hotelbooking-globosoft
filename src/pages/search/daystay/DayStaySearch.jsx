@@ -15,6 +15,7 @@ import AgentSelect from "../../../components/AgentSelect";
 import Sidebar from "../../../components/Sidebar";
 import TopBar from "../../../components/TopBar";
 import axiosInstance from "../../../components/AxiosInstance";
+import { logAgentSearch } from "../../../utils/agentSearchLog";
 import AdvertisementCarousel from "../../../components/AdvertisementCarousel";
 import AgentCreditBalance from "../../../components/AgentCreditBalance";
 import DateInput from "../../../components/DateInput";
@@ -421,11 +422,14 @@ export default function DayStaySearch() {
 
   const convertFromAed = (aedPrice) => {
     if (aedPrice == null) return aedPrice;
+    // master_currency.value stores "AED per 1 unit of target", so AED → target
+    // is `aed / value`, not `aed * value`. AED itself has value 1 (aedBaseRate)
+    // and short-circuits when the picker sits on it.
     const targetRate =
-      selectedCurrency && Number.isFinite(selectedCurrency.rate)
+      selectedCurrency && Number.isFinite(selectedCurrency.rate) && selectedCurrency.rate > 0
         ? selectedCurrency.rate
         : aedBaseRate;
-    return Number(aedPrice) * (targetRate / aedBaseRate);
+    return Number(aedPrice) * (aedBaseRate / targetRate);
   };
 
   // Reuse the HotelSearch debounce helper.
@@ -635,6 +639,23 @@ export default function DayStaySearch() {
         children: totalChildren,
         rooms: totalRooms,
       };
+      // Agent search log (Unbooked Opportunities → Searches tab) — day-stay
+      // is single-day, so checkOut mirrors checkInDate. Fire-and-forget.
+      logAgentSearch({
+        agentId: Number(agent) || null,
+        agentName: loggedInAgentName,
+        destinationId: selectedDestination?.value,
+        destinationLabel: selectedDestination?.label,
+        nationalityLabel: selectedNationality?.label,
+        checkIn: checkInDate,
+        checkOut: checkInDate,
+        rooms: Array.from({ length: totalRooms || 1 }, () => ({
+          adults: totalAdults,
+          children: totalChildren,
+        })),
+        source: "day-stay",
+      });
+
       const res = await axiosInstance.post(
         "/api/day-stay-booking/search",
         payload

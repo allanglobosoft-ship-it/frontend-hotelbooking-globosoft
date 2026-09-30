@@ -8,6 +8,10 @@ import { FaArrowLeft } from "react-icons/fa";
  * (navigate(-1)) so it works the same on any page without needing to know
  * its parent route. Falls back to `fallback` when there's no history to go
  * back to (e.g. the page was opened directly via a bookmarked URL).
+ *
+ * Pass `forceFallback` to skip the history check entirely and always
+ * navigate to `fallback` — used by report pages that should always return
+ * to the caller's dashboard rather than the previous sibling report.
  */
 export default function BackButton({
   label = "Back",
@@ -15,10 +19,15 @@ export default function BackButton({
   variant = "light",
   size = "sm",
   className = "",
+  forceFallback = false,
 }) {
   const navigate = useNavigate();
 
   const handleClick = () => {
+    if (forceFallback) {
+      navigate(fallback);
+      return;
+    }
     if (window.history.length > 2) {
       navigate(-1);
     } else {

@@ -1,5 +1,7 @@
 import React, { useEffect } from "react";
 import { Navigate, useLocation } from "react-router-dom";
+import PartnerRouteGuard from "./PartnerRouteGuard";
+import { isPartnerRole, PARTNER_DASHBOARD_BY_ROLE } from "../config/partnerFeatures";
 
 const PrivateRoute = ({ children, roles }) => {
   const location = useLocation();
@@ -43,9 +45,20 @@ const PrivateRoute = ({ children, roles }) => {
         staff: "/staffDashboard",
         extranet: "/extranetDashboard",
         super_admin: "/superAdminDashboard",
+        ...PARTNER_DASHBOARD_BY_ROLE,
       };
       return <Navigate to={dashboardByRole[currentRole] || "/"} replace />;
     }
+  }
+
+  // Supplier / DMC logins: on top of the token check, the page must be
+  // unlocked by one of the account's approved features (see
+  // PartnerRouteGuard). Every other role returns exactly as before.
+  const activeRole =
+    localStorage.getItem("currentActiveRole")?.toLowerCase() ||
+    (localStorage.getItem("userRole") || "").split(",")[0].trim().toLowerCase();
+  if (isPartnerRole(activeRole)) {
+    return <PartnerRouteGuard role={activeRole}>{children}</PartnerRouteGuard>;
   }
 
   return children;

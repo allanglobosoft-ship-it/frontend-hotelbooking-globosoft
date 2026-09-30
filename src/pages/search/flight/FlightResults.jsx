@@ -1022,9 +1022,14 @@ const FlightResults = ({ loading, error, searched, results, onSelect }) => {
   const convert = (amount, nativeCode) => {
     if (amount == null || !appliedFilters.currency) return { amount, code: nativeCode };
     const nativeOpt = currencyOptions.find((o) => o.code === nativeCode);
+    // master_currency.value is "AED per 1 unit", so native → target through AED
+    // is `amount * nativeRate / targetRate`, not `amount * targetRate / nativeRate`.
     const nativeRate = nativeOpt && Number.isFinite(nativeOpt.rate) && nativeOpt.rate > 0 ? nativeOpt.rate : 1;
-    const targetRate = Number.isFinite(appliedFilters.currency.rate) ? appliedFilters.currency.rate : nativeRate;
-    return { amount: Number(amount) * (targetRate / nativeRate), code: appliedFilters.currency.code };
+    const targetRate =
+      Number.isFinite(appliedFilters.currency.rate) && appliedFilters.currency.rate > 0
+        ? appliedFilters.currency.rate
+        : nativeRate;
+    return { amount: Number(amount) * (nativeRate / targetRate), code: appliedFilters.currency.code };
   };
 
   const visibleRows = useMemo(() => {

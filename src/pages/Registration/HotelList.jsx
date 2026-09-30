@@ -27,8 +27,10 @@ import {
   FaTrash,
   FaSearch,
   FaExclamationTriangle,
+  FaArrowLeft,
 } from "react-icons/fa";
 import "../../styles/HotelList.css";
+import DashboardRedirections from "../../components/DashboardRedirections";
 
 // Same 300ms debounce shape used by DestinationCity.jsx. Local copy keeps
 // this page self-contained — no new shared util, no risk of touching other
@@ -321,6 +323,18 @@ const HotelList = () => {
         <Sidebar />
         <main className="flex-grow-1 p-4">
           <Container fluid>
+            {/* Back to the signed-in user's dashboard — top-left, above the page header */}
+            <div className="mb-3">
+              <Button
+                variant="outline-secondary"
+                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
+              >
+                <FaArrowLeft />
+                Back
+              </Button>
+            </div>
+
             {/* Header Section */}
             <div className="d-flex justify-content-between align-items-center mb-4">
               <div>

@@ -21,6 +21,7 @@ import axiosInstance from "../../components/AxiosInstance";
 import toast from "react-hot-toast";
 import { toLocalDateTime, formatDateTime } from "../../utils/dateUtils";
 import QuotationPdfCard from "../../components/quotation/QuotationPdfCard";
+import { resolveInhouseDeadline } from "../../utils/rateDeadline";
 
 // Dummy online-payment gateways shown when an agent's credit is short.
 // Each routes to /payment/<id> — a placeholder card-entry page.
@@ -386,24 +387,26 @@ const HotelBookingPage = ({ force24Hour = false, religiousMode = false } = {}) =
   // they always behave like "voucher now" → RECONFIRMED.
   // ────────────────────────────────────────────────────────────────
 
-  // Cancellation deadline, computed EXACTLY like the backend stores it
-  // (see InhouseHotelBookingService create flow) and the Booking List
-  // shows it:  deadline = checkInDate − maxCancellationNights, at midnight.
+  // Cancellation deadline:
+  //   checkInDate − maxCancellationNights − INHOUSE_DEADLINE_BUFFER_DAYS,
+  // at midnight — the same rule the backend applies when it stores
+  // deadline_date (see InhouseHotelBookingService create flow) and the same
+  // one the room list shows.
+  //
+  // This calls the shared helper rather than repeating the arithmetic, which
+  // it used to do inline. Two copies of a date rule that must agree is one
+  // copy too many: the buffer would have had to be added in both places, and
+  // a future change to either would silently make the room list promise a
+  // different date from the booking page.
+  //
   // maxCancellationNights is fetched above from
   // /api/hotels/{hotelId}/max-cancellation-nights. Null until that resolves
   // or when no check-in date is available, so the deadline-dependent flags
   // below fall back to their safe "deadline doesn't apply" behaviour.
-  const cancellationDeadline = (() => {
-    if (maxCancellationNights == null) return null;
-    const cinRaw = bookingData?.payload?.checkInDate;
-    if (!cinRaw) return null;
-    const cin = new Date(cinRaw);
-    if (isNaN(cin.getTime())) return null;
-    const deadline = new Date(cin);
-    deadline.setDate(deadline.getDate() - maxCancellationNights);
-    deadline.setHours(0, 0, 0, 0);
-    return deadline;
-  })();
+  const cancellationDeadline = resolveInhouseDeadline(
+    bookingData?.payload?.checkInDate,
+    maxCancellationNights,
+  );
 
   // True only for refundable rates whose deadline has already passed.
   // Non-refundable rates and rates without a policy row are treated as
@@ -1153,6 +1156,14 @@ const HotelBookingPage = ({ force24Hour = false, religiousMode = false } = {}) =
         // dropdown (optional). It flows here via bookingData.payload and
         // gets persisted on the new HotelBooking row.
         employeeId: bookingData?.payload?.employeeId || null,
+        // Agent-side staff attribution — picked in HotelSearch's
+        // "Booking Done On Behalf Of Agent Staff" dropdown (optional).
+        // Both fields ride here on bookingData.payload and land on
+        // hotel_booking.agent_staff_id / agent_staff_name via the
+        // create-booking endpoint. Null when the operator skipped the
+        // dropdown, so existing bookings are unaffected.
+        agentStaffId: bookingData?.payload?.agentStaffId || null,
+        agentStaffName: bookingData?.payload?.agentStaffName || null,
         roomStatus: bookingData.selectedRate.roomStatus,
         cancellationPolicy:
           bookingData.selectedRate.cancellationPolicy?.map(
@@ -1701,6 +1712,22 @@ const HotelBookingPage = ({ force24Hour = false, religiousMode = false } = {}) =
                   Available Balance: {Number(agentAvailableBalance).toFixed(2)}
                 </span>
               </div>
+            )}
+            {isOutsideDeadline && !isNonRefundableRate && (
+              <Alert variant="danger" className="mb-3 py-2">
+                <strong>Free-cancellation window has passed</strong>
+                {cancellationDeadline
+                  ? ` (${cancellationDeadline.toLocaleDateString("en-GB", {
+                      day: "2-digit",
+                      month: "short",
+                      year: "numeric",
+                    })})`
+                  : ""}
+                {" "}— the Voucher Later option has been hidden and the booking
+                will be issued immediately (Book Now &amp; Voucher Now).
+                Cancellation charges will apply if the booking is cancelled
+                after confirmation.
+              </Alert>
             )}
             {/* Guest Details Section */}
             <Form
@@ -2915,34 +2942,45 @@ const HotelBookingPage = ({ force24Hour = false, religiousMode = false } = {}) =
                         </Col> */}
 
                         <Col xs={12}>
-                          {/* ✅ Show Selling Price only if ADMIN */}
-                          {activeUserRole === "ADMIN" && (
-                            <div className="p-2 rounded bg-white border mt-2">
-                              <div className="d-flex justify-content-between align-items-center">
-                                <h6 className="mb-0 text-muted">
-                                  Selling Price
-                                </h6>
-                                <h5 className="mb-0 text-success fw-bold">
-                                  {formatPrice(sellingPriceWithTd)}
-                                </h5>
-                              </div>
+                          {/* Selling price — the figure every login is
+                              allowed to see, so it is shown to all. Matches
+                              the Booking Summary sidebar, where "New Total"
+                              (also the selling price) is ungated. */}
+                          <div className="p-2 rounded bg-white border mt-2">
+                            <div className="d-flex justify-content-between align-items-center">
+                              <h6 className="mb-0 text-muted">Selling Price</h6>
+                              <h5 className="mb-0 text-success fw-bold">
+                                {formatPrice(sellingPriceWithTd)}{" "}
+                                <span className="text-muted small fw-normal">
+                                  for {pendingPayload.rooms.length}{" "}
+                                  {pendingPayload.rooms.length > 1
+                                    ? "rooms"
+                                    : "room"}
+                                </span>
+                              </h5>
+                            </div>
+                          </div>
+
+                          {/* Payable is the marked-up total — internal, so
+                              ADMIN only. It used to be shown to every login
+                              while the selling price above was admin-gated,
+                              which is the opposite of the sidebar and meant
+                              an agent's confirm dialog led with a number
+                              they should not be quoting. */}
+                          {isAdmin && (
+                            <div className="p-2 rounded bg-white border mt-2 d-flex justify-content-between align-items-center">
+                              <h6 className="mb-0 fw-bold">Payable</h6>
+                              <h5 className="mb-0 fw-bold">
+                                {formatPrice(totalPriceWithTd)}{" "}
+                                <span className="text-muted small fw-normal">
+                                  for {pendingPayload.rooms.length}{" "}
+                                  {pendingPayload.rooms.length > 1
+                                    ? "rooms"
+                                    : "room"}
+                                </span>
+                              </h5>
                             </div>
                           )}
-
-                          {/* Payable row — plain border, no green
-                              highlight. Single-line layout. */}
-                          <div className="p-2 rounded bg-white border mt-2 d-flex justify-content-between align-items-center">
-                            <h6 className="mb-0 fw-bold">Payable</h6>
-                            <h5 className="mb-0 fw-bold">
-                              {formatPrice(totalPriceWithTd)}{" "}
-                              <span className="text-muted small fw-normal">
-                                for {pendingPayload.rooms.length}{" "}
-                                {pendingPayload.rooms.length > 1
-                                  ? "rooms"
-                                  : "room"}
-                              </span>
-                            </h5>
-                          </div>
                         </Col>
                       </Row>
 

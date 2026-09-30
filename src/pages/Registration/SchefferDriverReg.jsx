@@ -26,7 +26,9 @@ import {
   FaMapMarkedAlt,
   FaMapSigns,
   FaGlobeAsia,
+  FaArrowLeft,
 } from "react-icons/fa";
+import DashboardRedirections from "../../components/DashboardRedirections";
 
 // Enhanced SearchableSelect Component with loading support
 const SearchableSelect = ({
@@ -1589,6 +1591,18 @@ const SchefferDriverReg = () => {
       <div className="d-flex flex-grow-1">
         <Sidebar />
         <main className="flex-grow-1 p-4">
+          {/* Back to the signed-in user's dashboard — top-left, above the page card */}
+          <div className="mb-3">
+            <Button
+              variant="outline-secondary"
+              onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+              className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
+            >
+              <FaArrowLeft />
+              Back
+            </Button>
+          </div>
+
           <Card className="shadow-sm rounded-xl">
             <Card.Header className="d-flex justify-content-between align-items-center">
               <span className="fw-semibold">Chauffeur Driver and Limousine</span>

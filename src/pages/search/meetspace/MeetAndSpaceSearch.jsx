@@ -36,6 +36,7 @@ import {
 import Select from "react-select";
 import AgentSelect from "../../../components/AgentSelect";
 import axiosInstance from "../../../components/AxiosInstance";
+import { logAgentSearch } from "../../../utils/agentSearchLog";
 import Sidebar from "../../../components/Sidebar";
 import TopBar from "../../../components/TopBar";
 import AdvertisementCarousel from "../../../components/AdvertisementCarousel";
@@ -295,6 +296,18 @@ export default function MeetAndSpaceSearch() {
     setHasSearched(true);
     setIsEditingSearch(false);
     try {
+      // Agent search log (Unbooked Opportunities → Searches tab) —
+      // meeting space is a single-session booking. Fire-and-forget.
+      logAgentSearch({
+        agentId: Number(agent) || null,
+        destinationId: selectedDestination?.value,
+        destinationLabel: selectedDestination?.label,
+        nationalityLabel: selectedNationality?.label,
+        checkIn: bookingDate,
+        checkOut: bookingDate,
+        source: "meet-and-space",
+      });
+
       const res = await axiosInstance.post("/api/meet-and-space/search", {
         bookingDate,
         startTime,
