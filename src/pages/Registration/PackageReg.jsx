@@ -255,6 +255,11 @@ const PackageReg = () => {
   const [selectedOthers, setSelectedOthers] = useState([]);
   const [countries, setCountries] = useState([]);
   const [places, setPlaces] = useState([]);
+  // Full (never search-narrowed) City list for the selected country, used
+  // by every Itinerary day's Place dropdown. Kept apart from `places`
+  // because the Arrive City search narrows that list, which used to blank
+  // the Place already picked on other days.
+  const [itineraryPlaces, setItineraryPlaces] = useState([]);
   const [isLoadingPlaces, setIsLoadingPlaces] = useState(false);
   const [allDestinations, setAllDestinations] = useState([]);
   const [isLoadingDestinations, setIsLoadingDestinations] = useState(false);
@@ -268,7 +273,6 @@ const PackageReg = () => {
   const [isCountryLoading, setIsCountryLoading] = useState(false);
   const countryDebounceRef = useRef(null);
   const placeDebounceRef = useRef(null);
-  const itineraryPlaceDebounceRef = useRef(null);
   const [selectedCountryOption, setSelectedCountryOption] = useState(null);
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [selectedPackage, setSelectedPackage] = useState(null);
@@ -457,6 +461,7 @@ const PackageReg = () => {
     ]);
     setSelectedOthers([]);
     setPlaces([]);
+    setItineraryPlaces([]);
     setPackageValidityDTOList([{ validityFrom: "", validityTo: "" }]);
     setPackageCancellationPolicyDTOList([
       { cancellationFee: "", cancellationFeeType: "PERCENT", noOfNights: "" },
@@ -808,16 +813,27 @@ const PackageReg = () => {
     }
   };
 
+  // Arrive City (and Itinerary Place) options — the same country-scoped
+  // City list the "City" dropdown on Hotel Registration shows
+  // (HotelReg.jsx → loadProvinces). The `search` param narrows by
+  // city name/code.
   const cityList = async (countryId, searchTerm = "") => {
     try {
       setIsLoadingPlaces(true);
       const response = await axiosInstance.get(
-        `/api/province?countryId=${countryId}&page=0&limit=50&search=${encodeURIComponent(searchTerm)}`
+        `/api/province/getByCountryId/${countryId}?search=${encodeURIComponent(searchTerm)}`
       );
-      setPlaces(Array.isArray(response.data) ? response.data : []);
+      const cities = Array.isArray(response.data)
+        ? response.data.filter((city) => !city.isDeleted)
+        : [];
+      setPlaces(cities);
+      // An unfiltered load is the country's full City list — that is what
+      // the Itinerary Place dropdowns search through (client-side).
+      if (!searchTerm) setItineraryPlaces(cities);
     } catch (error) {
       console.log("axios call error for city list : ", error);
       setPlaces([]);
+      if (!searchTerm) setItineraryPlaces([]);
     } finally {
       setIsLoadingPlaces(false);
     }
@@ -930,6 +946,7 @@ const PackageReg = () => {
 
       // Clear places and place selection when country changes
       setPlaces([]);
+      setItineraryPlaces([]);
       setIsLoadingPlaces(false);
 
       setFormData((prev) => ({
@@ -937,6 +954,11 @@ const PackageReg = () => {
         countryId: value,
         placeId: "", // Clear place selection
       }));
+      // Itinerary Places belong to the old country's City list too — clear
+      // them so a hidden, stale City id is never saved.
+      setPackageItinearyDTOList((prev) =>
+        prev.map((day) => ({ ...day, placeId: "" }))
+      );
 
       // Fetch cities for the selected country
       if (value) {
@@ -2654,6 +2676,10 @@ const PackageReg = () => {
                           <Col md={6}>
                             <Form.Group className="mb-3">
                               <Form.Label>Place</Form.Label>
+                              {/* Searches the country's full City list in
+                                  the browser — no server call per keystroke,
+                                  so the field never disables itself (and
+                                  drops focus) while the user is typing. */}
                               <SearchableSelect
                                 name={`placeId_${index}`}
                                 value={day.placeId}
@@ -2664,31 +2690,23 @@ const PackageReg = () => {
                                     e.target.value
                                   )
                                 }
-                                onInputChange={(inputValue) => {
-                                  if (itineraryPlaceDebounceRef.current) {
-                                    clearTimeout(itineraryPlaceDebounceRef.current);
-                                  }
-                                  itineraryPlaceDebounceRef.current = setTimeout(() => {
-                                    if (formData.countryId) {
-                                      cityList(formData.countryId, inputValue);
-                                    }
-                                  }, 400);
-                                }}
                                 placeholder={
-                                  isLoadingPlaces
-                                    ? "Loading places..."
-                                    : "Search and select destination"
+                                  !formData.countryId
+                                    ? "Select Arriving Destination in Basic Details first"
+                                    : isLoadingPlaces && itineraryPlaces.length === 0
+                                      ? "Loading places..."
+                                      : "Search and select destination"
                                 }
                                 options={
-                                  Array.isArray(places)
-                                    ? places.map((place) => ({
+                                  Array.isArray(itineraryPlaces)
+                                    ? itineraryPlaces.map((place) => ({
                                       id: place.id,
                                       name: place.name || place.stateName,
                                     }))
                                     : []
                                 }
-                                disabled={isViewMode || !formData.countryId || isLoadingPlaces}
-                                isLoading={isLoadingPlaces}
+                                disabled={isViewMode || !formData.countryId}
+                                isLoading={isLoadingPlaces && itineraryPlaces.length === 0}
                               />
                             </Form.Group>
                           </Col>
