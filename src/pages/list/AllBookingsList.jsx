@@ -195,6 +195,9 @@ const getPaymentStatusLabel = (booking) => {
     // payment-pending either way, so both states resolve the same here.
     return "Payment Pending";
   }
+  // Long Stay stamps On Request directly as its status (rather than
+  // Confirmed + roomStatus "On Request") — money not collected yet either.
+  if (effective === "onrequest") return "Payment Pending";
 
   return "-";
 };
@@ -226,7 +229,7 @@ const statusSegColor = (part) => {
   const p = (part || "").trim().replace(/\s+/g, "").toLowerCase();
   if (p.startsWith("reconfirmed")) return "#06a301";
   if (p.startsWith("confirmed")) return "#06a301";
-  if (p.startsWith("cancelled")) return "#dc3545";
+  if (p.startsWith("cancelled") || p === "rejected") return "#dc3545";
   if (p === "onrequest") return "#ff9800";
   return "#6c757d";
 };

@@ -171,12 +171,10 @@ const getPaymentModeLabel = (booking) => {
 // never was.
 //
 // This takes the composite label built by `compositeStatus` — the same value the
-// Notification cell renders — so the two columns can never disagree. That label
-// is all that is needed: the student list row carries no `reconfirmation` /
-// `cancelledFromStatus` field, but compositeStatus already folds both the On
-// Request chain and the pre-cancellation state into the label itself
-// ("On Request/Confirmed / Cancelled", "ReConfirmed / Cancelled"), which is
-// exactly what the segment split below reads.
+// Notification cell renders — so the two columns can never disagree. For a
+// cancelled booking it is handed the pre-cancel history ("ReConfirmed /
+// Cancelled", "Confirmed / Cancelled") rather than the bare "Cancelled"
+// label, which is what the segment split below reads.
 const getPaymentStatusLabel = (displayStatus) => {
   const segments = String(displayStatus || "")
     .split("/")
@@ -292,39 +290,57 @@ export default function StudentBookingList() {
     fetchPage(); /* eslint-disable-next-line */
   }, [page, size, agentId]);
 
-  // Composite status — a booking that was Confirmed and is later Cancelled
-  // shows "Confirmed / Cancelled".
+  // Displayed status — same configurations as
+  // /booking-details/hotel-booking-list:
+  //   Confirmed                          → Confirmed
+  //   On Request, step-1 Confirm pending → On Request
+  //   ReConfirmed                        → ReConfirmed
+  //   cancelled (any prior state)        → Cancelled
+  //   Not Confirmed / Rejected           → as is
+  // A cancellation here only sets the row's `cancelled` flag and leaves
+  // confirmationStatus at its prior value, so the flag is folded in to land
+  // on the hotel list's "Cancelled". `history` keeps the prior state
+  // ("ReConfirmed / Cancelled") for the Payment Status column, which decides
+  // Paid vs Un-Paid from what the booking had reached before the cancel.
   //
-  // On-Request handling mirrors GovEmployeeBookingList / SeniorCitizen: On
-  // Request student bookings are created with confirmationStatus "Confirmed"
-  // but roomStatus "On Request". Until the operator applies the step-1
-  // Confirm (onRequestConfirmed=true), the finalised list status is
-  // "On Request". Once step-1 Confirm lands, the row falls through to the
-  // plain "Confirmed" pill — matching how the gov-employee list rolls the
-  // "On Request/Confirmed" chain forward to "Confirmed".
+  // A "Confirmed / ReConfirmed" history label collapses to its latest state.
+  //
+  // On-Request handling: On Request student bookings are created with
+  // confirmationStatus "Confirmed" but roomStatus "On Request". Until the
+  // operator applies the step-1 Confirm (onRequestConfirmed=true) the list
+  // shows "On Request"; once it lands, the row reads plain "Confirmed".
   const compositeStatus = (b) => {
-    const raw = String(b?.confirmationStatus || "").trim();
+    const rawFull = String(b?.confirmationStatus || "").trim();
+    const rawSegments = rawFull.split("/").map((seg) => seg.trim());
+    const isConfirmHistoryCompound =
+      rawSegments.length > 1 &&
+      rawSegments.every((seg) =>
+        ["confirmed", "reconfirmed"].includes(seg.replace(/\s+/g, "").toLowerCase()),
+      );
+    const raw = isConfirmHistoryCompound
+      ? rawSegments[rawSegments.length - 1]
+      : rawFull;
     const normalized = raw.replace(/\s+/g, "").toLowerCase();
     const isOnRequestRoom = /^on\s*request$/i.test(
       String(b?.roomStatus || "").trim(),
     );
-    const isPreConfirmOnRequest =
-      isOnRequestRoom && !b?.onRequestConfirmed && normalized !== "reconfirmed";
-    if (b?.cancelled) {
-      if (isPreConfirmOnRequest) {
-        return { label: "On Request / Cancelled", kind: "cancelled" };
-      }
-      if (normalized === "confirmed" || normalized === "reconfirmed") {
-        return { label: `${raw} / Cancelled`, kind: "cancelled" };
-      }
-      return { label: "Cancelled", kind: "cancelled" };
+    if (b?.cancelled || normalized === "cancelled" || normalized === "canceled") {
+      return {
+        label: "Cancelled",
+        kind: "cancelled",
+        history: b?.cancelled && raw ? raw + " / Cancelled" : raw || "Cancelled",
+      };
     }
-    if (isPreConfirmOnRequest) {
+    if (normalized === "rejected") return { label: "Rejected", kind: "cancelled" };
+    if (isOnRequestRoom && !b?.onRequestConfirmed && normalized === "confirmed") {
       return { label: "On Request", kind: "onrequest" };
     }
     if (normalized === "confirmed") return { label: "Confirmed", kind: "confirmed" };
     if (normalized === "reconfirmed") return { label: "ReConfirmed", kind: "confirmed" };
     if (normalized === "notconfirmed") return { label: "Not Confirmed", kind: "notconfirmed" };
+    // A confirmationStatus that itself carries a cancellation (e.g.
+    // "Cancelled", "Confirmed / Cancelled") renders per-segment coloured.
+    if (/cancel/i.test(raw)) return { label: raw, kind: "cancelled" };
     return { label: raw || "-", kind: "other" };
   };
 
@@ -714,10 +730,13 @@ export default function StudentBookingList() {
                             const first = names[0] || "-";
                             const extra = Math.max(0, names.length - 1);
                             const payLabel = getPaymentModeLabel(b);
-                            // Fed the same composite label the Notification cell
-                            // renders, so the two columns stay in lockstep.
+                            // Fed the same composite status the Notification
+                            // cell renders, so the two columns stay in lockstep.
+                            // A cancelled row passes its pre-cancel history so
+                            // the label can tell Paid from Un-Paid.
+                            const rowStatus = compositeStatus(b);
                             const payStatusLabel = getPaymentStatusLabel(
-                              compositeStatus(b).label,
+                              rowStatus.history || rowStatus.label,
                             );
                             return (
                               <tr

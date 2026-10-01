@@ -144,12 +144,10 @@ const getPaymentModeLabel = (booking) => {
 // never was.
 //
 // This takes the label built by `statusMetaFor` — the same value the Status cell
-// renders — so the two columns can never disagree. That label is all that is
-// needed: the senior-citizen list row carries no `reconfirmation` /
-// `cancelledFromStatus` field, but statusMetaFor already folds both the On
-// Request chain and the pre-cancellation state into the label itself
-// ("On Request/Confirmed / Cancelled", "ReConfirmed / Cancelled"), which is
-// exactly what the segment split below reads.
+// renders — so the two columns can never disagree. For a cancelled booking it
+// is handed the pre-cancel history ("ReConfirmed / Cancelled", "Confirmed /
+// Cancelled") rather than the bare "Cancelled" label, which is what the
+// segment split below reads.
 const getPaymentStatusLabel = (displayStatus) => {
   const segments = String(displayStatus || "")
     .split("/")
@@ -293,11 +291,32 @@ export default function SeniorCitizenBookingList() {
     fetchPage(); /* eslint-disable-next-line */
   }, [page, size, agentId]);
 
-  // Composite status — a booking that was Confirmed and is later Cancelled
-  // shows "Confirmed / Cancelled". Returns a StatusPill-ready meta plus the
-  // raw label for fallback.
+  // Displayed status — same configurations as
+  // /booking-details/hotel-booking-list:
+  //   Confirmed                          → Confirmed
+  //   On Request, step-1 Confirm pending → On Request
+  //   ReConfirmed                        → ReConfirmed
+  //   cancelled (any prior state)        → Cancelled
+  //   Not Confirmed / Rejected           → as is
+  // A cancellation here only sets the row's `cancelled` flag and leaves
+  // confirmationStatus at its prior value, so the flag is folded in to land
+  // on the hotel list's "Cancelled". A "Confirmed / ReConfirmed" history label
+  // collapses to its latest state.
+  //
+  // Returns a StatusPill-ready meta plus `raw`, which the Payment Status
+  // column reads: for a cancelled row it carries the pre-cancel history
+  // ("ReConfirmed / Cancelled") so that column can tell Paid from Un-Paid.
   const statusMetaFor = (b) => {
-    const raw = String(b?.confirmationStatus || "").trim();
+    const rawFull = String(b?.confirmationStatus || "").trim();
+    const rawSegments = rawFull.split("/").map((seg) => seg.trim());
+    const isConfirmHistoryCompound =
+      rawSegments.length > 1 &&
+      rawSegments.every((seg) =>
+        ["confirmed", "reconfirmed"].includes(seg.replace(/\s+/g, "").toLowerCase()),
+      );
+    const raw = isConfirmHistoryCompound
+      ? rawSegments[rawSegments.length - 1]
+      : rawFull;
     const normalized = raw.replace(/\s+/g, "").toLowerCase();
     // The Status column mirrors the FINAL result shown at the top of
     // /booking-details/senior-citizen-booking/{id} — never the composite
@@ -313,34 +332,16 @@ export default function SeniorCitizenBookingList() {
     const isOnRequestRoom = /^on\s*request$/i.test(
       String(b?.roomStatus || "").trim(),
     );
-    const isPreConfirmOnRequest =
-      isOnRequestRoom && !b?.onRequestConfirmed && normalized !== "reconfirmed";
-    if (b?.cancelled) {
-      if (isPreConfirmOnRequest) {
-        return {
-          meta: {
-            label: "On Request / Cancelled",
-            bg: "#fdecec",
-            color: "#b42318",
-            dot: "#ef4444",
-          },
-          raw: "On Request / Cancelled",
-        };
-      }
-      if (normalized === "confirmed" || normalized === "reconfirmed") {
-        return {
-          meta: {
-            label: `${raw} / Cancelled`,
-            bg: "#fdecec",
-            color: "#b42318",
-            dot: "#ef4444",
-          },
-          raw: `${raw} / Cancelled`,
-        };
-      }
-      return { meta: STATUS_META.CANCELLED, raw: "Cancelled" };
+    if (b?.cancelled || normalized === "cancelled" || normalized === "canceled") {
+      return {
+        meta: STATUS_META.CANCELLED,
+        raw: b?.cancelled && raw ? `${raw} / Cancelled` : raw || "Cancelled",
+      };
     }
-    if (isPreConfirmOnRequest) {
+    if (normalized === "rejected") {
+      return { meta: { ...STATUS_META.CANCELLED, label: "Rejected" }, raw };
+    }
+    if (isOnRequestRoom && !b?.onRequestConfirmed && normalized === "confirmed") {
       return { meta: STATUS_META.ONREQUEST, raw: "On Request" };
     }
     if (normalized === "confirmed") return { meta: STATUS_META.CONFIRMED, raw };

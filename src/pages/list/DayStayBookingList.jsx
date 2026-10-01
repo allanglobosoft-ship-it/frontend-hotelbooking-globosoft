@@ -21,6 +21,7 @@ import {
   FaUsers,
   FaInbox,
   FaArrowLeft,
+  FaExclamationCircle,
 } from "react-icons/fa";
 import axiosInstance from "../../components/AxiosInstance";
 import Sidebar from "../../components/Sidebar";
@@ -91,87 +92,91 @@ const getPaymentModeLabel = (booking) => {
   return "-";
 };
 
-// Resolve the Payment Status label from the booking's DISPLAYED status — same
-// mapping as /booking-details/hotel-booking-list:
-//   Confirmed                      → Payment Pending
-//   ReConfirmed                    → Paid
-//   ReConfirmed/Cancelled          → Paid
-//   Confirmed/Cancelled            → Un-Paid
-//   On Request/Confirmed/Cancelled → Un-Paid
-// plus one Day-Stay-specific rule: an On Request booking — whether or not
-// step-1 Confirm has landed — reads "Payment Pending", because the money has
-// not been collected yet.
-// Anything else — Not Confirmed, Rejected, or an unknown/empty status — has no
-// defined mapping and renders "-".
+// Notification + Payment Status follow the same configurations as
+// /booking-details/hotel-booking-list:
 //
-// A cancelled booking reports whether the money had already been collected at
-// the point of cancellation rather than the cancellation itself: a history that
-// reached ReConfirmed was paid, one that stopped at On Request / Confirmed
-// never was.
+//   Booking state                      Notification          Payment Status
+//   Confirmed                          Confirmed (green)     Payment Pending
+//   On Request, step-1 Confirm pending On Request (orange)   Payment Pending
+//   ReConfirmed                        ReConfirmed (green)   Paid
+//   Cancelled after ReConfirmed        Cancelled (red)       Paid
+//   Cancelled before ReConfirmed       Cancelled (red)       Un-Paid
+//   Not Confirmed                      Not Confirmed (red)   -
+//   anything else / empty              raw text              -
 //
-// It is fed the same `statusText` the Notification cell renders, so the two
-// columns can never disagree.
-const getPaymentStatusLabel = (booking, displayStatus) => {
-  const segments = String(displayStatus || "")
-    .split("/")
-    .map((seg) => seg.replace(/\s+/g, "").toLowerCase())
-    .filter(Boolean);
+// The hotel engine stamps confirmationStatus = "Cancelled" on cancellation and
+// keeps the prior state on cancelledFromStatus. Day Stay instead sets the
+// `isCancelled` flag and leaves confirmationStatus at its prior value, so the
+// flag is folded in here to land on the same "Cancelled" display, and the
+// prior state is read from the fields that survive the cancellation.
 
-  // Cancelled histories are settled by what the booking reached BEFORE the
-  // cancellation, so check this ahead of the confirm-history collapse — and
-  // ahead of the On Request branch, matching how the Notification cell orders
-  // its pills (a cancelled On Request row shows "Cancelled", not "On Request").
-  const latest = segments.length > 0 ? segments[segments.length - 1] : "";
-  if (latest === "cancelled" || latest === "canceled") {
-    // Day Stay has no `cancelledFromStatus` column (unlike the hotel booking),
-    // and `statusText` collapses to "Cancelled" once isCancelled is set — so the
-    // prior state is recovered from the fields that survive the cancellation:
-    // confirmationStatus still holds "Confirmed" / "ReConfirmed", and
-    // reconfirmation / reconfirmedAt record that a reconfirm actually happened.
-    const priorNormalized = String(booking?.confirmationStatus || "")
-      .replace(/\s+/g, "")
-      .toLowerCase();
-    const wasReconfirmedBeforeCancel =
-      booking?.reconfirmation === true ||
-      !!booking?.reconfirmedAt ||
-      segments.includes("reconfirmed") ||
-      priorNormalized.includes("reconfirmed");
-    return wasReconfirmedBeforeCancel ? "Paid" : "Un-Paid";
-  }
+// Displayed status label — the single source both columns read, so they can
+// never disagree.
+const resolveDisplayStatus = (booking) => {
+  if (booking?.isCancelled) return "Cancelled";
 
-  if (latest === "rejected") return "-";
+  // `confirmationStatus` first, then the legacy `status`. A confirm-history
+  // compound ("Confirmed / ReConfirmed") collapses to its LATEST segment.
+  const rawStatus = String(
+    booking?.confirmationStatus || booking?.status || "",
+  ).trim();
+  const rawSegments = rawStatus.split("/").map((seg) => seg.trim());
+  const isConfirmHistoryCompound =
+    rawSegments.length > 1 &&
+    rawSegments.every((seg) =>
+      ["confirmed", "reconfirmed"].includes(seg.replace(/\s+/g, "").toLowerCase()),
+    );
+  const effective = isConfirmHistoryCompound
+    ? rawSegments[rawSegments.length - 1]
+    : rawStatus;
+  const norm = effective.replace(/\s+/g, "").toLowerCase();
 
-  // On Request → Payment Pending: the booking is live but the money has not
-  // been collected yet.
-  //
-  // This is keyed off `roomStatus`, NOT the status text, because a day-stay On
-  // Request booking is CREATED on flow REQUESTED — which the backend maps to
-  // confirmationStatus "Not Confirmed" (DayStayBookingServiceImpl's flow switch),
-  // so the status text never reads "On Request". The Notification cell resolves
-  // its own On Request pill the same way, which keeps the two columns in
-  // lockstep. Covers both "On Request" and, after step-1 Confirm,
-  // "On Request/Confirmed" (onRequestConfirmed = true).
-  //
-  // Cancelled and Rejected are handled above so they keep precedence, exactly
-  // as in the Notification cell; a reconfirmed row falls through to "Paid".
+  if (norm === "cancelled" || norm === "canceled") return "Cancelled";
+  if (norm === "rejected") return "Rejected";
+  if (norm === "reconfirmed") return "ReConfirmed";
+
+  // On Request room: a day-stay On Request booking is CREATED on flow
+  // REQUESTED (confirmationStatus "Not Confirmed"), so this is keyed off
+  // `roomStatus`, not the status text. It reads "On Request" until step-1
+  // Confirm lands (onRequestConfirmed), then plain "Confirmed" — same as the
+  // hotel list.
   const isOnRequestRoom = /^on\s*request$/i.test(
     String(booking?.roomStatus || "").trim(),
   );
-  if (isOnRequestRoom && latest !== "reconfirmed") return "Payment Pending";
+  if (isOnRequestRoom) {
+    return booking?.onRequestConfirmed ? "Confirmed" : "On Request";
+  }
 
-  if (segments.length === 0) return "-";
+  if (norm === "confirmed") return "Confirmed";
+  if (norm === "notconfirmed") return "Not Confirmed";
+  return effective;
+};
 
-  // Collapse a confirm-history compound ("Confirmed / ReConfirmed") to its
-  // LATEST segment, exactly as the hotel list does.
-  const isConfirmHistoryCompound =
-    segments.length > 1 &&
-    segments.every((seg) => ["confirmed", "reconfirmed"].includes(seg));
-  const effective = isConfirmHistoryCompound ? latest : segments.join("/");
-
-  if (effective === "reconfirmed") return "Paid";
-  if (effective === "confirmed") return "Payment Pending";
-
-  return "-";
+// Payment Status for the label resolveDisplayStatus returned.
+const getPaymentStatusLabel = (booking, displayStatus) => {
+  switch (displayStatus) {
+    case "Confirmed":
+    case "On Request":
+      // Money not collected yet.
+      return "Payment Pending";
+    case "ReConfirmed":
+      return "Paid";
+    case "Cancelled": {
+      // Settled by what the booking had reached BEFORE the cancellation:
+      // confirmationStatus still holds "Confirmed" / "ReConfirmed", and
+      // reconfirmation / reconfirmedAt record that a reconfirm happened.
+      const priorNormalized = String(booking?.confirmationStatus || "")
+        .replace(/\s+/g, "")
+        .toLowerCase();
+      const wasReconfirmedBeforeCancel =
+        booking?.reconfirmation === true ||
+        !!booking?.reconfirmedAt ||
+        priorNormalized.includes("reconfirmed");
+      return wasReconfirmedBeforeCancel ? "Paid" : "Un-Paid";
+    }
+    default:
+      return "-";
+  }
 };
 
 // Every customer/guest name on a day-stay booking. The list payload
@@ -782,12 +787,9 @@ export default function DayStayBookingList() {
                           </tr>
                         ) : (
                           pageBookings.map((b, i) => {
-                            // Notification pill sources: `confirmationStatus`
-                            // first (matches Hotel exactly), then falls back to
-                            // legacy `status`; `isCancelled` overrides both.
-                            const statusText = b.isCancelled
-                              ? "Cancelled"
-                              : (b.confirmationStatus || b.status || "");
+                            // Displayed status — hotel-booking-list
+                            // configurations, see resolveDisplayStatus.
+                            const statusText = resolveDisplayStatus(b);
                             const timeRange =
                               trimTime(b.checkInTime) && trimTime(b.checkOutTime)
                                 ? `${trimTime(b.checkInTime)} – ${trimTime(b.checkOutTime)}`
@@ -1085,23 +1087,14 @@ export default function DayStayBookingList() {
                                     whiteSpace: "nowrap",
                                   }}
                                 >
-                                  {/* Notification — mirrors HotelBookingList's
-                                      per-row status pill (Confirmed / ReConfirmed
-                                      green, On Request orange, Not Confirmed
-                                      red, Cancelled red). Read-only here —
-                                      the click-to-confirm affordance is on the
+                                  {/* Notification — same pills as
+                                      HotelBookingList (Confirmed / ReConfirmed
+                                      green, On Request orange, Not Confirmed /
+                                      Cancelled red). Read-only here — the
+                                      click-to-confirm affordance is on the
                                       detail view. */}
                                   {(() => {
                                     const raw = statusText || "-";
-                                    const norm = String(raw)
-                                      .replace(/\s+/g, "")
-                                      .toLowerCase();
-                                    const isConfirmed = norm === "confirmed";
-                                    const isReconfirmed = norm === "reconfirmed";
-                                    const isCancelled = norm === "cancelled";
-                                    const isOnRequestRoom = /^on\s*request$/i.test(
-                                      String(b.roomStatus || "").trim(),
-                                    );
                                     const pill = (color, text) => (
                                       <span
                                         style={{
@@ -1118,38 +1111,25 @@ export default function DayStayBookingList() {
                                         {text}
                                       </span>
                                     );
-                                    // On Request chain — mirrors the detail
-                                    // view's breadcrumb. Day-stay On Request
-                                    // bookings are CREATED as "Not Confirmed"
-                                    // (flow REQUESTED), so key on the room
-                                    // status, not on a Confirmed text match:
-                                    //   created            → orange "On Request"
-                                    //   after step-1 Confirm → green "Confirmed"
-                                    //
-                                    // Only the LATEST status is shown in the
-                                    // list; the compound "On Request/Confirmed"
-                                    // breadcrumb stays on the detail view.
-                                    // Once step-1 Confirm has happened the
-                                    // room is functionally Confirmed, so it
-                                    // gets the green Confirmed pill — same
-                                    // treatment a genuinely-confirmed row
-                                    // would receive. ReConfirmed / Cancelled /
-                                    // Rejected fall through to the standard
-                                    // pills below.
-                                    const isRejected = norm === "rejected";
-                                    if (
-                                      isOnRequestRoom &&
-                                      !isReconfirmed &&
-                                      !isCancelled &&
-                                      !isRejected
-                                    ) {
-                                      return b.onRequestConfirmed
-                                        ? pill("#06a301", "Confirmed")
-                                        : pill("#e67e22", "On Request");
+                                    if (raw === "On Request") return pill("#e67e22", raw);
+                                    if (raw === "Confirmed" || raw === "ReConfirmed") {
+                                      return pill("#06a301", raw);
                                     }
-                                    if (isConfirmed) return pill("#06a301", "Confirmed");
-                                    if (isReconfirmed) return pill("#06a301", "ReConfirmed");
-                                    if (isCancelled) return pill("#dc3545", "Cancelled");
+                                    if (raw === "Cancelled" || raw === "Rejected") {
+                                      return pill("#dc3545", raw);
+                                    }
+                                    if (raw === "Not Confirmed") {
+                                      return pill(
+                                        "#dc3545",
+                                        <>
+                                          {raw}
+                                          <FaExclamationCircle
+                                            style={{ fontSize: "15px", color: "#ff9800" }}
+                                            title="Non-refundable booking."
+                                          />
+                                        </>,
+                                      );
+                                    }
                                     return (
                                       <span className="text-muted" style={{ fontSize: "0.82rem" }}>
                                         {raw}
