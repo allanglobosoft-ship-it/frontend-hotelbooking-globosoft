@@ -168,7 +168,7 @@ export default function LoginLogs() {
                 <div className="alert alert-danger py-2 m-3 mb-0" role="alert">
                   {error}
                 </div>
-              )}
+              )} 
 
               {/* Records-per-page control kept, but folded into a slim
                   strip under the header instead of a separate toolbar row,
