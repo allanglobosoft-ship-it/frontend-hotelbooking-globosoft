@@ -198,8 +198,11 @@ const HotelList = () => {
   };
 
   // City fetch — same server-search pattern, scoped to the currently-selected
-  // country. Guarded by a `runId` so a slow response for an older country
-  // can't overwrite the current list.
+  // country. Sourced from /api/province/getByCountryId/{id}, the same list
+  // the "City" dropdown on Hotel Registration (HotelReg.jsx → loadProvinces)
+  // shows; its `search` param narrows by city name/code. Guarded by a
+  // `runId` so a slow response for an older country can't overwrite the
+  // current list.
   const cityFetchIdRef = useRef(0);
   const loadCities = async (forCountryId, search = "") => {
     if (!forCountryId) {
@@ -210,11 +213,11 @@ const HotelList = () => {
     setIsLoadingCities(true);
     try {
       const res = await axiosInstance.get(
-        `/api/province/countryId?countryId=${forCountryId}&page=0&limit=50&search=${encodeURIComponent(search)}`,
+        `/api/province/getByCountryId/${forCountryId}?search=${encodeURIComponent(search)}`,
       );
       if (myId !== cityFetchIdRef.current) return;
       const list = Array.isArray(res.data) ? res.data : [];
-      setCities(list);
+      setCities(list.filter((s) => !s.isDeleted));
     } catch (err) {
       if (myId !== cityFetchIdRef.current) return;
       console.error("Failed to load cities", err);
@@ -398,7 +401,7 @@ const HotelList = () => {
                     endpoint's `search` param, so the backend narrows the list
                     instead of us receiving the full page and dropping the
                     filter. City is disabled until Country is chosen because
-                    /api/province/countryId requires it. Selecting the "All ..."
+                    /api/province/getByCountryId requires it. Selecting the "All ..."
                     sentinel row clears the filter (empty id). */}
                 <Row className="g-3 mb-4">
                   <Col md={4}>
