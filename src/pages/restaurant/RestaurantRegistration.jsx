@@ -241,16 +241,13 @@ const RestaurantRegistration = () => {
     }, 300);
   };
 
-  /** Load the Place/City options for ONE country. The picker is now
-   *  country-scoped — it never loads the full master list. Two sources,
-   *  kept as separate groups:
-   *    - Places (POST /api/destination/getCitiesByCountryId/{id}) — each
-   *      place carries its parent state in `state`, rendered as
-   *      "Place / State" (e.g. "Kochi / Kerala").
-   *    - States (GET /api/province?countryId={id}) — rendered as the bare
-   *      state name (e.g. "Kerala").
-   *  Each option keeps its (destinationId, placeSource = DESTINATION|PROVINCE)
-   *  so the save / search payload contract is unchanged. */
+  /** Load the Place/City options for ONE country. The picker is
+   *  country-scoped — it never loads the full master list. Sourced from
+   *  GET /api/province/getByCountryId/{id}, the same list the "City"
+   *  dropdown on Hotel Registration (HotelReg.jsx → loadProvinces) shows,
+   *  rendered by `stateName`. Each option keeps its
+   *  (destinationId, placeSource = PROVINCE) so the save / search payload
+   *  contract is unchanged and matches RestaurantSearch.jsx. */
   const loadPlacesByCountry = async (countryId) => {
     if (!countryId) {
       setDestinationOptions([]);
@@ -258,33 +255,14 @@ const RestaurantRegistration = () => {
     }
     setDestinationLoading(true);
     try {
-      const [placeRes, stateRes] = await Promise.all([
-        axiosInstance
-          .post(`/api/destination/getCitiesByCountryId/${countryId}`)
-          .catch(() => ({ data: [] })),
-        axiosInstance
-          .get(`/api/province?countryId=${countryId}&page=0&limit=50&search=`)
-          .catch(() => ({ data: [] })),
-      ]);
-      const placeRows = Array.isArray(placeRes.data) ? placeRes.data : placeRes.data?.content || [];
-      const stateRows = Array.isArray(stateRes.data) ? stateRes.data : stateRes.data?.content || [];
-      const placeOpts = placeRows
-        .filter((p) => !p.isDeleted)
-        .map((p) => {
-          const placeName = p.name || `Place #${p.id}`;
-          const stateName = p.state || p.stateName || "";
-          const label = stateName ? `${placeName} / ${stateName}` : placeName;
-          return {
-            value: `DESTINATION:${p.id}`,
-            id: p.id,
-            source: "DESTINATION",
-            label,
-          };
-        });
-      const stateOpts = stateRows
+      const res = await axiosInstance.get(
+        `/api/province/getByCountryId/${countryId}`
+      );
+      const cityRows = Array.isArray(res.data) ? res.data : [];
+      const cityOpts = cityRows
         .filter((s) => !s.isDeleted)
         .map((s) => {
-          const name = s.stateName || s.name || `State #${s.id}`;
+          const name = s.stateName || s.name || `City #${s.id}`;
           return {
             value: `PROVINCE:${s.id}`,
             id: s.id,
@@ -292,10 +270,7 @@ const RestaurantRegistration = () => {
             label: name,
           };
         });
-      setDestinationOptions([
-        { label: "Cities", options: stateOpts },
-        { label: "Places", options: placeOpts },
-      ]);
+      setDestinationOptions(cityOpts);
     } catch {
       // keep last good options on failure
     } finally {
@@ -1099,13 +1074,13 @@ const RestaurantRegistration = () => {
                       <div className="invalid-feedback d-block">{errors.country}</div>
                     )}
                   </Col>
-                  {/* Place / City — country-scoped list (destinations +
-                      provinces for the picked country only). Disabled until a
+                  {/* Place / City — country-scoped City list (same source as
+                      the Hotel Registration "City" dropdown). Disabled until a
                       country is chosen. The picked option carries an explicit
-                      `source` ("DESTINATION" or "PROVINCE") saved as
-                      placeSource so the backend resolves the FK against the
-                      correct master table. The same label is mirrored into the
-                      legacy `place` text column. */}
+                      `source` ("PROVINCE") saved as placeSource so the backend
+                      resolves the FK against the correct master table. The
+                      same label is mirrored into the legacy `place` text
+                      column. */}
                   <Col md={4}>
                     <Form.Label>Place / City *</Form.Label>
                     <Select
@@ -1113,8 +1088,8 @@ const RestaurantRegistration = () => {
                         !formData.countryId
                           ? "Select a country first"
                           : destinationLoading
-                          ? "Loading places..."
-                          : "Search place or city..."
+                          ? "Loading cities..."
+                          : "Search city..."
                       }
                       isClearable
                       isSearchable
@@ -1135,12 +1110,10 @@ const RestaurantRegistration = () => {
                             : null;
                         }
                         const wantedValue = `${formData.placeSource}:${formData.destinationId}`;
-                        for (const group of destinationOptions) {
-                          const hit = (group.options || []).find(
-                            (o) => o.value === wantedValue
-                          );
-                          if (hit) return hit;
-                        }
+                        const hit = destinationOptions.find(
+                          (o) => o.value === wantedValue
+                        );
+                        if (hit) return hit;
                         return {
                           value: wantedValue,
                           label: formData.destinationName,

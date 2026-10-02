@@ -9,6 +9,25 @@ const axiosInstance = axios.create({
 let isRefreshing = false;
 let failedQueue = [];
 
+// Pre-login auth endpoints answer 401/403 for bad input (wrong password, bad
+// code), not for an expired session. Running the refresh + "Session Expired"
+// flow on them pops that modal on a simple typo, so their errors go straight
+// back to the caller (Login.jsx shows "Invalid username or password" inline).
+const PUBLIC_AUTH_PATHS = [
+  "/auth/login",
+  "/auth/refresh-token",
+  "/auth/verify-login-otp",
+  "/auth/resend-login-otp",
+  "/auth/verify-totp",
+  "/auth/totp-fallback-email",
+  "/auth/forgot-password",
+];
+
+const isPublicAuthRequest = (config) => {
+  const path = (config?.url || "").split("?")[0];
+  return PUBLIC_AUTH_PATHS.some((authPath) => path.endsWith(authPath));
+};
+
 const processQueue = (error, token = null) => {
   failedQueue.forEach((prom) => {
     if (error) {
@@ -40,7 +59,8 @@ axiosInstance.interceptors.response.use(
     if (
       error.response &&
       (error.response.status === 401 || error.response.status === 403) &&
-      !originalRequest._retry
+      !originalRequest._retry &&
+      !isPublicAuthRequest(originalRequest)
     ) {
       if (isRefreshing) {
         return new Promise((resolve, reject) => {

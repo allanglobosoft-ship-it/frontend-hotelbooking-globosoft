@@ -424,53 +424,37 @@ const HoneymoonRegistration = () => {
     updateDay(idx, "imagePreview", URL.createObjectURL(file));
   };
 
-  /** AsyncSelect loader for the day-wise Place column.
-   *  Combines two sources, both filtered to the selected country:
-   *    - /api/province (cities/states)
-   *    - /api/destination (named destinations)
-   *  Backend stores the selected option's id under placeId and its name under place. */
+  /** AsyncSelect loader for the day-wise Place column — the same
+   *  country-scoped City list the "City" dropdown on Hotel Registration
+   *  shows (HotelReg.jsx → loadProvinces, /api/province/getByCountryId/{id}),
+   *  for the selected Arrive Country. The `search` param narrows by city
+   *  name/code. Backend stores the selected option's id under placeId and
+   *  its name under place. Arrive Country is read first because on edit the
+   *  legacy `country` mirror is rebuilt with value 0. */
   const loadDayPlaceOptions = async (inputValue) => {
-    const cId = formData.country?.value;
+    const cId = formData.arriveCountry?.value || formData.country?.value;
     if (!cId) return [];
-    const q = encodeURIComponent(inputValue || "");
-    const provinceUrl = `/api/province?countryId=${cId}&page=0&limit=50&search=${q}`;
-    const destinationUrl = `/api/destination?page=0&limit=50&search=${q}`;
-
-    const [provincesRes, destsRes] = await Promise.allSettled([
-      axiosInstance.get(provinceUrl),
-      axiosInstance.get(destinationUrl),
-    ]);
-
-    const provinces =
-      provincesRes.status === "fulfilled" && Array.isArray(provincesRes.value.data)
-        ? provincesRes.value.data.map((p) => ({
-            // Prefix the id so province + destination ids never collide.
-            value: `p_${p.id}`,
-            rawId: p.id,
-            kind: "province",
-            label: `${p.stateName}${p.country ? ", " + p.country : ""}`,
-            stateName: p.stateName,
-          }))
-        : [];
-
-    // Destinations are global — filter to the selected country client-side.
-    const dests =
-      destsRes.status === "fulfilled" && Array.isArray(destsRes.value.data)
-        ? destsRes.value.data
-            .filter((d) => !cId || String(d.countryId) === String(cId))
-            .map((d) => ({
-              value: `d_${d.id}`,
-              rawId: d.id,
-              kind: "destination",
-              label: `${d.name}${d.state ? " · " + d.state : ""}${d.country ? ", " + d.country : ""}`,
-              stateName: d.name,
-            }))
-        : [];
-
-    return [
-      { label: "Provinces / States", options: provinces },
-      { label: "Destinations", options: dests },
-    ];
+    try {
+      const r = await axiosInstance.get(
+        `/api/province/getByCountryId/${cId}?search=${encodeURIComponent(
+          inputValue || ""
+        )}`
+      );
+      const rows = Array.isArray(r.data) ? r.data : [];
+      return rows
+        .filter((p) => !p.isDeleted)
+        .map((p) => ({
+          // Option value keeps its existing "p_" prefix; the numeric id
+          // sent to the backend travels in rawId (see onChange / submit).
+          value: `p_${p.id}`,
+          rawId: p.id,
+          kind: "province",
+          label: p.stateName || p.name,
+          stateName: p.stateName || p.name,
+        }));
+    } catch {
+      return [];
+    }
   };
 
   // Helpers for repeatable rows.
@@ -481,7 +465,10 @@ const HoneymoonRegistration = () => {
     setter((p) => p.map((row, idx) => (idx === i ? val : row)));
 
   // Load places for the selected Arrive Country (used by the new Arrive
-  // Place dropdown — same /api/province?countryId=… endpoint PackageReg uses).
+  // Place dropdown) — the same country-scoped City list the "City"
+  // dropdown on Hotel Registration shows (HotelReg.jsx → loadProvinces,
+  // /api/province/getByCountryId/{id}). The `search` param narrows by
+  // city name/code.
   const loadArrivePlaces = async (countryId, search = "") => {
     if (!countryId) {
       setArrivePlaceOptions([]);
@@ -490,16 +477,18 @@ const HoneymoonRegistration = () => {
     setArrivePlaceLoading(true);
     try {
       const r = await axiosInstance.get(
-        `/api/province?countryId=${countryId}&page=0&limit=50&search=${encodeURIComponent(
+        `/api/province/getByCountryId/${countryId}?search=${encodeURIComponent(
           search
         )}`
       );
       const rows = Array.isArray(r.data) ? r.data : [];
       setArrivePlaceOptions(
-        rows.map((p) => ({
-          value: p.id,
-          label: p.name || p.stateName,
-        }))
+        rows
+          .filter((p) => !p.isDeleted)
+          .map((p) => ({
+            value: p.id,
+            label: p.stateName || p.name,
+          }))
       );
     } catch {
       setArrivePlaceOptions([]);
@@ -1047,21 +1036,16 @@ const HoneymoonRegistration = () => {
                     <tbody>
                       {days.map((d, idx) => (
                         <tr key={idx}>
-                          <td>
-                            {/* Day number is purely a serial — always shows
-                                the row's index + 1 and isn't user-editable.
-                                Reordering / removing rows keeps the
-                                sequence contiguous (Day 1, 2, 3, ...). */}
-                            <Form.Control
-                              type="number"
-                              value={idx + 1}
-                              readOnly
-                              plaintext={false}
-                              className="bg-light text-center"
-                              style={{ maxWidth: 70 }}
-                              tabIndex={-1}
-                            />
-                          </td>
+                          {/* Day number is purely a serial — always shows
+                              the row's index + 1 and isn't user-editable.
+                              Reordering / removing rows keeps the
+                              sequence contiguous (Day 1, 2, 3, ...).
+                              Rendered as plain text: a read-only
+                              <Form.Control> in this 60px column was blank,
+                              because the global .form-control padding
+                              (Login.css) and the number spinner left no room
+                              for the digit. */}
+                          <td className="text-center fw-semibold">{idx + 1}</td>
                           <td>
                             <Form.Control
                               value={d.heading}
@@ -1071,6 +1055,15 @@ const HoneymoonRegistration = () => {
                           </td>
                           <td style={{ minWidth: 220 }}>
                             <AsyncSelect
+                              // Remount per Arrive Country so the default
+                              // (pre-typed) City list and the option cache
+                              // reload for the newly picked country —
+                              // otherwise the list stays empty until typing.
+                              key={`day-place-${idx}-${
+                                formData.arriveCountry?.value ||
+                                formData.country?.value ||
+                                "none"
+                              }`}
                               cacheOptions
                               defaultOptions
                               value={d.placeOption}
