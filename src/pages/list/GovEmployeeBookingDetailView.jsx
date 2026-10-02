@@ -2647,7 +2647,7 @@ export default function GovEmployeeBookingDetailView() {
                                 fontSize: "0.76rem",
                                 whiteSpace: "nowrap",
                               }}
-                            >
+                            > 
                               {evt.ip}
                             </span>
                           ) : (
