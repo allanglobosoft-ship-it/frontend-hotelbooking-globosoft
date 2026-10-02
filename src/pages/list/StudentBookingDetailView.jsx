@@ -554,6 +554,15 @@ export default function StudentBookingDetailView() {
   };
 
   const cancelBooking = async () => {
+    // Cancellation reason is mandatory — same as the hotel / last-minute
+    // detail view: the modal marks the field with an asterisk + invalid
+    // state and disables the confirm button while it is empty.
+    // Belt-and-braces guard here so a stray submit can't sneak past.
+    const reason = cancellationReason.trim();
+    if (!reason) {
+      toast.error("Please enter a cancellation reason.");
+      return;
+    }
     try {
       setCancellingBooking(true);
       const res = await axiosInstance.delete(`/api/student-booking/${id}`, {
@@ -562,7 +571,7 @@ export default function StudentBookingDetailView() {
         // and the IP-derived fallback also failed; the BE treats null as "no
         // capture" and the "Booking Cancelled" row renders "-".
         params: {
-          ...(cancellationReason ? { reason: cancellationReason } : {}),
+          reason,
           bookingLocation: operatorLocation,
         },
       });
@@ -1840,22 +1849,34 @@ export default function StudentBookingDetailView() {
               </div>
             </div>
           )}
-          <Form.Group>
-            <Form.Label>Cancellation Reason (optional)</Form.Label>
+          <Form.Group className="text-start">
+            <Form.Label className="fw-semibold">
+              Cancellation Reason <span className="text-danger">*</span>
+            </Form.Label>
             <Form.Control
               as="textarea"
               rows={3}
               value={cancellationReason}
               onChange={(e) => setCancellationReason(e.target.value)}
-              placeholder="Reason for cancellation"
+              placeholder="Add a reason for cancellation"
+              disabled={cancellingBooking}
+              isInvalid={!cancellationReason.trim()}
+              required
             />
+            <Form.Control.Feedback type="invalid">
+              Cancellation reason is required.
+            </Form.Control.Feedback>
           </Form.Group>
         </Modal.Body>
         <Modal.Footer>
           <Button variant="outline-secondary" onClick={() => setShowCancelModal(false)} disabled={cancellingBooking}>
             Close
           </Button>
-          <Button variant="danger" onClick={cancelBooking} disabled={cancellingBooking}>
+          <Button
+            variant="danger"
+            onClick={cancelBooking}
+            disabled={cancellingBooking || !cancellationReason.trim()}
+          >
             {cancellingBooking ? <Spinner size="sm" /> : "Cancel Booking"}
           </Button>
         </Modal.Footer>

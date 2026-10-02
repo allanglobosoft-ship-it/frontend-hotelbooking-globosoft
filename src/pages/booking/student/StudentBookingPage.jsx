@@ -103,6 +103,42 @@ async function reverseGeocode(lat, lon) {
   return null;
 }
 
+// Coarse IP-derived location ("City, Region, Country") — the fallback used
+// when the browser's precise geolocation is blocked, denied or times out.
+// ipapi.co is tried first; its free tier answers 429 "RateLimited" quite
+// readily, which used to leave the booking with an empty Location, so
+// BigDataCloud (the same keyless client endpoint reverseGeocode uses — called
+// without coordinates it geolocates by IP) is the backup. Returns null when
+// neither answers.
+async function fetchIpLocation() {
+  const toLine = (parts) => parts.filter(Boolean).join(", ").slice(0, 255) || null;
+  try {
+    const res = await fetch("https://ipapi.co/json/");
+    if (res.ok) {
+      const info = await res.json();
+      const line = info?.error
+        ? null
+        : toLine([info.city, info.region, info.country_name]);
+      if (line) return line;
+    }
+  } catch {
+    // fall through to BigDataCloud
+  }
+  try {
+    const res = await fetch(
+      "https://api.bigdatacloud.net/data/reverse-geocode-client?localityLanguage=en"
+    );
+    if (res.ok) {
+      const d = await res.json();
+      const line = toLine([d.city || d.locality, d.principalSubdivision, d.countryName]);
+      if (line) return line;
+    }
+  } catch {
+    // give up — Location stays empty
+  }
+  return null;
+}
+
 // Compact date label used by the right-column Booking Summary —
 // mirrors the helper /gov-employee-booking-page uses so the two
 // dedicated-flow booking pages render dates identically.
@@ -251,19 +287,13 @@ export default function StudentBookingPage() {
   useEffect(() => {
     let cancelled = false;
 
-    fetch("https://ipapi.co/json/")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((info) => {
-        if (cancelled || !info) return;
-        setClientNetwork((prev) => ({
-          // Never clobber a precise geolocation result that already landed.
-          bookingLocation:
-            prev.bookingLocation ||
-            [info.city, info.region, info.country_name].filter(Boolean).join(", ") ||
-            null,
-        }));
-      })
-      .catch(() => {});
+    fetchIpLocation().then((ipLocation) => {
+      if (cancelled || !ipLocation) return;
+      setClientNetwork((prev) => ({
+        // Never clobber a precise geolocation result that already landed.
+        bookingLocation: prev.bookingLocation || ipLocation,
+      }));
+    });
 
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(

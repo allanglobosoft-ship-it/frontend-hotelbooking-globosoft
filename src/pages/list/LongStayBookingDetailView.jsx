@@ -551,14 +551,22 @@ export default function LongStayBookingDetailView() {
 
   const cancelBooking = async () => {
     if (!bookingId) return;
+    // Cancellation reason is mandatory — same as the hotel / last-minute
+    // detail view: the modal marks the field with an asterisk + invalid
+    // state and disables "Yes, Cancel" while it is empty. Belt-and-braces
+    // guard here so a stray submit can't sneak past.
+    const reason = cancellationReason.trim();
+    if (!reason) {
+      toast.error("Please enter a cancellation reason.");
+      return;
+    }
     try {
       setCancellingBooking(true);
       // Booking History audit — BE stamps bookingLocation onto
       // cancelled_location. May be null if the operator denied geolocation and
       // the IP-derived fallback also failed; the BE treats null as "no capture"
       // and the "Booking Cancelled" history row renders "-".
-      const params = { bookingLocation: operatorLocation };
-      if (cancellationReason.trim()) params.reason = cancellationReason.trim();
+      const params = { reason, bookingLocation: operatorLocation };
       await axiosInstance.post(
         `/api/longStayBooking/${bookingId}/cancel`,
         null,
@@ -2297,21 +2305,26 @@ export default function LongStayBookingDetailView() {
                           </div>
                         </div>
                       )}
-                      <Form.Group controlId="cancellationReason">
+                      <Form.Group controlId="cancellationReason" className="text-start">
                         <Form.Label className="fw-semibold">
                           Cancellation Reason{" "}
-                          <span className="text-muted">(optional)</span>
+                          <span className="text-danger">*</span>
                         </Form.Label>
                         <Form.Control
                           as="textarea"
                           rows={3}
-                          placeholder="Add a reason for cancellation (optional)"
+                          placeholder="Add a reason for cancellation"
                           value={cancellationReason}
                           onChange={(e) =>
                             setCancellationReason(e.target.value)
                           }
                           disabled={cancellingBooking}
+                          isInvalid={!cancellationReason.trim()}
+                          required
                         />
+                        <Form.Control.Feedback type="invalid">
+                          Cancellation reason is required.
+                        </Form.Control.Feedback>
                       </Form.Group>
                     </div>
                   </Modal.Body>
@@ -2334,7 +2347,7 @@ export default function LongStayBookingDetailView() {
                     <Button
                       variant="danger"
                       onClick={cancelBooking}
-                      disabled={cancellingBooking}
+                      disabled={cancellingBooking || !cancellationReason.trim()}
                     >
                       {cancellingBooking ? (
                         <>

@@ -770,7 +770,9 @@ export default function SeniorCitizenBookingPage() {
       // Address column is stamped server-side from the create request
       // (each system's own IPv4), so it is not sent here.
       bookingLocation: clientNetwork.bookingLocation,
-      bookingDate: new Date().toISOString().slice(0, 19),
+      // bookingDate is deliberately NOT sent — the backend stamps it with its
+      // own clock, same as the reconfirm / cancel timestamps. (Sending
+      // toISOString() here stored the UTC time as if it were local.)
       deadlineDate: `${payload.checkInDate}T23:59:59`,
       // Carry the real room availability + the resolved booking-flow status so
       // the backend maps it to confirmationStatus (Confirmed / ReConfirmed).

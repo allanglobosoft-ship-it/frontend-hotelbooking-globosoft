@@ -489,16 +489,24 @@ export default function DayStayBookingDetailView() {
 
   const submitCancel = async () => {
     if (!bookingId) return;
+    // Cancellation reason is mandatory — same as the hotel / last-minute
+    // detail view: the modal marks the field with an asterisk + invalid
+    // state and disables the confirm button while it is empty.
+    // Belt-and-braces guard here so a stray submit can't sneak past.
+    const trimmed = (cancelReason || "").trim();
+    if (!trimmed) {
+      toast.error("Please enter a cancellation reason.");
+      return;
+    }
     setCancelling(true);
     try {
-      const trimmed = (cancelReason || "").trim();
       // Send JSON body so Spring picks the JSON converter — a null body
       // makes axios send application/x-www-form-urlencoded which the
       // @RequestBody Map<String,Object> handler rejects with 415.
       await axiosInstance.post(
         `/api/day-stay-booking/${bookingId}/cancel`,
         {
-          reason: trimmed || null,
+          reason: trimmed,
           // Booking History audit — BE stamps this onto cancelled_location.
           // May be null if the operator denied geolocation and the IP-derived
           // fallback also failed; the BE treats null as "no capture" and the
@@ -2935,17 +2943,23 @@ export default function DayStayBookingDetailView() {
               </div>
             </div>
           )}
-          <Form.Group controlId="dayStayCancellationReason">
+          <Form.Group controlId="dayStayCancellationReason" className="text-start">
             <Form.Label className="fw-semibold">
-              Reason <span className="text-muted">(optional)</span>
+              Cancellation Reason <span className="text-danger">*</span>
             </Form.Label>
             <Form.Control
               as="textarea"
-              rows={2}
+              rows={3}
+              placeholder="Add a reason for cancellation"
               value={cancelReason}
               onChange={(e) => setCancelReason(e.target.value)}
               disabled={cancelling}
+              isInvalid={!(cancelReason || "").trim()}
+              required
             />
+            <Form.Control.Feedback type="invalid">
+              Cancellation reason is required.
+            </Form.Control.Feedback>
           </Form.Group>
         </Modal.Body>
         <Modal.Footer
@@ -2961,7 +2975,11 @@ export default function DayStayBookingDetailView() {
           >
             Back
           </Button>
-          <Button variant="danger" disabled={cancelling} onClick={submitCancel}>
+          <Button
+            variant="danger"
+            disabled={cancelling || !(cancelReason || "").trim()}
+            onClick={submitCancel}
+          >
             {cancelling ? (
               <>
                 <Spinner animation="border" size="sm" className="me-2" />
