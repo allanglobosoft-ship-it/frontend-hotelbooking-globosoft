@@ -69,20 +69,23 @@ const ActivityProviderReg = () => {
   const [validationErrors, setValidationErrors] = useState({});
 
   // ── helpers ────────────────────────────────────────────────────────
-  // Picks city/province list for a given country. We treat /api/province
-  // as the city source per the requirements ("city dropdown uses
-  // /api/province?countryId=..."). Returns an array of {value, label}.
+  // Picks the city list for a given country — the same country-scoped
+  // City list the "City" dropdown on Hotel Registration shows
+  // (HotelReg.jsx → loadProvinces, /api/province/getByCountryId/{id}).
+  // Returns an array of {value, label}.
   const loadCitiesForCountry = async (countryId) => {
     if (!countryId) return [];
     try {
       const res = await axiosInstance.get(
-        `/api/province?countryId=${countryId}&page=0&limit=50&search=`
+        `/api/province/getByCountryId/${countryId}`
       );
-      const list = Array.isArray(res.data) ? res.data : res.data?.content || [];
-      return list.map((p) => ({
-        value: p.id,
-        label: p.stateName || p.name,
-      }));
+      const list = Array.isArray(res.data) ? res.data : [];
+      return list
+        .filter((p) => !p.isDeleted)
+        .map((p) => ({
+          value: p.id,
+          label: p.stateName || p.name,
+        }));
     } catch (err) {
       console.error("Load cities failed", err);
       return [];
