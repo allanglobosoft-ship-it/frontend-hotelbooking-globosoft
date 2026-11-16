@@ -37,6 +37,7 @@ import axiosInstance from "../../components/AxiosInstance";
 import toast from "react-hot-toast";
 import "../../styles/HotelBookingListModern.css";
 import DashboardRedirections from "../../components/DashboardRedirections";
+import { getCurrentActiveRole } from "../../utils/authSession";
 
 const PER_PAGE_OPTIONS = [10, 25, 50, 100];
 
@@ -208,7 +209,7 @@ const SchefferDriverBookingList = ({
   const fetchList = async () => {
     setLoading(true);
     try {
-      const role = (localStorage.getItem("currentActiveRole") || "")
+      const role = (sessionStorage.getItem("currentActiveRole") || "")
         .toLowerCase();
       const params = {
         upcomingPage: 0,
@@ -219,7 +220,7 @@ const SchefferDriverBookingList = ({
         cancelledSize: 500,
       };
       if (role === "agent") {
-        const agentId = localStorage.getItem("agentId");
+        const agentId = sessionStorage.getItem("agentId");
         if (agentId && agentId !== "null") params.agentId = agentId;
       }
       if (selectedMonth) params.month = selectedMonth;
@@ -363,7 +364,7 @@ const SchefferDriverBookingList = ({
             <div className="mb-3">
               <Button
                 variant="outline-secondary"
-                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
                 className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
               >
                 <FaArrowLeft />

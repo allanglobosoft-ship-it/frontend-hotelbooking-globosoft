@@ -25,6 +25,8 @@ import Country from "../../components/filters/Country";
 import State from "../../components/filters/State";
 import Place from "../../components/filters/place";
 import Supplier from "../../components/filters/Supplier";
+import { escapeHtml } from "../../utils/safeHtml";
+import { csvCell } from "../../utils/csvSafe";
 
 export default function HotelWise() {
 
@@ -243,14 +245,14 @@ export default function HotelWise() {
               ${currentHotels.map((h, index) => `
                 <tr>
                   <td>${index +1}</td>
-                  <td>${h.hotelName}</td>
-                  <td>${h.hotelType}</td>
-                  <td>${h.hotelCategory}</td>
-                  <td>${h.roomCategory}</td>
-                  <td>${h.region}</td>
-                  <td>${h.country}</td>
-                  <td>${h.state}</td>
-                  <td>${h.place}</td>
+                  <td>${escapeHtml(h.hotelName)}</td>
+                  <td>${escapeHtml(h.hotelType)}</td>
+                  <td>${escapeHtml(h.hotelCategory)}</td>
+                  <td>${escapeHtml(h.roomCategory)}</td>
+                  <td>${escapeHtml(h.region)}</td>
+                  <td>${escapeHtml(h.country)}</td>
+                  <td>${escapeHtml(h.state)}</td>
+                  <td>${escapeHtml(h.place)}</td>
 
                 </tr>
               `).join('')}
@@ -294,15 +296,8 @@ export default function HotelWise() {
     const headers = ['Sl.No', 'Hotel Name', 'Hotel Type', 'Hotel Category', 'Room Category', 'Region', 'Country', 'State', 'Place'];
     
     // Create CSV content with proper escaping
-    const escapeCSV = (value) => {
-      if (value === null || value === undefined) return '';
-      const stringValue = String(value);
-      // If value contains comma, newline, or quote, wrap it in quotes and escape quotes
-      if (stringValue.includes(',') || stringValue.includes('\n') || stringValue.includes('"')) {
-        return `"${stringValue.replace(/"/g, '""')}"`;
-      }
-      return stringValue;
-    };
+    // csvCell neutralises text a spreadsheet would run as a formula.
+    const escapeCSV = (value) => csvCell(value);
     
     const csvContent = [
       headers.map(escapeCSV).join(','),

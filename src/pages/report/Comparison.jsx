@@ -8,6 +8,8 @@ import { toast } from "react-hot-toast";
 import axiosInstance from "../../components/AxiosInstance";
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { escapeHtml } from "../../utils/safeHtml";
+import { csvCell } from "../../utils/csvSafe";
 
 
 function Comparison() {
@@ -252,7 +254,7 @@ function Comparison() {
     printWindow.document.write(`
       <html>
         <head>
-          <title>Comparison Report - ${reportType === 'agent' ? 'Agent' : 'Hotel'}</title>
+          <title>Comparison Report - ${escapeHtml(reportType === 'agent' ? 'Agent' : 'Hotel')}</title>
           <style>
             body { font-family: Arial, sans-serif; margin: 20px; }
             table { width: 100%; border-collapse: collapse; }
@@ -262,20 +264,20 @@ function Comparison() {
           </style>
         </head>
         <body>
-          <h1>Comparison Report - ${reportType === 'agent' ? 'Agent' : 'Hotel'}</h1>
+          <h1>Comparison Report - ${escapeHtml(reportType === 'agent' ? 'Agent' : 'Hotel')}</h1>
           <table>
             <thead>
               <tr>
-                ${columns.map(col => `<th>${col}</th>`).join('')}
+                ${columns.map(col => `<th>${escapeHtml(col)}</th>`).join('')}
               </tr>
             </thead>
             <tbody>
               ${allData.map((item, index) => (
                 `<tr>
                   <td>${index + 1}</td>
-                  <td>${item.agentname}</td>
-                  <td>${item.noofbooking}</td>
-                  <td>${item.cancelledbooking}</td>
+                  <td>${escapeHtml(item.agentname)}</td>
+                  <td>${escapeHtml(item.noofbooking)}</td>
+                  <td>${escapeHtml(item.cancelledbooking)}</td>
                 </tr>`
               )).join('')}
             </tbody>
@@ -345,14 +347,8 @@ function Comparison() {
     
     const headers = ['Sl.No', 'Entity Name', 'No Of Booking', 'Cancelled Booking'];
     
-    const escapeCSV = (value) => {
-      if (value === null || value === undefined) return '';
-      const stringValue = String(value);
-      if (stringValue.includes(',') || stringValue.includes('\n') || stringValue.includes('"')) {
-        return `"${stringValue.replace(/"/g, '""')}"`;
-      }
-      return stringValue;
-    };
+    // csvCell neutralises text a spreadsheet would run as a formula.
+    const escapeCSV = (value) => csvCell(value);
     
     const csvContent = [
       headers.map(escapeCSV).join(','),

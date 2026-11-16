@@ -53,10 +53,16 @@ import { toast } from "react-hot-toast";
 import axiosInstance from "../../components/AxiosInstance";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
+import {
+  REFUND_FLEXIBLE,
+  REFUND_NON_REFUNDABLE,
+  refundLabelText,
+} from "../../utils/refundLabel";
 // Source of the pg-option-* classes used by the Select Payment Gateway
 // modal below — same import BookingDetailedView.jsx uses so the day-stay
 // detail picker renders identically to the hotel detail picker.
 import "../../styles/HotelBookingPage.css";
+import { orderIdPathSegment } from "../../utils/urlSafety";
 
 // Online-payment gateways — mirrors BookingDetailedView (hotel). CCAvenue
 // is the only real gateway wired; the dummy /payment/:gateway path is kept
@@ -259,7 +265,7 @@ export default function DayStayBookingDetailView() {
   // Role gate for admin-only actions — currently gates the "Send Email"
   // affordance inside the PDF preview modal. Matches HotelBookingPage's
   // convention.
-  const activeUserRole = localStorage.getItem("currentActiveRole");
+  const activeUserRole = sessionStorage.getItem("currentActiveRole");
   const isAdmin = String(activeUserRole || "").toUpperCase() === "ADMIN";
   const isSuperAdmin =
     String(activeUserRole || "").toUpperCase() === "SUPER_ADMIN";
@@ -276,11 +282,11 @@ export default function DayStayBookingDetailView() {
   // currentActiveRole isn't set for single-role logins, so fall back to
   // userRole (same convention as HotelSearch.jsx). Visibility only — no
   // API/flow/permission change.
-  const activeRole = String(localStorage.getItem("currentActiveRole") || "")
+  const activeRole = String(sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
   const storedRoles = String(
-    localStorage.getItem("userRole") || "",
+    sessionStorage.getItem("userRole") || "",
   ).toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
@@ -812,7 +818,7 @@ export default function DayStayBookingDetailView() {
         // Re-verify server-side before finalizing — never trust the
         // redirect's own query string alone.
         const statusResponse = await axiosInstance.get(
-          `/api/payment/ccavenue/status/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/status/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         if (statusResponse.data?.status !== "SUCCESS") {
           toast.error(
@@ -822,7 +828,7 @@ export default function DayStayBookingDetailView() {
           return;
         }
         await axiosInstance.post(
-          `/api/payment/ccavenue/finalize-daystay-reconfirm/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/finalize-daystay-reconfirm/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         toast.success("Booking reconfirmed successfully!");
         await fetchDetail();
@@ -997,7 +1003,6 @@ export default function DayStayBookingDetailView() {
       // (body field is `note`, not `noteText`). Nothing about how notes are
       // stored is changed.
       const createdBy =
-        localStorage.getItem("UserName") ||
         sessionStorage.getItem("UserName") ||
         "unknown";
       const res = await axiosInstance.post(
@@ -1325,7 +1330,7 @@ export default function DayStayBookingDetailView() {
               >
                 Day Stay Booking Details
               </span>
-              {selected?.bookingCode && (
+              {/* {selected?.bookingCode && (
                 <span
                   style={{
                     marginLeft: "10px",
@@ -1341,7 +1346,7 @@ export default function DayStayBookingDetailView() {
                 <span style={{ marginLeft: "10px" }}>
                   <StatusBadge status={displayStatus} />
                 </span>
-              )}
+              )} */}
             </div>
 
             {detailsLoading && !selected ? (
@@ -1461,7 +1466,7 @@ export default function DayStayBookingDetailView() {
                               <span
                                 style={{ color: "#dc2626", fontWeight: 600 }}
                               >
-                                {`${String(selected.deadlineDate).slice(0, 10)} 02:00 PM (UAE)`}
+                                {`${String(selected.deadlineDate).slice(0, 10)} 11:59 PM (UAE)`}
                               </span>
                             ) : (
                               "-"
@@ -1470,13 +1475,13 @@ export default function DayStayBookingDetailView() {
                         />
                         <InfoRow
                           label="Refund Status"
-                          value={
+                          value={refundLabelText(
                             (selected.rooms || []).some(
                               (r) => r?.nonRefundable === true,
                             )
-                              ? "Non-Refundable"
-                              : "Refundable"
-                          }
+                              ? REFUND_NON_REFUNDABLE
+                              : REFUND_FLEXIBLE,
+                          )}
                         />
                         <InfoRow
                           label="Total"

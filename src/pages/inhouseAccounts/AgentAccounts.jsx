@@ -13,6 +13,7 @@ import axiosInstance from "../../components/AxiosInstance";
 import { toast } from "react-hot-toast";
 import Swal from "sweetalert2";
 import { useNavigate } from "react-router-dom";
+import { getCurrentActiveRole } from "../../utils/authSession";
 import {
   FaPlus,
   FaHistory,
@@ -21,6 +22,11 @@ import {
 
 export default function AgentAccounts() {
   const navigate = useNavigate();
+  // Recording a payment adds to the agent's available credit, so only an
+  // admin may do it (the backend refuses everyone else too).
+  const isAdmin = ["ADMIN", "SUPER_ADMIN"].includes(
+    String(getCurrentActiveRole() || "").toUpperCase(),
+  );
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -41,7 +47,10 @@ export default function AgentAccounts() {
     return allAgents.slice(page * 10, (page + 1) * 10);
   }, [allAgents, page]);
 
-  const fetchAgentSummaries = async (searchVal = searchTerm) => {
+  // keepPage: refresh after a payment save/update/delete stays on the page
+  // the admin was on (clamped if the list got shorter). A new search or the
+  // first load still starts from page 1.
+  const fetchAgentSummaries = async (searchVal = searchTerm, { keepPage = false } = {}) => {
     setIsLoading(true);
     try {
       const res = await axiosInstance.get("/api/agent-credit-limit/agents");
@@ -54,7 +63,12 @@ export default function AgentAccounts() {
           );
         }
         setAllAgents(data);
+        if (keepPage) {
+          const lastPage = Math.max(0, Math.ceil(data.length / 10) - 1);
+          setPage((prev) => Math.min(prev, lastPage));
+        } else {
         setPage(0); // Reset to first page on new data/search
+        }
       } else {
         setAllAgents([]);
       }
@@ -129,7 +143,7 @@ export default function AgentAccounts() {
 
       if (editRes.data) {
         toast.success("Amount Receive Updated Successfully!");
-        await fetchAgentSummaries();
+        await fetchAgentSummaries(searchTerm, { keepPage: true });
         closeModal();
       }
     } catch (error) {
@@ -187,7 +201,7 @@ export default function AgentAccounts() {
 
       if (saveRes.data !== 0) {
         toast.success("Amount Receive added Successfully!");
-        await fetchAgentSummaries();
+        await fetchAgentSummaries(searchTerm, { keepPage: true });
         closeModal();
       }
     } catch (error) {
@@ -229,7 +243,7 @@ export default function AgentAccounts() {
           .delete(`/api/inhouseAgentAccounts/${item.id}`)
           .then(() => {
             toast.success("Amount receive record deleted successfully");
-            fetchAgentSummaries();
+            fetchAgentSummaries(searchTerm, { keepPage: true });
           })
           .catch(() => {
             toast.error("Sorry!! Amount receive record not deleted");
@@ -305,6 +319,7 @@ export default function AgentAccounts() {
                           className="d-flex gap-1 flex-nowrap"
                           style={{ whiteSpace: "nowrap" }}
                         >
+                          {isAdmin && (
                           <Button
                             size="sm"
                             variant="outline-success"
@@ -319,6 +334,7 @@ export default function AgentAccounts() {
                           >
                             <FaPlus style={{ fontSize: "0.62rem" }} className="me-1" /> Payment
                           </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="outline-info"
@@ -408,8 +424,8 @@ export default function AgentAccounts() {
             </Card.Body>
           </Card>
 
-          {/* Amount Receive Modal */}
-          <Modal show={showModal} onHide={closeModal} centered>
+          {/* Amount Receive Modal (admins only, see isAdmin) */}
+          <Modal show={showModal && isAdmin} onHide={closeModal} centered>
             <Modal.Header closeButton={!isLoading}>
               <Modal.Title>
                 {editing ? "Update Amount Receive" : "Create Amount Receive"}

@@ -970,6 +970,10 @@ const MakePkgBookingPage = () => {
               const day = String(deadline.getDate()).padStart(2, "0");
               return `${year}-${month}-${day}T00:00:00`;
             } else {
+              // The backend's own last free day, when the rate carries it.
+              if (hotel.refundTerms?.cutoff) {
+                return `${hotel.refundTerms.cutoff}T00:00:00`;
+              }
               // Refundable: 2 days before earliest fromDate from cancellationPolicy
               const policies = hotel.cancellationPolicy || [];
               if (policies.length === 0) {
@@ -1045,6 +1049,7 @@ const MakePkgBookingPage = () => {
                   hotel.refundstatus === "N" ||
                   hotel.nonRefundable === true ||
                   hotel.nonRefundable === "true",
+                refundTerms: hotel.refundTerms,
                 currency: hotel.currency || "AED",
                 rate: roomRate,
                 rateWithoutMarkup: roomRateWithoutMarkup,

@@ -32,6 +32,7 @@ import Topbar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
 import "../../styles/HotelList.css";
 import DashboardRedirections from "../../components/DashboardRedirections";
+import { getCurrentActiveRole } from "../../utils/authSession";
 
 const PAGE_SIZE = 12;
 
@@ -114,7 +115,7 @@ const HoneymoonList = () => {
             <div className="mb-3">
               <Button
                 variant="outline-secondary"
-                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
                 className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
               >
                 <FaArrowLeft />

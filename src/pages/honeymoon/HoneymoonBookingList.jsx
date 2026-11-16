@@ -26,6 +26,7 @@ import { toast } from "react-hot-toast";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
+import RoomCountSummary from "../../components/RoomCountSummary";
 
 const PER_PAGE_OPTIONS = [10, 25, 50, 100];
 
@@ -335,7 +336,10 @@ const HoneymoonBookingList = () => {
                             <th>Booking</th>
                             <th>Package</th>
                             <th>Start</th>
-                            <th className="text-center">Pax / Rooms</th>
+                            {/* Rooms moved out of the old "Pax / Rooms" column
+                                into their own No. of Rooms column. */}
+                            <th className="text-center">No. of Rooms</th>
+                            <th className="text-center">Pax</th>
                             <th>Customer</th>
                             <th className="text-end">Base</th>
                             <th className="text-end">Markup</th>
@@ -347,7 +351,7 @@ const HoneymoonBookingList = () => {
                         <tbody>
                           {filteredContent.length === 0 ? (
                             <tr>
-                              <td colSpan={11} className="text-center py-5 text-muted">
+                              <td colSpan={12} className="text-center py-5 text-muted">
                                 No bookings found
                               </td>
                             </tr>
@@ -376,11 +380,13 @@ const HoneymoonBookingList = () => {
                                   <td style={{ whiteSpace: "nowrap" }}>
                                     {fmtDate(b.startingDate)}
                                   </td>
+                                  {/* Honeymoon bookings store only the room
+                                      count — no room type to break down. */}
+                                  <td className="text-center">
+                                    <RoomCountSummary total={b.rooms} />
+                                  </td>
                                   <td className="text-center">
                                     <div>{(b.adults || 0) + (b.children || 0)} pax</div>
-                                    <div className="text-muted" style={{ fontSize: "0.7rem" }}>
-                                      {b.rooms || 0} room{(b.rooms || 0) === 1 ? "" : "s"}
-                                    </div>
                                   </td>
                                   <td>
                                     <div className="fw-medium text-dark">

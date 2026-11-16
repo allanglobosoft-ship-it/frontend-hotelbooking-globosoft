@@ -164,7 +164,7 @@ export default function DiscountPromotion() {
   const seasonList = async () => {
     try {
       setLoading(true);
-      const seasonRes = await axiosInstance.get(`api/seasonType`);
+      const seasonRes = await axiosInstance.get(`/api/seasonType`);
       console.log("seasonRes::", seasonRes.data);
       if (seasonRes.data) {
         setSeasonData(seasonRes.data);
@@ -198,7 +198,7 @@ export default function DiscountPromotion() {
   };
 
   useEffect(() => {
-    fetchRooms();
+    // fetchRooms(); // disabled: /api/hotel/{id}/room-meal-data doesn't exist on the backend (404)
     fetchDropdowns();
     fetchRoomDetails();
     loadHotelRoomDatas();

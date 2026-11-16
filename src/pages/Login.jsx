@@ -9,6 +9,83 @@ import "../styles/LoginModern.css";
 import DashboardRedirections from "../components/DashboardRedirections";
 import axiosInstance from "../components/AxiosInstance";
 import { toast } from "react-hot-toast";
+import { setAuthSession, setUserId } from "../utils/authSession";
+import { apiErrorMessage } from "../utils/apiErrorMessage";
+
+// ── About us copy ───────────────────────────────────────────────────────────
+// Company profile shown on the public About us page (pages/AboutUs.jsx, route
+// /Aboutus), which imports these from here. The login page links to that page
+// from its footer; the copy is held as data so it is easy to edit.
+export const ABOUT_INTRO = [
+  "Globosoft Travels LLC is a UAE-based Online Travel Agency (OTA), B2B Bedbank and Destination Management Company (DMC) focused on connecting travel professionals with quality accommodation and travel services worldwide.",
+  "Built around technology, global connectivity and strong destination expertise, Globosoft provides travel agencies, tour operators, and other travel professionals with access to a comprehensive portfolio of hotels, resorts, apartments, transfers, tours, excursions and destination services through a single B2B platform.",
+];
+
+export const ABOUT_USP_LEAD =
+  "At Globosoft Travels LLC, we believe the future of travel is not built around a single product. It is built around choice, personalization, flexibility and seamless access to multiple travel solutions through one platform. Globosoft brings together a diverse portfolio of accommodation, travel experiences, lifestyle products and specialized travel solutions designed to meet the evolving requirements of today’s travel industry and the next generation of travellers.";
+
+export const ABOUT_PRODUCTS = [
+  "Hotels & Resorts",
+  "Apartments & Villas",
+  "Student Travel",
+  "Airline, Government, Hotelier & Institutional Accommodation",
+  "Senior Citizen Travel",
+  "Last-Minute Deals",
+  "Honeymoon & Romance",
+  "Holiday Packages",
+  "Build Your Own Package",
+  "Meetings & Event Spaces",
+  "Ayurveda & Wellness",
+  "Religious & Faith-Based Travel",
+  "24-Hour Stay",
+  "Long Stay & Extended Stay",
+  "Day Stay",
+  "Chauffeur & Limousine Services",
+  "Tours & Activities",
+  "Restaurant Reservations",
+];
+
+export const ABOUT_PLATFORM =
+  "Our platform is designed to simplify the way travel businesses search, compare, book and manage travel products, offering competitive rates, real-time availability and efficient booking solutions. Through API connectivity and direct as well as strategic supplier partnerships, we aim to deliver reliable inventory and seamless distribution to our B2B partners.";
+
+export const ABOUT_SERVICES = [
+  {
+    title: "B2B Bedbank",
+    desc: "Global hotel and accommodation inventory with competitive wholesale rates and flexible booking solutions.",
+  },
+  {
+    title: "Online Travel Agency (OTA)",
+    desc: "A technology-driven platform enabling travel professionals to search and book accommodation and travel services efficiently.",
+  },
+  {
+    title: "Destination Management Company (DMC)",
+    desc: "Local destination expertise, including transfers, tours, excursions, sightseeing, activities and tailor-made travel arrangements.",
+  },
+  {
+    title: "API & Connectivity",
+    desc: "Technology solutions enabling travel agencies, tour operators and online platforms to connect directly with our inventory and services.",
+  },
+];
+
+export const ABOUT_VISION =
+  "To become a trusted global travel distribution and technology partner, connecting suppliers and travel sellers through one efficient ecosystem.";
+
+export const ABOUT_MISSION =
+  "To make travel distribution simpler, smarter and more accessible to everyone, across generations and markets, by combining innovative technology, competitive pricing, global inventory and deep destination expertise.";
+
+export const ABOUT_WHY = [
+  { emoji: "\u{1F30D}", label: "Global Accommodation & Travel Inventory" },
+  { emoji: "\u{1F4BC}", label: "Dedicated B2B Solutions" },
+  { emoji: "\u{1F517}", label: "API & Technology Connectivity" },
+  { emoji: "\u{1F4B0}", label: "Competitive Wholesale Rates" },
+  { emoji: "⚡", label: "Fast & Efficient Booking" },
+  { emoji: "\u{1F91D}", label: "Strong Supplier & Partner Network" },
+  { emoji: "\u{1F5FA}️", label: "Destination Expertise" },
+  { emoji: "\u{1F4DE}", label: "Professional B2B Support" },
+];
+
+export const ABOUT_CLOSING =
+  "At Globosoft, we believe the future of travel distribution is built on technology, connectivity and trust. Our goal is not simply to provide hotel rooms, but to create a complete travel ecosystem that helps our partners grow their business and deliver better experiences to their customers.";
 
 const Login = () => {
   const [username, setUsername] = useState("");
@@ -198,11 +275,14 @@ const Login = () => {
       );
     }
 
-    localStorage.setItem("authToken", token);
-    localStorage.setItem("userRole", roles);
-    localStorage.setItem("UserName", loginedUserName);
+    // Writes to THIS tab's sessionStorage only (utils/authSession.js) — a
+    // second tab logging in concurrently as a different user must never be
+    // able to overwrite this tab's identity, which is exactly what sharing
+    // localStorage across tabs used to do. Also mints this login's
+    // adSessionId (ad-view dedupe: a new login can count views again).
+    setAuthSession({ token, roles, username: loginedUserName });
 
-    // Prime localStorage.userId with the caller's own entity id (for
+    // Prime userId with the caller's own entity id (for
     // agents: their agent id) BEFORE any downstream page mounts. Several
     // pages (HotelSearch, LongStaySearch, etc.) read userId synchronously
     // as the "self" agent id when building the search payload — if userId
@@ -223,7 +303,7 @@ const Login = () => {
         `/api/personalProfile/${loginedUserName}`,
       );
       if (profile?.data?.id != null) {
-        localStorage.setItem("userId", String(profile.data.id));
+        setUserId(String(profile.data.id));
       }
       // Seed the RegionalClock cache with THIS user's country so the
       // dashboard clock shows it immediately (same shape RegionalClock
@@ -242,13 +322,8 @@ const Login = () => {
       console.warn("Failed to prime userId at login:", profileErr);
     }
 
-    // Fresh per-login id used to dedupe advertisement views (an ad is counted
-    // once per page per login session). A new login → new id → countable again.
-    const newAdSessionId =
-      typeof crypto !== "undefined" && crypto.randomUUID
-        ? crypto.randomUUID()
-        : `s-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
-    localStorage.setItem("adSessionId", newAdSessionId);
+    // (adSessionId — dedupes advertisement views per login — is minted by
+    // setAuthSession() above.)
 
     if (roles.length > 1) {
       navigate("/select-userRole", { state: { roles } });
@@ -315,7 +390,26 @@ const Login = () => {
 
       await completeLogin(response.data);
     } catch (err) {
-      setError("Invalid username or password");
+      // Wrong credentials come back as 401 → the generic message. Two answers
+      // carry a reason the user can act on, so show the server's sentence:
+      //   400 — e.g. an agent / sub agent set Inactive ("Your account is
+      //         inactive. Please contact the administrator.")
+      //   429 — the username is locked after too many failed attempts, or this
+      //         address is rate-limited ("Too many failed attempts. Try again
+      //         in N minutes.")
+      const status = err?.response?.status;
+      if (status === 429) {
+        setError(
+          apiErrorMessage(
+            err,
+            "Too many failed attempts. Please try again in a few minutes.",
+          ),
+        );
+      } else if (status === 400) {
+        setError(apiErrorMessage(err, "Invalid username or password"));
+      } else {
+        setError("Invalid username or password");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -664,6 +758,20 @@ const Login = () => {
 
         <div className="lg-brand-foot">
           © {new Date().getFullYear()} Globosoft. All rights reserved.
+          {/* Company information pages, public (no sign-in). Each opens in a
+              new tab, like "Find a booking", so the sign-in form keeps what
+              was typed. /privacypolicy is the Terms & Conditions page. */}
+          <nav className="lg-legal" aria-label="Company information">
+            <Link to="/Aboutus" target="_blank" rel="noopener noreferrer">
+              About us
+            </Link>
+            <Link to="/ContactDetails" target="_blank" rel="noopener noreferrer">
+              Contact us
+            </Link>
+            <Link to="/privacypolicy" target="_blank" rel="noopener noreferrer">
+              Terms and Conditions
+            </Link>
+          </nav>
         </div>
       </aside>
 

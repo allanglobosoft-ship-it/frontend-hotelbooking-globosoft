@@ -9,13 +9,25 @@ import {
   Badge,
   Pagination,
   Spinner,
+  Modal,
+  ButtonGroup,
 } from "react-bootstrap";
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
 import { toast } from "react-hot-toast";
 import Swal from "sweetalert2";
-import { FaFileDownload, FaSyncAlt, FaFilter, FaUndo } from "react-icons/fa";
+import {
+  FaFileDownload,
+  FaSyncAlt,
+  FaFilter,
+  FaUndo,
+  FaWallet,
+  FaPlus,
+  FaMinus,
+} from "react-icons/fa";
+import { escapeHtml } from "../../utils/safeHtml";
+import { csvCellQuoted } from "../../utils/csvSafe";
 
 /**
  * Inhouse Accounts → Ledger.
@@ -29,12 +41,29 @@ import { FaFileDownload, FaSyncAlt, FaFilter, FaUndo } from "react-icons/fa";
 
 const PAGE_SIZE = 10;
 
+// Export pulls the WHOLE filtered statement in chunks of this size — the
+// largest page AgentLedgerQueryService allows (MAX_PAGE_SIZE).
+const EXPORT_PAGE_SIZE = 500;
+
+// Query params for the current filters (page/size are added by the caller).
+const filterParams = (filters) => {
+  const params = {};
+  if (filters.agentId) params.agentId = filters.agentId;
+  if (filters.from) params.from = filters.from;
+  if (filters.to) params.to = filters.to;
+  if (filters.entryType) params.entryType = filters.entryType;
+  if (filters.sourceModule) params.sourceModule = filters.sourceModule;
+  if (filters.search?.trim()) params.search = filters.search.trim();
+  return params;
+};
+
 // Labels here must match AgentLedgerEntryType.label() on the backend — same
 // plain wording, no debit/credit vocabulary.
 const ENTRY_TYPES = [
   { value: "", label: "Everything" },
   { value: "BOOKING_DEBIT", label: "Booking made" },
   { value: "CANCELLATION_CREDIT", label: "Booking cancelled" },
+  { value: "CANCELLATION_NOT_REFUNDED", label: "Cancelled, not refunded" },
   { value: "RECEIPT_CREDIT", label: "Money paid in" },
   { value: "ADDITIONAL_CREDIT", label: "Credit added" },
   { value: "CREDIT_LIMIT_INCREASE", label: "Limit raised" },
@@ -42,6 +71,21 @@ const ENTRY_TYPES = [
   { value: "ADJUSTMENT_DEBIT", label: "Money taken out" },
   { value: "ADJUSTMENT_CREDIT", label: "Money added" },
 ];
+
+// A non-refundable booking that was cancelled: a zero line, because nothing
+// goes back to the agent's credit online. Only the Finance team can refund it.
+const NOT_REFUNDED = "CANCELLATION_NOT_REFUNDED";
+
+// Badge colours for "What happened": green money in, red money out, amber for
+// a cancellation that gave nothing back.
+const badgeColours = (e) => {
+  if (e.entryType === NOT_REFUNDED) {
+    return { bg: "warning-subtle", text: "warning-emphasis" };
+  }
+  return e.direction === "CREDIT"
+    ? { bg: "success-subtle", text: "success" }
+    : { bg: "danger-subtle", text: "danger" };
+};
 
 const MODULES = [
   { value: "", label: "All types" },
@@ -57,10 +101,54 @@ const MODULES = [
   { value: "GOV_EMPLOYEE", label: "Gov Employee" },
   { value: "SENIOR_CITIZEN", label: "Senior Citizen" },
   { value: "STUDENT", label: "Student" },
+  { value: "ACTIVITY", label: "Activity" },
   { value: "TRIP", label: "Trip" },
   { value: "ACCOUNTS", label: "Accounts" },
   { value: "OTHER", label: "Other" },
 ];
+
+// ── Add / Deduct credit (admins) ─────────────────────────────────────
+// Same limits as AgentCreditAdjustmentRequestDTO on the backend.
+const MAX_ADJUST_AMOUNT = 999999999999.99;
+const MAX_ADJUST_REASON = 300;
+const BLANK_ADJUST = { agentId: "", action: "ADD", amount: "", remarks: "" };
+
+// A change an admin made with Add / Deduct credit (the only ADJUSTMENT_*
+// lines the Accounts module writes).
+const isManualAdjustment = (e) =>
+  e.sourceModule === "ACCOUNTS" &&
+  (e.entryType === "ADJUSTMENT_CREDIT" || e.entryType === "ADJUSTMENT_DEBIT");
+
+const validateAdjust = (form, agent) => {
+  const errors = {};
+  if (!form.agentId) errors.agentId = "Choose an agent.";
+  const raw = String(form.amount ?? "").trim();
+  const n = Number(raw);
+  if (!raw) {
+    errors.amount = "Enter an amount.";
+  } else if (!/^\d+(\.\d{1,2})?$/.test(raw)) {
+    errors.amount = "Enter a number with at most 2 decimal places.";
+  } else if (n <= 0) {
+    errors.amount = "Enter an amount greater than zero.";
+  } else if (n > MAX_ADJUST_AMOUNT) {
+    errors.amount = "That amount is too large.";
+  } else if (
+    form.action === "DEDUCT" &&
+    agent &&
+    n > Number(agent.availableCreditLimit ?? 0)
+  ) {
+    errors.amount = `This agent has only ${money(
+      agent.availableCreditLimit ?? 0
+    )} available.`;
+  }
+  const reason = form.remarks.trim();
+  if (!reason) {
+    errors.remarks = "Enter a reason for this change.";
+  } else if (reason.length > MAX_ADJUST_REASON) {
+    errors.remarks = `Keep the reason under ${MAX_ADJUST_REASON} characters.`;
+  }
+  return errors;
+};
 
 const money = (v) => {
   if (v === null || v === undefined || v === "") return "";
@@ -87,16 +175,27 @@ const formatDateTime = (iso) => {
 
 export default function AgentLedger() {
   const currentRole = (
-    localStorage.getItem("currentActiveRole") || ""
+    sessionStorage.getItem("currentActiveRole") || ""
   ).toLowerCase();
-  // Backend allows both admin roles to rebuild the history.
-  const canRebuild = currentRole === "admin" || currentRole === "super_admin";
+  // The backend lets ADMIN and SUPER_ADMIN rebuild history; the button used to
+  // check "admin" only, so a super admin never saw it.
+  const isAdmin = currentRole === "admin" || currentRole === "super_admin";
 
   const [data, setData] = useState(null);
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [page, setPage] = useState(0);
+
+  // Add / Deduct credit modal. creditAgents = every agent with a credit
+  // account (the ledger picker only lists agents that already have lines).
+  const [showAdjust, setShowAdjust] = useState(false);
+  const [creditAgents, setCreditAgents] = useState([]);
+  const [loadingCreditAgents, setLoadingCreditAgents] = useState(false);
+  const [adjust, setAdjust] = useState(BLANK_ADJUST);
+  const [adjustErrors, setAdjustErrors] = useState({});
+  const [adjusting, setAdjusting] = useState(false);
 
   // Draft filter state — only applied on "Apply", so typing a date doesn't
   // fire a request per keystroke.
@@ -126,13 +225,7 @@ export default function AgentLedger() {
     async (filters, pageNo) => {
       setLoading(true);
       try {
-        const params = { page: pageNo, size: PAGE_SIZE };
-        if (filters.agentId) params.agentId = filters.agentId;
-        if (filters.from) params.from = filters.from;
-        if (filters.to) params.to = filters.to;
-        if (filters.entryType) params.entryType = filters.entryType;
-        if (filters.sourceModule) params.sourceModule = filters.sourceModule;
-        if (filters.search?.trim()) params.search = filters.search.trim();
+        const params = { ...filterParams(filters), page: pageNo, size: PAGE_SIZE };
 
         const res = await axiosInstance.get("/api/inhouse-accounts/ledger", {
           params,
@@ -200,11 +293,15 @@ export default function AgentLedger() {
         title: "Done",
         html:
           `<div style="text-align:left">` +
-          `Starting credit limits: <b>${s.openingBalanceLines ?? 0}</b><br/>` +
-          `Bookings made: <b>${s.bookingDebitLines ?? 0}</b><br/>` +
-          `Bookings cancelled: <b>${s.cancellationCreditLines ?? 0}</b><br/>` +
-          `Payments in: <b>${s.receiptCreditLines ?? 0}</b><br/><br/>` +
-          `<b>${s.totalWritten ?? 0}</b> new lines added` +
+          `Starting credit limits: <b>${escapeHtml(s.openingBalanceLines ?? 0)}</b><br/>` +
+          `Bookings made: <b>${escapeHtml(s.bookingDebitLines ?? 0)}</b><br/>` +
+          `Bookings cancelled: <b>${escapeHtml(s.cancellationCreditLines ?? 0)}</b><br/>` +
+          `Cancelled, not refunded: <b>${escapeHtml(s.cancelledNotRefundedLines ?? 0)}</b><br/>` +
+          (s.removedNonRefundableRefundLines > 0
+            ? `Wrong refund lines removed (non-refundable): <b>${escapeHtml(s.removedNonRefundableRefundLines)}</b><br/>`
+            : "") +
+          `Payments in: <b>${escapeHtml(s.receiptCreditLines ?? 0)}</b><br/><br/>` +
+          `<b>${escapeHtml(s.totalWritten ?? 0)}</b> new lines added` +
           (s.totalWritten === 0
             ? `<br/><span style="color:#666">Everything was already listed.</span>`
             : "") +
@@ -223,8 +320,120 @@ export default function AgentLedger() {
     }
   };
 
-  const exportCsv = () => {
-    const rows = data?.entries || [];
+  // Fresh balances every time the modal opens, so the "Available now" figure
+  // and the Deduct check use what the agent has at that moment.
+  const fetchCreditAgents = async () => {
+    setLoadingCreditAgents(true);
+    try {
+      const res = await axiosInstance.get("/api/agent-credit-limit/agents");
+      setCreditAgents(Array.isArray(res.data) ? res.data : []);
+    } catch {
+      // The endpoint answers with an error when no agent has a credit account.
+      setCreditAgents([]);
+    } finally {
+      setLoadingCreditAgents(false);
+    }
+  };
+
+  const openAdjust = () => {
+    // Start on the agent already chosen in the filter, if any.
+    setAdjust({ ...BLANK_ADJUST, agentId: draft.agentId || applied.agentId || "" });
+    setAdjustErrors({});
+    setShowAdjust(true);
+    fetchCreditAgents();
+  };
+
+  const closeAdjust = () => {
+    if (adjusting) return;
+    setShowAdjust(false);
+  };
+
+  const setAdjustField = (field, value) => {
+    setAdjust((prev) => ({ ...prev, [field]: value }));
+    setAdjustErrors((prev) => ({ ...prev, [field]: undefined }));
+  };
+
+  const adjustAgent = creditAgents.find(
+    (a) => String(a.agentId) === String(adjust.agentId)
+  );
+
+  // What the agent's available credit will be after this change, for the
+  // line under the form. Only shown for a valid amount.
+  const adjustPreview = (() => {
+    if (!adjustAgent) return null;
+    const raw = String(adjust.amount ?? "").trim();
+    if (!/^\d+(\.\d{1,2})?$/.test(raw) || Number(raw) <= 0) return null;
+    const available = Number(adjustAgent.availableCreditLimit ?? 0);
+    const total = Number(adjustAgent.totalCreditLimit ?? 0);
+    const after =
+      adjust.action === "ADD" ? available + Number(raw) : available - Number(raw);
+    if (after < 0) return null;
+    return { after, raisesLimit: adjust.action === "ADD" && after > total };
+  })();
+
+  const submitAdjust = async () => {
+    const errors = validateAdjust(adjust, adjustAgent);
+    setAdjustErrors(errors);
+    if (Object.keys(errors).length) return;
+
+    const amount = Number(String(adjust.amount).trim());
+    const agentName = adjustAgent?.agentName || "the agent";
+    setAdjusting(true);
+    try {
+      await axiosInstance.post("/api/inhouse-accounts/ledger/adjust-credit", {
+        agentId: Number(adjust.agentId),
+        amount,
+        action: adjust.action,
+        remarks: adjust.remarks.trim(),
+      });
+      toast.success(
+        adjust.action === "ADD"
+          ? `${money(amount)} added to ${agentName}'s available credit.`
+          : `${money(amount)} deducted from ${agentName}'s available credit.`
+      );
+      setShowAdjust(false);
+      // Show that agent's statement so the new line is on screen. A new
+      // object, so the ledger reloads even when the agent was already chosen.
+      const next = { ...applied, agentId: String(adjust.agentId) };
+      setDraft((prev) => ({ ...prev, agentId: String(adjust.agentId) }));
+      setPage(0);
+      setApplied(next);
+      fetchAgents();
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || "Could not save the change. Please try again."
+      );
+    } finally {
+      setAdjusting(false);
+    }
+  };
+
+  const exportCsv = async () => {
+    if (!data?.totalElements) {
+      toast.error("Nothing to export.");
+      return;
+    }
+    // Export the whole statement for the applied filters, not just the 10
+    // rows on screen — it used to download only the current page.
+    setExporting(true);
+    const rows = [];
+    try {
+      for (let p = 0; ; p++) {
+        const res = await axiosInstance.get("/api/inhouse-accounts/ledger", {
+          params: { ...filterParams(applied), page: p, size: EXPORT_PAGE_SIZE },
+        });
+        const chunk = res.data?.entries || [];
+        rows.push(...chunk);
+        if (!chunk.length || p + 1 >= (res.data?.totalPages || 0)) break;
+      }
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || "Could not export the ledger."
+      );
+      return;
+    } finally {
+      setExporting(false);
+    }
     if (!rows.length) {
       toast.error("Nothing to export.");
       return;
@@ -244,12 +453,12 @@ export default function AgentLedger() {
       "Paid by",
       "Note",
     ];
-    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const esc = (v) => csvCellQuoted(v); // neutralises formula-leading text
     const lines = rows.map((r, idx) =>
       [
-        // Same continuous numbering as the table, so an exported page lines up
-        // with what the operator was looking at on screen.
-        (data?.page ?? 0) * (data?.size ?? PAGE_SIZE) + idx + 1,
+        // Same continuous numbering as the table (newest = 1), so a row in
+        // the file has the same number it has on screen.
+        idx + 1,
         formatDateTime(r.entryDate),
         r.agentName,
         r.entryTypeLabel,
@@ -322,11 +531,17 @@ export default function AgentLedger() {
                   size="sm"
                   variant="outline-secondary"
                   onClick={exportCsv}
-                  disabled={loading || !entries.length}
+                  disabled={loading || exporting || !entries.length}
                 >
-                  <FaFileDownload className="me-1" /> Export CSV
+                  <FaFileDownload className="me-1" />{" "}
+                  {exporting ? "Exporting…" : "Export CSV"}
                 </Button>
-                {canRebuild && (
+                {isAdmin && (
+                  <Button size="sm" variant="primary" onClick={openAdjust}>
+                    <FaWallet className="me-1" /> Add / Deduct credit
+                  </Button>
+                )}
+                {isAdmin && (
                   <Button
                     size="sm"
                     variant="outline-primary"
@@ -345,7 +560,19 @@ export default function AgentLedger() {
               <p className="text-muted small mb-3">
                 Every time an agent books something, cancels a booking, or pays
                 money in, one line is added here — and the balance shows what
-                they had left to spend right after it.
+                they had left to spend right after it. A cancelled
+                non-refundable booking shows as <b>Cancelled, not refunded</b>:
+                nothing goes back to the agent's credit, and only the Finance
+                team can refund it.
+                {isAdmin && (
+                  <>
+                    {" "}
+                    Use <b>Add / Deduct credit</b> to add an amount to, or take
+                    it off, an agent's available credit; it shows here as{" "}
+                    <b>Money added</b> or <b>Money taken out</b>, with your
+                    reason.
+                  </>
+                )}
               </p>
               <Row className="g-3">
                 <Col xs={6} md={3}>
@@ -547,7 +774,7 @@ export default function AgentLedger() {
                           className="text-center text-muted py-5"
                         >
                           Nothing to show for these filters.
-                          {canRebuild && (
+                          {isAdmin && (
                             <div className="small mt-2">
                               If this agent has older bookings, click{" "}
                               <b>Add past entries</b> at the top to bring them in.
@@ -573,14 +800,8 @@ export default function AgentLedger() {
                           {!isAgentView && <td>{e.agentName}</td>}
                           <td>
                             <Badge
-                              bg={
-                                e.direction === "CREDIT"
-                                  ? "success-subtle"
-                                  : "danger-subtle"
-                              }
-                              text={
-                                e.direction === "CREDIT" ? "success" : "danger"
-                              }
+                              bg={badgeColours(e).bg}
+                              text={badgeColours(e).text}
                             >
                               {e.entryTypeLabel}
                             </Badge>
@@ -610,6 +831,13 @@ export default function AgentLedger() {
                                 {e.remarks}
                               </div>
                             )}
+                            {isManualAdjustment(e) &&
+                              e.createdBy &&
+                              e.createdBy !== "system" && (
+                                <div className="small text-muted">
+                                  By {e.createdBy}
+                                </div>
+                              )}
                           </td>
                           <td>
                             {e.bookingCode ? (
@@ -680,6 +908,158 @@ export default function AgentLedger() {
           </Card>
         </main>
       </div>
+
+      {/* ── Add / Deduct credit (admins) ─────────────────────── */}
+      <Modal
+        show={showAdjust}
+        onHide={closeAdjust}
+        centered
+        backdrop={adjusting ? "static" : true}
+      >
+        <Modal.Header closeButton={!adjusting}>
+          <Modal.Title as="h6" className="mb-0">
+            Add or deduct credit
+          </Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <p className="text-muted small">
+            The amount is added to, or taken off, the agent's available credit,
+            and one line with your reason is added to the ledger.
+          </p>
+
+          <Form.Group className="mb-3">
+            <Form.Label className="small text-muted mb-1">Agent</Form.Label>
+            <Form.Select
+              size="sm"
+              value={adjust.agentId}
+              isInvalid={!!adjustErrors.agentId}
+              disabled={adjusting || loadingCreditAgents}
+              onChange={(e) => setAdjustField("agentId", e.target.value)}
+            >
+              <option value="">
+                {loadingCreditAgents
+                  ? "Loading agents…"
+                  : creditAgents.length
+                  ? "Choose an agent"
+                  : "No agent has a credit account yet"}
+              </option>
+              {creditAgents.map((a) => (
+                <option key={a.agentId} value={a.agentId}>
+                  {a.agentName}
+                </option>
+              ))}
+            </Form.Select>
+            <Form.Control.Feedback type="invalid">
+              {adjustErrors.agentId}
+            </Form.Control.Feedback>
+            {adjustAgent && (
+              <div className="small text-muted mt-1">
+                Available now:{" "}
+                <b>{money(adjustAgent.availableCreditLimit ?? 0)}</b> of a{" "}
+                {money(adjustAgent.totalCreditLimit ?? 0)} credit limit
+              </div>
+            )}
+          </Form.Group>
+
+          <Form.Group className="mb-3">
+            <Form.Label className="small text-muted mb-1 d-block">
+              What to do
+            </Form.Label>
+            <ButtonGroup size="sm">
+              <Button
+                variant={adjust.action === "ADD" ? "success" : "outline-success"}
+                disabled={adjusting}
+                onClick={() => setAdjustField("action", "ADD")}
+              >
+                <FaPlus className="me-1" /> Add
+              </Button>
+              <Button
+                variant={adjust.action === "DEDUCT" ? "danger" : "outline-danger"}
+                disabled={adjusting}
+                onClick={() => setAdjustField("action", "DEDUCT")}
+              >
+                <FaMinus className="me-1" /> Deduct
+              </Button>
+            </ButtonGroup>
+          </Form.Group>
+
+          <Form.Group className="mb-3">
+            <Form.Label className="small text-muted mb-1">Amount</Form.Label>
+            <Form.Control
+              size="sm"
+              type="number"
+              inputMode="decimal"
+              min="0.01"
+              step="0.01"
+              placeholder="0.00"
+              value={adjust.amount}
+              isInvalid={!!adjustErrors.amount}
+              disabled={adjusting}
+              onChange={(e) => setAdjustField("amount", e.target.value)}
+            />
+            <Form.Control.Feedback type="invalid">
+              {adjustErrors.amount}
+            </Form.Control.Feedback>
+          </Form.Group>
+
+          <Form.Group className="mb-2">
+            <Form.Label className="small text-muted mb-1">Reason</Form.Label>
+            <Form.Control
+              size="sm"
+              as="textarea"
+              rows={2}
+              maxLength={MAX_ADJUST_REASON}
+              placeholder="Why is this credit being added or deducted?"
+              value={adjust.remarks}
+              isInvalid={!!adjustErrors.remarks}
+              disabled={adjusting}
+              onChange={(e) => setAdjustField("remarks", e.target.value)}
+            />
+            <Form.Control.Feedback type="invalid">
+              {adjustErrors.remarks}
+            </Form.Control.Feedback>
+          </Form.Group>
+
+          {adjustPreview && (
+            <div className="small">
+              Available after this: <b>{money(adjustPreview.after)}</b>
+              {adjustPreview.raisesLimit && (
+                <span className="text-muted">
+                  {" "}
+                  (the credit limit goes up to match)
+                </span>
+              )}
+            </div>
+          )}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button
+            size="sm"
+            variant="outline-secondary"
+            onClick={closeAdjust}
+            disabled={adjusting}
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            variant={adjust.action === "ADD" ? "success" : "danger"}
+            onClick={submitAdjust}
+            disabled={adjusting || loadingCreditAgents}
+          >
+            {adjusting ? (
+              <>
+                <Spinner animation="border" size="sm" className="me-1" />
+                Saving…
+              </>
+            ) : adjust.action === "ADD" ? (
+              "Add credit"
+            ) : (
+              "Deduct credit"
+            )}
+          </Button>
+        </Modal.Footer>
+      </Modal>
     </div>
   );
 }

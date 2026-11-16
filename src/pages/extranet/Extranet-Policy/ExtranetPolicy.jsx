@@ -120,7 +120,7 @@ const ExtranetPolicy = () => {
   // ✅ Delete policy
   const handleDelete = (policy) => {
     Swal.fire({
-      title: `Are you sure? You want to delete policy ${policy.policyCode}?`,
+      titleText: `Are you sure? You want to delete policy ${policy.policyCode}?`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

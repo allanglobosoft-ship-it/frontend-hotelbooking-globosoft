@@ -425,7 +425,7 @@ const GenerateQuotationBooking = () => {
       const markupTypeName = "Percent";
       const agentId = parseInt(sessionStorage.getItem("makePkgAgentId") || "0");
       const employeeId = firstHotel?.employeeId || "1";
-      const agent = localStorage.getItem("UserName") || sessionStorage.getItem("UserName") || "";
+      const agent = sessionStorage.getItem("UserName") || "";
 
       const quoteItineraryDTOList = [];
       if (selectedItineraries.day1.length > 0) {
@@ -470,7 +470,7 @@ const GenerateQuotationBooking = () => {
             const guests = roomGuests[guestKey] || [];
             const roomRate = parseFloat(hotel.totalRate || 0);
             const roomRateWithoutMarkup = parseFloat(hotel.totalRateWithoutmrk || hotel.totalRate || 0);
-            return { roomNo: idx + 1, roomCategory: hotel.roomCategory || "", mealPlan: hotel.roomType || "", nonRefundable: hotel.nonRefundable === true || hotel.nonRefundable === "true" || hotel.refundstatus === "N", currency: hotel.currency || "AED", rate: roomRate, rateWithoutMarkup: roomRateWithoutMarkup, adults: parseInt(room.adult || room.adults || 1), children: parseInt(room.child || room.children || 0), childAges: Array.isArray(room.childAge) ? room.childAge.map(age => parseInt(age) || 0) : (room.childAge ? [parseInt(room.childAge) || 0] : []), guests: guests.map((guest) => ({ salutation: guest.salutation || "", firstName: guest.firstName || "", middleName: guest.middleName || "", lastName: guest.lastName || "", gender: guest.gender || "", isChild: guest.isChild || false })) };
+            return { roomNo: idx + 1, roomCategory: hotel.roomCategory || "", mealPlan: hotel.roomType || "", nonRefundable: hotel.nonRefundable === true || hotel.nonRefundable === "true" || hotel.refundstatus === "N", refundTerms: hotel.refundTerms, currency: hotel.currency || "AED", rate: roomRate, rateWithoutMarkup: roomRateWithoutMarkup, adults: parseInt(room.adult || room.adults || 1), children: parseInt(room.child || room.children || 0), childAges: Array.isArray(room.childAge) ? room.childAge.map(age => parseInt(age) || 0) : (room.childAge ? [parseInt(room.childAge) || 0] : []), guests: guests.map((guest) => ({ salutation: guest.salutation || "", firstName: guest.firstName || "", middleName: guest.middleName || "", lastName: guest.lastName || "", gender: guest.gender || "", isChild: guest.isChild || false })) };
           }) || [],
           remarks: hotelRemarks[hotelIndex] || "", specialRequests: hotelSpecialRequests[hotelIndex] || "", tourismDirhams: parseFloat(hotelTourismDirhams[hotelIndex] || "0") || 0, bookingConfirmation: hotelBookingConfirmation[hotelIndex] || "Book & Voucher",
         };
@@ -524,7 +524,7 @@ const GenerateQuotationBooking = () => {
           rooms: firstHotel?.searchRoomDTOs?.map((room, idx) => {
             const guestKey = `${hotelIndexInCart}-${idx}`;
             const guests = roomGuests[guestKey] || [];
-            return { roomNo: idx + 1, roomCategory: firstHotel.roomCategory || "", mealPlan: firstHotel.roomType || "", nonRefundable: firstHotel.nonRefundable === true || firstHotel.nonRefundable === "true" || firstHotel.refundstatus === "N", currency: firstHotel.currency || "AED", rate: parseFloat(firstHotel.totalRate || 0), rateWithoutMarkup: parseFloat(firstHotel.totalRateWithoutmrk || firstHotel.totalRate || 0), adults: parseInt(room.adult || room.adults || 1), children: parseInt(room.child || room.children || 0), childAges: Array.isArray(room.childAge) ? room.childAge.map(age => parseInt(age) || 0) : (room.childAge ? [parseInt(room.childAge) || 0] : []), guests: guests.map((guest) => ({ salutation: guest.salutation || "", firstName: guest.firstName || "", middleName: guest.middleName || "", lastName: guest.lastName || "", gender: guest.gender || "", isChild: guest.isChild || false })) };
+            return { roomNo: idx + 1, roomCategory: firstHotel.roomCategory || "", mealPlan: firstHotel.roomType || "", nonRefundable: firstHotel.nonRefundable === true || firstHotel.nonRefundable === "true" || firstHotel.refundstatus === "N", refundTerms: firstHotel.refundTerms, currency: firstHotel.currency || "AED", rate: parseFloat(firstHotel.totalRate || 0), rateWithoutMarkup: parseFloat(firstHotel.totalRateWithoutmrk || firstHotel.totalRate || 0), adults: parseInt(room.adult || room.adults || 1), children: parseInt(room.child || room.children || 0), childAges: Array.isArray(room.childAge) ? room.childAge.map(age => parseInt(age) || 0) : (room.childAge ? [parseInt(room.childAge) || 0] : []), guests: guests.map((guest) => ({ salutation: guest.salutation || "", firstName: guest.firstName || "", middleName: guest.middleName || "", lastName: guest.lastName || "", gender: guest.gender || "", isChild: guest.isChild || false })) };
           }) || [],
           remarks: hotelRemarks[0] || "", specialRequests: hotelSpecialRequests[0] || "", tourismDirhams: parseFloat(hotelTourismDirhams[0] || "0") || 0, bookingConfirmation: hotelBookingConfirmation[0] || "Book & Voucher",
         } : null,

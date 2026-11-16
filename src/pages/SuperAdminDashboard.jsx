@@ -6,7 +6,7 @@ import RegionalClock from '../components/RegionalClock';
 import LineChart from '../components/LineChart';
 import BarChart from '../components/BarChart';
 import axiosInstance from '../components/AxiosInstance';
-import { Icon, formatNumber } from './dashboardSkin';
+import { Icon, formatNumber, DashboardFooter } from './dashboardSkin';
 import { Collapse } from 'react-bootstrap';
 import { FaChartLine, FaChevronDown } from 'react-icons/fa';
 import '../styles/AdminDashboardModern.css';
@@ -84,7 +84,7 @@ export default function SuperAdminDashboard() {
   useEffect(() => {
     const init = async () => {
       try {
-        const userName = localStorage.getItem('UserName') ?? sessionStorage.getItem('UserName');
+        const userName = sessionStorage.getItem('UserName');
         if (userName) axiosInstance.get(`/api/personalProfile/${userName}`).catch(() => {});
         const res = await axiosInstance.get('/api/dashboard/stats');
         if (res.data && typeof res.data === 'object') setStat((p) => ({ ...p, ...res.data }));
@@ -126,6 +126,7 @@ export default function SuperAdminDashboard() {
     { label: 'User Roles',         icon: 'check',    to: '/masters/user-roles',                 primary: true },
     { label: 'Assign Menu',        icon: 'list',     to: '/masters/assign-menu',                primary: true },
     { label: 'Login Logs',         icon: 'calendar', to: '/user-management/login-logs',         primary: true },
+    { label: 'Activity Logs',      icon: 'list',     to: '/user-management/activity-logs',      primary: true },
   ];
 
   const governance = [
@@ -135,6 +136,7 @@ export default function SuperAdminDashboard() {
     { icon: 'agent',    title: 'Admin Users',        desc: 'Provision or retire admin accounts.',            to: '/super-admin/admins' },
     { icon: 'check',    title: 'User Roles',         desc: 'Define role definitions used across the app.',   to: '/masters/user-roles' },
     { icon: 'calendar', title: 'Login Audit',        desc: 'Recent authentications across every user.',      to: '/user-management/login-logs' },
+    { icon: 'list',     title: 'Activity Logs',      desc: 'What each user did, when, from which IP and place.', to: '/user-management/activity-logs' },
   ];
 
   return (
@@ -207,44 +209,8 @@ export default function SuperAdminDashboard() {
             </div>
           </section>
 
-          <section>
-            <button
-              type="button"
-              className="adm-analytics-toggle"
-              onClick={() => setAnalyticsOpen((o) => !o)}
-              aria-expanded={analyticsOpen}
-              aria-controls="sa-analytics-panel"
-            >
-              <span className="adm-acc-icon" aria-hidden="true"><FaChartLine /></span>
-              <span className="adm-acc-text">
-                <span className="adm-acc-title">Platform Trends</span>
-                <span className="adm-acc-sub">Bookings and revenue across the platform</span>
-              </span>
-              <span className="adm-acc-chev" aria-hidden="true"><FaChevronDown /></span>
-            </button>
-            <Collapse in={analyticsOpen}>
-              <div id="sa-analytics-panel" className="adm-analytics-panel">
-                <div className="adm-charts">
-                  <div className="adm-card">
-                    <div className="adm-card-head">
-                      <span className="adm-dot" style={{ background: '#EC0B43' }} />
-                      <h3 className="adm-card-title">Bookings across platform</h3>
-                      <span className="adm-badge">Last 5 days</span>
-                    </div>
-                    <LineChart labels={bookingsLabels} data={bookingsData} />
-                  </div>
-                  <div className="adm-card">
-                    <div className="adm-card-head">
-                      <span className="adm-dot" style={{ background: '#2F3E53' }} />
-                      <h3 className="adm-card-title">Platform revenue trend</h3>
-                      <span className="adm-badge">Last 5 days</span>
-                    </div>
-                    <BarChart labels={bookingsLabels} data={revenueData} />
-                  </div>
-                </div>
-              </div>
-            </Collapse>
-          </section>
+          {/* Analytics ("Platform Trends") section hidden by request. Code
+              retained via git history — restore this block to bring it back. */}
 
           <section>
             <p className="adm-section-label">Tenant Leaderboard</p>
@@ -288,10 +254,9 @@ export default function SuperAdminDashboard() {
         </main>
       </div>
 
-      <footer className="adm-foot">
-        <span>© {new Date().getFullYear()} <strong>Globosoft</strong>. All rights reserved.</span>
-        <span>Super Admin Console</span>
-      </footer>
+      {/* Shared with every other dashboard — see DashboardFooter. className
+          keeps this shell's own orange band. */}
+      <DashboardFooter className="adm-foot" />
     </div>
   );
 }

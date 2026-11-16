@@ -23,11 +23,14 @@ import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
 import toast from "react-hot-toast";
+import { useFeatureFlag } from "../../config/FeatureFlagsContext";
+import { canSeeSupplierNames } from "../booking/packagebooking/supplierHotels";
 // Shared "hotel booking list" look (Lexend, red/white theme, table/card/
 // pagination styling). Same skin the /booking-details/hotel-booking-list,
 // long-stay, and last-minute lists use — the four pages line up visually.
 import "../../styles/HotelBookingListModern.css";
 import DashboardRedirections from "../../components/DashboardRedirections";
+import { getCurrentActiveRole } from "../../utils/authSession";
 
 const PER_PAGE_OPTIONS = [10, 25, 50, 100];
 
@@ -40,6 +43,7 @@ const COLUMN_WIDTHS = {
   bookingCode: "100px",
   bookDate: "95px",
   bookingDetails: "240px",
+  noOfRooms: "110px",
   deadlineDate: "110px",
   paymentMode: "140px",
   status: "110px",
@@ -197,14 +201,17 @@ const PackageBookingList = () => {
   const navigate = useNavigate();
   const [bookings, setBookings] = useState([]);
   const [role, setRole] = useState(() => {
-    return localStorage.getItem("currentActiveRole")?.toLowerCase() || null;
+    return sessionStorage.getItem("currentActiveRole")?.toLowerCase() || null;
   });
   const [userId, setUserId] = useState(() => {
-    const stored = localStorage.getItem("userId");
+    const stored = sessionStorage.getItem("userId");
     return (stored && stored !== "null") ? stored : null;
   });
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("all");
+  // Backend switch package.admin-confirmation.enabled: admins get an
+  // "Awaiting confirmation" booking type. Off by default.
+  const adminConfirmation = !!useFeatureFlag("packageAdminConfirmation");
   const [search, setSearch] = useState("");
   const [perPage, setPerPage] = useState(10);
   const [page, setPage] = useState(1);
@@ -268,7 +275,11 @@ const PackageBookingList = () => {
       // / completed / reconfirmed / confirmed) falls back to the active-
       // bookings endpoint — ReConfirmed / Confirmed then narrow client-side.
       let endpoint;
-      if (status === "all") {
+      if (status === "awaiting") {
+        // Admin confirmation queue: paid bookings no admin has confirmed or
+        // rejected yet (only offered while packageAdminConfirmation is on).
+        endpoint = "/api/v1/package-booking/fulfilment/pending";
+      } else if (status === "all") {
         endpoint = "/api/v1/package-booking/all";
       } else if (status === "cancelled") {
         endpoint = "/api/v1/package-booking/cancelled";
@@ -321,12 +332,12 @@ const PackageBookingList = () => {
 
   // Handle role sync if it's missing from localStorage initially
   useEffect(() => {
-    const storedRole = localStorage.getItem("currentActiveRole")?.toLowerCase();
+    const storedRole = sessionStorage.getItem("currentActiveRole")?.toLowerCase();
     if (storedRole && storedRole !== role) {
       setRole(storedRole);
     } else if (!storedRole) {
       // Fallback to userRole if currentActiveRole is missing
-      const userRoles = (localStorage.getItem("userRole") || "").toLowerCase().split(",");
+      const userRoles = (sessionStorage.getItem("userRole") || "").toLowerCase().split(",");
       if (userRoles.includes("agent")) setRole("agent");
       else if (userRoles.includes("staff")) setRole("staff");
       else if (userRoles.includes("admin")) setRole("admin");
@@ -339,7 +350,7 @@ const PackageBookingList = () => {
       // Don't fetch if we already have a valid userId
       if (userId && userId !== "null") return;
       
-      const userName = localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+      const userName = sessionStorage.getItem("UserName");
       if (!userName) return;
 
       try {
@@ -347,7 +358,7 @@ const PackageBookingList = () => {
         if (response.data && response.data.id) {
           const id = String(response.data.id);
           setUserId(id);
-          localStorage.setItem("userId", id);
+          sessionStorage.setItem("userId", id);
         }
       } catch (error) {
         console.error("Error fetching user profile for ID:", error);
@@ -504,7 +515,7 @@ const PackageBookingList = () => {
             <div className="mb-3">
               <Button
                 variant="outline-secondary"
-                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
                 className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
               >
                 <FaArrowLeft />
@@ -619,6 +630,9 @@ const PackageBookingList = () => {
                           <option value="reconfirmed">ReConfirmed</option>
                           <option value="confirmed">Confirmed</option>
                           <option value="cancelled">Cancelled</option>
+                          {adminConfirmation && canSeeSupplierNames() && (
+                            <option value="awaiting">Awaiting confirmation</option>
+                          )}
                         </Form.Select>
                       </Col>
                       <Col xs={12} md={6} lg={4} xl={3}>
@@ -737,6 +751,9 @@ const PackageBookingList = () => {
                             <th style={{ ...baseHeaderStyle, width: COLUMN_WIDTHS.bookingDetails }}>
                               Booking Details
                             </th>
+                            <th style={{ ...baseHeaderStyle, textAlign: "center", width: COLUMN_WIDTHS.noOfRooms }}>
+                              No. of Rooms
+                            </th>
                             <th style={{ ...baseHeaderStyle, textAlign: "center", width: COLUMN_WIDTHS.deadlineDate }}>
                               Deadline Date
                             </th>
@@ -816,6 +833,18 @@ const PackageBookingList = () => {
                                       </span>
                                     )}
                                   </div>
+                                </td>
+                                {/* No. of Rooms — package bookings don't store a
+                                    room count or room type yet (only the hotel
+                                    name and rate), so this shows "-". */}
+                                <td
+                                  style={{
+                                    ...baseCellStyle,
+                                    textAlign: "center",
+                                    width: COLUMN_WIDTHS.noOfRooms,
+                                  }}
+                                >
+                                  <span className="text-muted">-</span>
                                 </td>
                                 <td
                                   className="text-muted"

@@ -17,6 +17,9 @@ import Supplier from "../../components/filters/Supplier";
 import DestinationCity from "../../components/filters/DestinationCity";
 import { toast } from "react-hot-toast";
 import BackButton from "../../components/BackButton";
+import { isAgentLogin } from "../../utils/supplierDisplay";
+import { escapeHtml } from "../../utils/safeHtml";
+import { csvCell } from "../../utils/csvSafe";
 
 export default function OfflineBookingDailySalesStatement() {
 
@@ -61,9 +64,15 @@ export default function OfflineBookingDailySalesStatement() {
   const updateFilter = (field, value) =>
     setTempFilters((prev) => ({ ...prev, [field]: value }));
 
-  const activeRole = (localStorage.getItem("currentActiveRole") || "").trim().toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const activeRole = (sessionStorage.getItem("currentActiveRole") || "").trim().toUpperCase();
+  const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
   const isAgentRole = activeRole ? activeRole === "AGENT" : (storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN"));
+  // Net Price (our cost) and Profit (our margin) are not shown to agents —
+  // the server also leaves them out of the agent's statement data.
+  // isAgentLogin() also covers sub-agents and sub-users (utils/supplierDisplay).
+  const showCost = !isAgentLogin();
+  // Supplier names are never shown to agents (owner rule).
+  const showSupplier = !isAgentLogin();
 
   const fetchSales = async (filters = {}) => {
     try {
@@ -140,30 +149,28 @@ export default function OfflineBookingDailySalesStatement() {
                 <th>Sl.No</th>
                 <th>Date</th>
                 <th>Invoice No</th>
-                <th>Supplier</th>
+                ${showSupplier ? '<th>Supplier</th>' : ''}
                 <th>Agent</th>
                 <th>Booking By</th>
                 <th>Reference</th>
                 <th>Details</th>
                  <th>Selling Price</th>
-                 <th>Net Price</th>
-                  <th>Profit</th>
+                 ${showCost ? '<th>Net Price</th><th>Profit</th>' : ''}
               </tr>
             </thead>
             <tbody>
               ${filteredsales.map((s, index) => `
                 <tr>
                   <td>${index + 1}</td>
-                  <td>${formatDate(s.date)}</td>
-                  <td>${s.invoiceNumber || ''}</td>
-                  <td>${s.supplier || ''}</td>
-                  <td>${s.agent || ''}</td>
-                  <td>${s.bookingBy || ''}</td>
-                  <td>${s.reference || ''}</td>
-                  <td class="details">${s.details || ''}</td>
-                   <td>${s.sellingPrice}</td>
-                   <td>${s.netPrice}</td>
-                   <td>${s.profit}</td>
+                  <td>${escapeHtml(formatDate(s.date))}</td>
+                  <td>${escapeHtml(s.invoiceNumber || '')}</td>
+                  ${showSupplier ? `<td>${escapeHtml(s.supplier || '')}</td>` : ''}
+                  <td>${escapeHtml(s.agent || '')}</td>
+                  <td>${escapeHtml(s.bookingBy || '')}</td>
+                  <td>${escapeHtml(s.reference || '')}</td>
+                  <td class="details">${escapeHtml(s.details || '')}</td>
+                   <td>${escapeHtml(s.sellingPrice)}</td>
+                   ${showCost ? `<td>${escapeHtml(s.netPrice)}</td><td>${escapeHtml(s.profit)}</td>` : ''}
                 </tr>
               `).join('')}
             </tbody>
@@ -176,18 +183,12 @@ export default function OfflineBookingDailySalesStatement() {
   };
 
   const handleExcel = () => {
-    const headers = ['Sl.No', 'Date', 'Invoice No', 'Supplier', 'Agent', 'Booking By', 'Reference', 'Details', 'Selling Price', 'Net Price', 'Profit'];
+    const headers = ['Sl.No', 'Date', 'Invoice No', ...(showSupplier ? ['Supplier'] : []), 'Agent', 'Booking By', 'Reference', 'Details', 'Selling Price',
+      ...(showCost ? ['Net Price', 'Profit'] : [])];
 
     // Create CSV content with proper escaping
-    const escapeCSV = (value) => {
-      if (value === null || value === undefined) return '';
-      const stringValue = String(value);
-      // If value contains comma, newline, or quote, wrap it in quotes and escape quotes
-      if (stringValue.includes(',') || stringValue.includes('\n') || stringValue.includes('"')) {
-        return `"${stringValue.replace(/"/g, '""')}"`;
-      }
-      return stringValue;
-    };
+    // csvCell neutralises text a spreadsheet would run as a formula.
+    const escapeCSV = (value) => csvCell(value);
 
     const csvContent = [
       headers.map(escapeCSV).join(','),
@@ -195,14 +196,13 @@ export default function OfflineBookingDailySalesStatement() {
         index + 1,
         formatDate(s.date),
         s.invoiceNumber,
-        s.supplier,
+        ...(showSupplier ? [s.supplier] : []),
         s.agent,
         s.bookingBy,
         s.reference,
         s.details,
         s.sellingPrice,
-        s.netPrice,
-        s.profit
+        ...(showCost ? [s.netPrice, s.profit] : [])
       ].map(escapeCSV).join(','))
     ].join('\n');
 
@@ -226,7 +226,7 @@ export default function OfflineBookingDailySalesStatement() {
       return (
         String(s.date || '').toLowerCase().includes(search) ||
         String(s.invoiceNumber || '').toLowerCase().includes(search) ||
-        String(s.supplier || '').toLowerCase().includes(search) ||
+        (showSupplier && String(s.supplier || '').toLowerCase().includes(search)) ||
         String(s.agent || '').toLowerCase().includes(search) ||
         String(s.bookingBy || '').toLowerCase().includes(search) ||
         String(s.reference || '').toLowerCase().includes(search) ||
@@ -479,14 +479,14 @@ export default function OfflineBookingDailySalesStatement() {
                     <th style={{ width: 100 }}>S/N</th>
                     <th>Date</th>
                     <th>Invoice Number</th>
-                    <th>Supplier Name</th>
+                    {showSupplier && <th>Supplier Name</th>}
                     <th>Agent Name</th>
                     <th>Booking Done By</th>
                     <th>Reference Number</th>
                     <th>Booking Details</th>
                     <th>Selling Price</th>
-                    <th>Net Price</th>
-                    <th>Profit</th>
+                    {showCost && <th>Net Price</th>}
+                    {showCost && <th>Profit</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -496,19 +496,19 @@ export default function OfflineBookingDailySalesStatement() {
                         <td>{startIndex + index + 1}</td>
                         <td>{formatDate(s.date)}</td>
                         <td>{s.invoiceNumber}</td>
-                        <td>{s.supplier}</td>
+                        {showSupplier && <td>{s.supplier}</td>}
                         <td>{s.agent}</td>
                         <td>{s.bookingBy}</td>
                         <td>{s.reference}</td>
                         <td style={{ whiteSpace: "pre-line" }}>{s.details}</td>
                         <td>{s.sellingPrice}</td>
-                        <td>{s.netPrice}</td>
-                        <td>{s.profit}</td>
+                        {showCost && <td>{s.netPrice}</td>}
+                        {showCost && <td>{s.profit}</td>}
                       </tr>
                     ))
                   ) : (
                     <tr>
-                      <td colSpan="11" className="text-center text-muted py-4">
+                      <td colSpan={showCost ? 11 : 9} className="text-center text-muted py-4">
                         No data available in table
                       </td>
                     </tr>

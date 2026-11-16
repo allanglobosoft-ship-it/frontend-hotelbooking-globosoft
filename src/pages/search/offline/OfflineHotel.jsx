@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Row, Col, Form, Button, Spinner } from "react-bootstrap";
+import { Row, Col, Form, Button, Spinner, Modal } from "react-bootstrap";
 import Select from "react-select";
 import axiosInstance from "../../../components/AxiosInstance";
 import { toast } from "react-hot-toast";
@@ -32,6 +32,14 @@ const OfflineHotel = ({ mainBasicId, invoiceNo, onAdd }) => {
   const [isLoadingSuppliers, setIsLoadingSuppliers] = useState(false);
   const [isLoadingHotels, setIsLoadingHotels] = useState(false);
   const [isLoadingMealPlans, setIsLoadingMealPlans] = useState(false);
+
+  // "+" next to HOTEL — popup to enter a hotel that isn't in the hotel list.
+  // The typed name is saved on this offline line only (hotelId sent blank);
+  // the backend falls back to the name for the list, description and PDF.
+  const [showAddHotel, setShowAddHotel] = useState(false);
+  const [newHotelName, setNewHotelName] = useState("");
+  const [newHotelError, setNewHotelError] = useState("");
+  const [hotelInput, setHotelInput] = useState("");
 
   // ─────────────────────────────────────────────
   // API Fetchers
@@ -93,6 +101,36 @@ const OfflineHotel = ({ mainBasicId, invoiceNo, onAdd }) => {
   const handleSelectChange = (name, val) => {
     setForm(prev => ({ ...prev, [name]: val }));
     if (errors[name]) setErrors(prev => { const { [name]: _, ...rest } = prev; return rest; });
+  };
+
+  const openAddHotel = () => {
+    // Prefill with whatever was typed into the Hotel search box.
+    setNewHotelName(hotelInput.trim());
+    setNewHotelError("");
+    setShowAddHotel(true);
+  };
+
+  const closeAddHotel = () => {
+    setShowAddHotel(false);
+    setNewHotelName("");
+    setNewHotelError("");
+  };
+
+  const handleSaveNewHotel = () => {
+    const name = newHotelName.trim();
+    if (!name) {
+      setNewHotelError("Hotel name is required");
+      return;
+    }
+    // Typed name matches a listed hotel — select that one instead of
+    // creating a duplicate manual entry.
+    const existing = hotelOptions.find(
+      (o) => (o.label || "").trim().toLowerCase() === name.toLowerCase()
+    );
+    const option = existing || { value: `manual-${Date.now()}`, label: name, isManual: true };
+    if (!existing) setHotelOptions((prev) => [option, ...prev]);
+    handleSelectChange("hotel", option);
+    closeAddHotel();
   };
 
   // Auto-calculate selling price from unit price + tax
@@ -173,7 +211,9 @@ const OfflineHotel = ({ mainBasicId, invoiceNo, onAdd }) => {
       hotelcheckIndate: formatDatePayload(form.checkIn),
       hotelcheckoutdate: formatDatePayload(form.checkOut),
       bedType: form.addOn?.value || "",
-      hotelId: String(form.hotel?.value),
+      // Manually added hotels have no master id — send blank so the
+      // backend skips the hotel lookup and keeps hotelName.
+      hotelId: form.hotel?.isManual ? "" : String(form.hotel?.value ?? ""),
       bookingCode: form.bookingCode,
     };
 
@@ -238,6 +278,7 @@ const OfflineHotel = ({ mainBasicId, invoiceNo, onAdd }) => {
                   className="p-0 d-flex align-items-center justify-content-center"
                   style={{ width: "20px", height: "20px", fontSize: "12px", borderRadius: "4px" }}
                   title="Add Hotel"
+                  onClick={openAddHotel}
                 >
                   +
                 </Button>
@@ -248,7 +289,10 @@ const OfflineHotel = ({ mainBasicId, invoiceNo, onAdd }) => {
                 options={hotelOptions}
                 value={form.hotel}
                 onChange={(opt) => handleSelectChange("hotel", opt)}
-                onInputChange={(val) => debouncedFetchHotels(val)}
+                onInputChange={(val, meta) => {
+                  if (meta?.action === "input-change") setHotelInput(val);
+                  debouncedFetchHotels(val);
+                }}
                 isLoading={isLoadingHotels}
                 placeholder="SELECT"
                 isSearchable
@@ -465,6 +509,49 @@ const OfflineHotel = ({ mainBasicId, invoiceNo, onAdd }) => {
           </Col>
         </Row>
       </Form>
+
+      {/* Add Hotel popup — opened by the "+" next to the HOTEL label */}
+      <Modal show={showAddHotel} onHide={closeAddHotel} centered>
+        <Modal.Header closeButton>
+          <Modal.Title>Add Hotel</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <Form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSaveNewHotel();
+            }}
+          >
+            <Form.Group>
+              <Form.Label>
+                Hotel Name <span className="text-danger">*</span>
+              </Form.Label>
+              <Form.Control
+                autoFocus
+                value={newHotelName}
+                onChange={(e) => {
+                  setNewHotelName(e.target.value);
+                  setNewHotelError("");
+                }}
+                placeholder="Enter hotel name"
+                isInvalid={!!newHotelError}
+              />
+              <Form.Control.Feedback type="invalid">{newHotelError}</Form.Control.Feedback>
+              <Form.Text className="text-muted">
+                For a hotel that isn't in the hotel list. It is saved with this booking only.
+              </Form.Text>
+            </Form.Group>
+          </Form>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={closeAddHotel}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={handleSaveNewHotel}>
+            Add Hotel
+          </Button>
+        </Modal.Footer>
+      </Modal>
     </div>
   );
 };

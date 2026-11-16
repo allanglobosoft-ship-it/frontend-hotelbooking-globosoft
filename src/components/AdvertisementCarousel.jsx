@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Carousel, Button, Modal } from "react-bootstrap";
 import { FaChevronLeft, FaChevronRight } from "react-icons/fa";
 import axiosInstance from "./AxiosInstance";
+import { safeHttpUrl } from "../utils/urlSafety";
 
 // Styles for the ad popup modal: a fixed-height letterboxed image with the
 // title / description / CTA below it. Auto-advances while the modal is open.
@@ -166,7 +167,7 @@ export default function AdvertisementCarousel({ cityId, cityName }) {
   // page in the same login does not increase the count, but a fresh login does.
   const recordView = (ad) => {
     if (!ad || viewedRef.current.has(ad.advertisementId)) return;
-    const sessionId = localStorage.getItem("adSessionId");
+    const sessionId = sessionStorage.getItem("adSessionId");
     if (!sessionId) return; // not logged in via the normal flow — skip
     viewedRef.current.add(ad.advertisementId);
     axiosInstance
@@ -205,8 +206,11 @@ export default function AdvertisementCarousel({ cityId, cityName }) {
     axiosInstance
       .post(`/api/advertisement/${ad.advertisementId}/click`)
       .catch(() => {});
-    if (ad.targetUrl) {
-      window.open(ad.targetUrl, "_blank", "noopener,noreferrer");
+    // Only web links open: a "javascript:" / "data:" target saved on the
+    // ad is ignored instead of running inside this logged-in page.
+    const url = safeHttpUrl(ad.targetUrl);
+    if (url) {
+      window.open(url, "_blank", "noopener,noreferrer");
     }
   };
 

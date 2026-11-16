@@ -37,6 +37,12 @@ import TopBar from "../components/TopBar";
 import AgentBalanceDisplay from "../components/AgentBalanceDisplay";
 import RoomFilters from "../components/roomlist/RoomFilters";
 import useRoomFilters from "../hooks/useRoomFilters";
+import RefundBadge from "../components/RefundBadge";
+import {
+  REFUND_FLEXIBLE,
+  REFUND_NON_REFUNDABLE,
+  REFUND_PARTIAL,
+} from "../utils/refundLabel";
 import { toast } from "react-hot-toast";
 import "../styles/RoomList.css";
 
@@ -127,12 +133,16 @@ const renderStars = (rating) => {
   ));
 };
 
-const refundableBadge = (refundable) =>
-  refundable ? (
-    <Badge bg="success">Flexible</Badge>
-  ) : (
-    <Badge bg="danger">Non-Refundable</Badge>
+// Long stay policies are free text, so their dates can't be read. A refundable
+// room whose contract has any charge row above 0 shows Flexible - Partial at all
+// times; with no such row it shows Flexible.
+const longStayLabel = (refundable, contract) => {
+  if (!refundable) return REFUND_NON_REFUNDABLE;
+  const charged = (contract?.cancellationPolicy || []).some(
+    (row) => Number(row?.value) > 0,
   );
+  return charged ? REFUND_PARTIAL : REFUND_FLEXIBLE;
+};
 
 // Availability badge — mirrors /room-list's per-room status. "Available"
 // (green) when the hotel has an active availability header configured for the
@@ -275,7 +285,7 @@ function RoomCardGrid({
             </div>
             <div className="d-flex flex-column align-items-end gap-1">
               {room.roomStatus && availabilityBadge(room.roomStatus)}
-              {refundableBadge(room.refundable)}
+              <RefundBadge label={longStayLabel(room.refundable, contract)} />
             </div>
           </div>
 
@@ -438,7 +448,7 @@ function RoomCardList({
         </div>
         <div className="d-flex flex-wrap gap-2 mt-1">
           {room.roomStatus && availabilityBadge(room.roomStatus)}
-          {refundableBadge(room.refundable)}
+          <RefundBadge label={longStayLabel(room.refundable, contract)} />
           {room.meal && (
             <Badge bg="success" className="small">
               <FaUtensils className="me-1" />
@@ -544,7 +554,7 @@ export default function LongStayRoomList() {
   // each room's expanded contract independent). Default seed "0" is
   // read per-slot on first render so single-room mode is unchanged.
   const [activeAccordions, setActiveAccordions] = useState({});
-  const [viewMode, setViewMode] = useState("grid"); // "grid" | "list"
+  const [viewMode, setViewMode] = useState("list"); // "grid" | "list"
 
   // Cancellation Policies & Terms modal — opened from a per-room-card link.
   // Read-only viewer; sources directly from the contract already loaded
@@ -578,11 +588,12 @@ export default function LongStayRoomList() {
   // Shared Room-Type + Refund-Policy filters (same UX as /room-list).
   // Long-stay rooms carry `refundable` (boolean); they have no meal-plan
   // string, so the closest "type" label (roomTypeName) is matched against
-  // the Room-Type options. The Refund-Policy filter applies fully.
+  // the Room-Type options. The Refund-Policy filter uses the same label as
+  // the card's badge, which needs the room's contract.
   const filters = useRoomFilters();
-  const roomVisible = (r) =>
+  const roomVisible = (r, contract) =>
     filters.rateMatches({
-      isNonRefundable: r.refundable === false,
+      label: longStayLabel(r.refundable, contract),
       mealPlan: r.roomTypeName,
     });
   // Agent markup config — fetched once for the agent the search was
@@ -1181,7 +1192,7 @@ export default function LongStayRoomList() {
                     // skip the whole contract when filters are active AND
                     // nothing matches, so an unfiltered empty contract still
                     // renders its "no rooms configured" note exactly as before.
-                    const visibleRooms = (c.rooms || []).filter(roomVisible);
+                    const visibleRooms = (c.rooms || []).filter((r) => roomVisible(r, c));
                     if (filters.hasActiveFilters && visibleRooms.length === 0)
                       return null;
                     const minPrice =
@@ -1398,7 +1409,7 @@ export default function LongStayRoomList() {
                   {filters.hasActiveFilters &&
                     contracts.length > 0 &&
                     contracts.every(
-                      (c) => (c.rooms || []).filter(roomVisible).length === 0,
+                      (c) => (c.rooms || []).filter((r) => roomVisible(r, c)).length === 0,
                     ) && (
                       <Alert variant="info" className="mb-0">
                         No rooms match the selected filters.

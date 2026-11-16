@@ -49,7 +49,7 @@ export default function ExtranetCalendar() {
         setLoading(true);
 
         const userName =
-          localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+          sessionStorage.getItem("UserName");
         let hid = null;
         if (userName) {
           try {

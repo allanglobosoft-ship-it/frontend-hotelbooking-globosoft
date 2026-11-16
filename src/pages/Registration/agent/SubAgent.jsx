@@ -8,6 +8,7 @@ import Swal from "sweetalert2";
 import { FaEdit, FaTrash, FaPlus, FaSearch, FaChevronDown, FaUndo, FaTimes, FaCheck, FaSignInAlt, FaCreditCard, FaEye, FaEyeSlash, FaToggleOn, FaToggleOff } from "react-icons/fa";
 import { formatDateTimeDisplay } from "../../../utils/dateUtils";
 import AgentSelect from "../../../components/AgentSelect";
+import { escapeHtml } from "../../../utils/safeHtml";
 
 // Searchable Select Component for large lists
 const SearchableSelect = ({ label, name, value, options, onChange, placeholder, onSearch, isLoading, error, required }) => {
@@ -253,7 +254,7 @@ export default function SubAgent() {
     mainAgentId: ""
   };
 
-  const mainAgentName = localStorage.getItem("UserName") || "";
+  const mainAgentName = sessionStorage.getItem("UserName") || "";
 
   // A sub agent always belongs to a main agent. An AGENT login owns the sub
   // agents it creates, so the backend resolves the parent from the JWT and the
@@ -261,18 +262,23 @@ export default function SubAgent() {
   // own (an admin's user_accounts.user_id is null), so it must pick the parent
   // explicitly — without it the backend cannot resolve an owner at all.
   // Role resolution mirrors Sidebar.jsx.
-  const storedRoles = (localStorage.getItem("userRole") || "")
+  const storedRoles = (sessionStorage.getItem("userRole") || "")
     .split(",")
     .map((r) => r.trim().toLowerCase())
     .filter(Boolean);
   const activeRole =
-    (localStorage.getItem("currentActiveRole") || "").toLowerCase() ||
+    (sessionStorage.getItem("currentActiveRole") || "").toLowerCase() ||
     storedRoles[0] ||
     "";
   const isAgentLogin = activeRole === "agent";
 
   const [formData, setFormData] = useState(initialFormState);
   const [validationErrors, setValidationErrors] = useState({});
+  // Company(Agent) column sort: "asc" = A→Z (default), "desc" = Z→A.
+  const [companySortDir, setCompanySortDir] = useState("asc");
+  // Client-side pagination over the filtered + sorted list.
+  const [pageSize, setPageSize] = useState(10);
+  const [currentPage, setCurrentPage] = useState(1);
 
   // ─── Data Fetching ──────────────────────────────────────────────────────────
 
@@ -383,7 +389,7 @@ export default function SubAgent() {
   // empty rather than blocking registration (currency is optional on submit).
   const resolveMainAgentCurrency = async () => {
     try {
-      const uname = localStorage.getItem("UserName");
+      const uname = sessionStorage.getItem("UserName");
       if (!uname) return;
       const prof = await axiosInstance.get(`/api/personalProfile/${uname}`);
       const agentId = prof?.data?.id;
@@ -552,7 +558,12 @@ export default function SubAgent() {
       String(item.status || "").trim().toLowerCase() !== "inactive";
     const nextLabel = isActive ? "Inactive" : "Active";
     Swal.fire({
-      title: `Set ${item.companyName || "this sub agent"} to ${nextLabel}?`,
+      titleText: `Set ${item.companyName || "this sub agent"} to ${nextLabel}?`,
+      // Inactive switches the sub agent's login off (backend sets
+      // user_accounts.active). Bookings and history are kept.
+      text: isActive
+        ? "The sub agent will be signed out and will not be able to log in or make bookings until set Active again. Existing bookings are not affected."
+        : "The sub agent will be able to log in and make bookings again.",
       icon: "warning",
       showCancelButton: true,
       reverseButtons: true,
@@ -568,7 +579,8 @@ export default function SubAgent() {
         toast.success(`Sub Agent set to ${nextLabel}`);
         fetchSubAgents();
       } catch (err) {
-        toast.error("Failed to update status");
+        // e.g. "The main agent … is Inactive. Set the main agent Active first."
+        toast.error(err.response?.data?.message || "Failed to update status");
       }
     });
   };
@@ -689,6 +701,10 @@ export default function SubAgent() {
           userName: `${loginFormData.username}.${mainAgentName}`,
           password: loginFormData.password,
           userRoleIds: loginFormData.userroles,
+          // Tells the backend this id is a sub agent (ids overlap with main
+          // agents), so the login is tagged SUB_AGENT, emailed to the sub
+          // agent, and created inactive if the sub agent is Inactive.
+          subAgent: true,
         };
 
         const response = await axiosInstance.post("/auth/register", loginPayload);
@@ -974,7 +990,7 @@ export default function SubAgent() {
   const handleDeleteTempCredit = (row) => {
     Swal.fire({
       title: "Delete this temporary credit limit?",
-      html: `Amount: <b>${row.amount}</b><br/>This removes it immediately — it will no longer count toward the sub agent's available credit.`,
+      html: `Amount: <b>${escapeHtml(row.amount)}</b><br/>This removes it immediately — it will no longer count toward the sub agent's available credit.`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",
@@ -1106,11 +1122,41 @@ export default function SubAgent() {
   // Only the SUB_AGENT role is offered in the Login Details modal.
   const selectableRoles = rolesList.filter(isSubAgentRole);
 
-  const filteredItems = items.filter(item =>
+  // Sorted by Company(Agent) name, case-insensitive. `numeric` keeps
+  // "Test2" before "Test10"; id breaks ties so equal names keep a stable order.
+  const filteredItems = items
+    .filter(item =>
     item.companyName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     item.firstName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     item.lastName?.toLowerCase().includes(searchTerm.toLowerCase())
+    )
+    .sort((a, b) => {
+      const byName = String(a.companyName || "").localeCompare(
+        String(b.companyName || ""),
+        undefined,
+        { sensitivity: "base", numeric: true }
   );
+      const result = byName !== 0 ? byName : (a.id ?? 0) - (b.id ?? 0);
+      return companySortDir === "asc" ? result : -result;
+    });
+
+  // Clamp the page so deleting the last row on the last page (or a search
+  // that narrows the list) never leaves the table on an empty page.
+  const totalEntries = filteredItems.length;
+  const totalPages = Math.max(1, Math.ceil(totalEntries / pageSize));
+  const activePage = Math.min(Math.max(currentPage, 1), totalPages);
+  const pageStart = (activePage - 1) * pageSize;
+  const pagedItems = filteredItems.slice(pageStart, pageStart + pageSize);
+
+  // Page buttons: first, last, and the current page ±1, with "…" for gaps.
+  const pageButtons = [];
+  for (let p = 1; p <= totalPages; p++) {
+    if (p === 1 || p === totalPages || Math.abs(p - activePage) <= 1) {
+      pageButtons.push(p);
+    } else if (pageButtons[pageButtons.length - 1] !== "…") {
+      pageButtons.push("…");
+    }
+  }
 
   const selectStyle = { 
     appearance: 'none', 
@@ -1146,10 +1192,18 @@ export default function SubAgent() {
                <div className="p-3 bg-light border-bottom d-flex justify-content-between align-items-center">
                 <div className="d-flex align-items-center gap-2">
                   <span className="small text-muted">Display</span>
-                  <Form.Select size="sm" style={{ width: '70px' }}>
-                    <option>10</option>
-                    <option>25</option>
-                    <option>50</option>
+                  <Form.Select
+                    size="sm"
+                    style={{ width: '70px' }}
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                  >
+                    <option value={10}>10</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
                   </Form.Select>
                   <span className="small text-muted">records</span>
                 </div>
@@ -1159,7 +1213,10 @@ export default function SubAgent() {
                     size="sm" 
                     type="text" 
                     value={searchTerm} 
-                    onChange={(e) => setSearchTerm(e.target.value)} 
+                    onChange={(e) => {
+                      setSearchTerm(e.target.value);
+                      setCurrentPage(1);
+                    }}
                     style={{ width: '200px' }}
                   />
                 </div>
@@ -1168,7 +1225,35 @@ export default function SubAgent() {
                 <thead style={{ backgroundColor: '#2d3e50', color: 'white' }}>
                   <tr>
                     <th className="ps-4 py-2 small">S.N</th>
-                    <th className="py-2 small">Company(Agent)</th>
+                    <th
+                      className="py-2 small"
+                      role="button"
+                      tabIndex={0}
+                      aria-sort={companySortDir === "asc" ? "ascending" : "descending"}
+                      style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}
+                      onClick={() => {
+                        setCompanySortDir((dir) => (dir === "asc" ? "desc" : "asc"));
+                        setCurrentPage(1);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          e.currentTarget.click();
+                        }
+                      }}
+                      title={
+                        companySortDir === "asc"
+                          ? "Sorted A to Z — click to sort Z to A"
+                          : "Sorted Z to A — click to sort A to Z"
+                      }
+                    >
+                      <span className="d-inline-flex align-items-center gap-1">
+                        Company(Agent)
+                        <span aria-hidden="true">
+                          {companySortDir === "asc" ? "▲" : "▼"}
+                        </span>
+                      </span>
+                    </th>
                     <th className="py-2 small">Contact</th>
                     <th className="py-2 small">Email</th>
                     <th className="py-2 small">Country</th>
@@ -1183,10 +1268,10 @@ export default function SubAgent() {
                         <Spinner animation="border" variant="primary" size="sm" />
                       </td>
                     </tr>
-                  ) : filteredItems.length > 0 ? (
-                    filteredItems.map((item, idx) => (
+                  ) : pagedItems.length > 0 ? (
+                    pagedItems.map((item, idx) => (
                       <tr key={item.id} className="small">
-                        <td className="ps-4">{idx + 1}</td>
+                        <td className="ps-4">{pageStart + idx + 1}</td>
                         <td className="fw-bold text-primary">{item.companyName}</td>
                         <td>{item.firstName} {item.lastName}</td>
                         <td>{item.personalEmail}</td>
@@ -1267,11 +1352,43 @@ export default function SubAgent() {
                 </tbody>
               </Table>
               <div className="p-3 bg-light border-top d-flex justify-content-between align-items-center small text-muted">
-                <div>Showing 1 to {filteredItems.length} of {items.length} entries</div>
+                <div>
+                  Showing {totalEntries === 0 ? 0 : pageStart + 1} to{" "}
+                  {pageStart + pagedItems.length} of {totalEntries} entries
+                  {totalEntries !== items.length && ` (filtered from ${items.length} total entries)`}
+                </div>
                 <div className="d-flex gap-1">
-                  <Button variant="outline-secondary" size="sm" disabled>Previous</Button>
-                  <Button variant="primary" size="sm">1</Button>
-                  <Button variant="outline-secondary" size="sm" disabled>Next</Button>
+                  <Button
+                    variant="outline-secondary"
+                    size="sm"
+                    disabled={activePage <= 1}
+                    onClick={() => setCurrentPage(activePage - 1)}
+                  >
+                    Previous
+                  </Button>
+                  {pageButtons.map((p, i) =>
+                    p === "…" ? (
+                      <span key={`gap-${i}`} className="px-1 align-self-center">…</span>
+                    ) : (
+                      <Button
+                        key={p}
+                        variant={p === activePage ? "primary" : "outline-secondary"}
+                        size="sm"
+                        aria-current={p === activePage ? "page" : undefined}
+                        onClick={() => setCurrentPage(p)}
+                      >
+                        {p}
+                      </Button>
+                    )
+                  )}
+                  <Button
+                    variant="outline-secondary"
+                    size="sm"
+                    disabled={activePage >= totalPages}
+                    onClick={() => setCurrentPage(activePage + 1)}
+                  >
+                    Next
+                  </Button>
                 </div>
               </div>
             </Card.Body>

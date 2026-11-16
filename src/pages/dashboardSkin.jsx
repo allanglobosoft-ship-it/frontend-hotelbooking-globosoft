@@ -1,5 +1,7 @@
 import React from 'react';
 import RegionalClock from '../components/RegionalClock';
+import FooterLegalLinks from '../components/FooterLegalLinks';
+import GloboFooterMarks from '../components/GloboFooterMarks';
 
 /* ══════════════════════════════════════════════════════════════
    SHARED DASHBOARD SKIN
@@ -127,15 +129,30 @@ export function ChartCard({ title, badge = 'Last 5 days', dotColor = 'var(--colo
 }
 
 /* ══ FOOTER — branded band, dashboard only ══ */
-export function DashboardFooter({ label }) {
+/**
+ * The one dashboard footer. Every dashboard in the system renders this, so the
+ * five of them cannot drift apart again.
+ *
+ * `className` only picks which band it sits in — `adm-foot` for the admin /
+ * super-admin shell, the default `dash-footer` for the rw-dashboard skin. Both
+ * are the same orange band with slightly different padding and type size,
+ * which is why the class stays a parameter instead of being unified away.
+ *
+ * tone="brand" on both marks: the band is the orange primary, so they use
+ * their white cuts — the red wordmark would barely read on it.
+ */
+export function DashboardFooter({ className = "dash-footer" }) {
   return (
-    <footer className="dash-footer">
+    <footer className={className}>
+      {/* Left-hand mark deliberately hidden for now — only the "Powered by"
+          attribution on the right remains. */}
       <span className="dash-footer-copy">
-        © {new Date().getFullYear()} Globosoft. All rights reserved.
+        © {new Date().getFullYear()} <strong>Globosoft</strong>. All rights
+        reserved.
       </span>
-      <span className="dash-footer-meta">
-        {label} · Powered by Globosoft
-      </span>
+      {/* Middle child of a space-between row, so it centres itself. */}
+      <FooterLegalLinks />
+      <GloboFooterMarks side="right" tone="brand" label="Powered by" />
     </footer>
   );
 }
@@ -567,9 +584,10 @@ export const dashboardCss = `
   border-top: 1px solid var(--color-primary-hover);
   color: rgba(255, 255, 255, .82);
   font-size: 12.5px;
+  /* The Globosoft marks size themselves to match every other footer — see
+     GloboFooterMarks.css. */
 }
 .rw-dashboard .dash-footer-copy { font-weight: 600; color: #fff; }
-.rw-dashboard .dash-footer-meta { color: rgba(255, 255, 255, .65); }
 @media (max-width: 640px) {
   .rw-dashboard .dash-footer { justify-content: center; text-align: center; }
 }

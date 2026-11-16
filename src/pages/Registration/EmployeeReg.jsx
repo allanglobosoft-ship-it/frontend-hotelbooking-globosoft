@@ -26,6 +26,7 @@ import {
   FaArrowLeft,
 } from "react-icons/fa";
 import DashboardRedirections from "../../components/DashboardRedirections";
+import { getCurrentActiveRole } from "../../utils/authSession";
 
 // SearchableSelect Component
 const SearchableSelect = ({
@@ -605,7 +606,7 @@ const EmployeeReg = () => {
 
   const handleDelete = (item) => {
     Swal.fire({
-    title: `Are you sure? You want to delete ${item.firstName} ${item.lastName}`,
+    titleText: `Are you sure? You want to delete ${item.firstName} ${item.lastName}`,
 
       icon: "warning",
       showCancelButton: true,
@@ -786,7 +787,7 @@ const EmployeeReg = () => {
       try {
         setIsLoading(true);
 
-        let activeUserRole = localStorage.getItem("currentActiveRole");
+        let activeUserRole = sessionStorage.getItem("currentActiveRole");
          console.log("activeUserRole::" , activeUserRole)
 
         let activeRoleObj = rolesList.find((role) => role.roleName === "STAFF");
@@ -920,7 +921,7 @@ const EmployeeReg = () => {
           <div className="mb-3">
             <Button
               variant="outline-secondary"
-              onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+              onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
               className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
             >
               <FaArrowLeft />

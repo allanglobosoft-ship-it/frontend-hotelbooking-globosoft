@@ -26,11 +26,14 @@ import Sidebar from "../../../components/Sidebar";
 import TopBar from "../../../components/TopBar";
 import axiosInstance from "../../../components/AxiosInstance";
 import { logAgentSearch } from "../../../utils/agentSearchLog";
+import { apiIdOfResult } from "../../../utils/hotelSearchResults";
 import AdvertisementCarousel from "../../../components/AdvertisementCarousel";
 import AgentCreditBalance from "../../../components/AgentCreditBalance";
 import DateInput from "../../../components/DateInput";
 import "../../../styles/HotelSearch.css";
 import DashboardRedirections from "../../../components/DashboardRedirections";
+import { isAgentLogin } from "../../../utils/supplierDisplay";
+import { getCurrentActiveRole } from "../../../utils/authSession";
 
 // ─────────────────────────────────────────────
 // Counter — same +/- counter as HotelSearch.jsx.
@@ -214,10 +217,10 @@ export default function StudentSearch() {
   // agent-required validation is skipped. currentActiveRole isn't set for
   // single-role logins, so fall back to userRole; admin/super-admin/staff
   // keep the picker exactly as before.
-  const activeRole = (localStorage.getItem("currentActiveRole") || "")
+  const activeRole = (sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
     : storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN");
@@ -226,7 +229,6 @@ export default function StudentSearch() {
   // agent themselves, so the "Booking Done By Employee" picker is hidden and
   // this name is shown instead. Empty for admin/staff.
   const loggedInAgentName =
-    localStorage.getItem("UserName") ||
     sessionStorage.getItem("UserName") ||
     "";
 
@@ -364,13 +366,13 @@ export default function StudentSearch() {
 
   useEffect(() => {
     if (!isAgentRole) return;
-    const cached = localStorage.getItem("userId");
+    const cached = sessionStorage.getItem("userId");
     if (cached) {
       setSelfAgentId(cached);
       return;
     }
     const userName =
-      localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+      sessionStorage.getItem("UserName");
     if (!userName) return;
     let cancelled = false;
     axiosInstance
@@ -378,7 +380,7 @@ export default function StudentSearch() {
       .then((res) => {
         if (!cancelled && res?.data?.id != null) {
           const idv = String(res.data.id);
-          localStorage.setItem("userId", idv);
+          sessionStorage.setItem("userId", idv);
           setSelfAgentId(idv);
         }
       })
@@ -681,18 +683,6 @@ export default function StudentSearch() {
     }
   };
 
-  const apiIdFromType = (apiType) => {
-    const m = {
-      inhouse: 1,
-      jumeirah: 10,
-      iwtx: 12,
-      x3: 15,
-      ratehawk: 14,
-      darina: 16,
-      atharva: 3,
-    };
-    return m[(apiType || "").toLowerCase()] || 1;
-  };
   const handleViewRooms = (h) => {
     // Open /student-room-list in a NEW browser tab. React Router's
     // navigate-state can't cross a tab boundary, so the handoff context is
@@ -706,7 +696,7 @@ export default function StudentSearch() {
       address: h.hotelAddress,
       starRating: h.starRating,
       apiType: h.apiType,
-      apiId: apiIdFromType(h.apiType),
+      apiId: apiIdOfResult(h),
       nationalityCode:
         (selectedNationality?.code || "").length === 2
           ? selectedNationality.code
@@ -738,7 +728,9 @@ export default function StudentSearch() {
     } catch (e) {
       /* ignore quota / serialization issues — new tab can still open */
     }
-    window.open("/student-room-list", "_blank", "noopener");
+    // No "noopener": the login lives in per-tab sessionStorage
+    // (utils/authSession.js), which a new tab only inherits from its opener.
+    window.open("/student-room-list", "_blank");
   };
 
   const hasResultsView = results.length > 0;
@@ -754,7 +746,7 @@ export default function StudentSearch() {
           <div className="mb-3">
             <Button
               variant="outline-secondary"
-              onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+              onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
               className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
             >
               <FaArrowLeft />
@@ -1286,7 +1278,7 @@ export default function StudentSearch() {
                             Hidden for AGENT logins (agents book only through
                             their contracted channel and the backend already
                             scopes results). */}
-                        {!isAgentRole && (
+                        {!isAgentLogin() && (
                           <>
                             <hr />
 

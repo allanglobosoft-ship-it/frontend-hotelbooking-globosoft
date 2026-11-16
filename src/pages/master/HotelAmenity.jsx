@@ -220,7 +220,7 @@ export default function HotelAmenity() {
   const handleDelete = (item) => {
     console.log("delete item :::" , item);
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.amenityName} Hotel Amenity`,
+      titleText: `Are you sure? You want to delete ${item.amenityName} Hotel Amenity`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

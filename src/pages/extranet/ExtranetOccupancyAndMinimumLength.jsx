@@ -573,7 +573,7 @@ const ExtranetOccupancyAndMinimumLength = () => {
 
   const handleDeleteOcc = (item) => {
     Swal.fire({
-      title: `Are you sure? You want to delete occupancy ${item.occupancyId}`,
+      titleText: `Are you sure? You want to delete occupancy ${item.occupancyId}`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",
@@ -1181,7 +1181,7 @@ const ExtranetOccupancyAndMinimumLength = () => {
     console.log("Deleting minimum length item:", item);
 
     Swal.fire({
-      title: `Are you sure? You want to delete minimum length for ${item.marketName}?`,
+      titleText: `Are you sure? You want to delete minimum length for ${item.marketName}?`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

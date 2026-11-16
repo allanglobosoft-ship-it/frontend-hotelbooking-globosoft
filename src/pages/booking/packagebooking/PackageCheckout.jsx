@@ -7,6 +7,7 @@ import TopBar from "../../../components/TopBar";
 import AgentBalanceDisplay from "../../../components/AgentBalanceDisplay";
 import { toast } from "react-hot-toast";
 import {
+  FaArrowLeft,
   FaCalendarAlt,
   FaUsers,
   FaGlobe,
@@ -23,6 +24,10 @@ import {
   FaDownload,
 } from "react-icons/fa";
 import PaxInformation from "./tabs/PaxInformation";
+import {
+  BOOKING_STILL_PROCESSING_MESSAGE,
+  isRequestTimeout,
+} from "./bookingTimeout";
 // Abandoned-package-search follow-up email — flags the history row as
 // booked when the CCAvenue-paid booking finalises so the scheduler
 // stops considering it a follow-up candidate. Standard (non-paid) flow
@@ -41,6 +46,7 @@ import "../../../styles/RoomList.css";
 // (booking-summary-card, hbp-summary-row, hbp-price-card, hbp-sticky-summary)
 // live in this stylesheet — imported so the sidebar picks up the HBP treatment.
 import "../../../styles/HotelBookingPage.css";
+import { orderIdPathSegment } from "../../../utils/urlSafety";
 
 // The stash channel that survives a hard refresh on this page. PackageBooking
 // writes it just before navigating here (see setCurrentStep-turned-navigate
@@ -195,7 +201,7 @@ const PackageCheckout = () => {
       try {
         setIsFinalizingPayment(true);
         const statusResponse = await axiosInstance.get(
-          `/api/payment/ccavenue/status/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/status/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         if (statusResponse.data?.status !== "SUCCESS") {
           toast.error(
@@ -205,7 +211,7 @@ const PackageCheckout = () => {
           return;
         }
         const res = await axiosInstance.post(
-          `/api/payment/ccavenue/finalize-package/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/finalize-package/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         const body = res?.data || {};
         if (body.bookingId) {
@@ -229,6 +235,12 @@ const PackageCheckout = () => {
         const beMsg =
           err?.response?.data?.message || err?.message || null;
         console.error("Post-payment package finalize failed:", err);
+        // No reply in time: the booking may still be being created
+        // server-side, so don't report it as failed (see bookingTimeout.js).
+        if (isRequestTimeout(err)) {
+          toast.error(BOOKING_STILL_PROCESSING_MESSAGE, { duration: 10000 });
+          return;
+        }
         toast.error(
           beMsg ||
             "Payment succeeded but booking could not be created. Please contact support with your payment reference.",
@@ -339,9 +351,15 @@ const PackageCheckout = () => {
   const [quotation, setQuotation] = useState(null);
   const lastQuotationRef = useRef(null);
 
+  // Back to Package Details with everything picked so far (PackageBooking starts
+  // from this bookingData). An amend also has to say so, or the page would come
+  // back as a brand-new booking instead of amending this one.
   const handlePrev = () => {
     navigate(`/new-booking/package-booking/${id}`, {
       state: {
+        ...(editingBookingId
+          ? { mode: "edit", bookingId: editingBookingId }
+          : {}),
         bookingData,
         packageData,
         packageView,
@@ -646,6 +664,11 @@ const PackageCheckout = () => {
           style={{ minWidth: 0, overflowX: "clip" }}
         >
           <div className="container-fluid" style={{ paddingTop: "10px" }}>
+            <div className="mb-2">
+              <Button variant="light" size="sm" onClick={handlePrev}>
+                <FaArrowLeft className="me-1" /> Back
+              </Button>
+            </div>
             <div className="hs-page-heading d-flex justify-content-between align-items-center flex-wrap gap-2">
               <h3 className="hs-page-heading-title mb-0">Package Checkout</h3>
               {bookingData.searchParams?.agentId && (
@@ -666,7 +689,6 @@ const PackageCheckout = () => {
                       searchParams={bookingData.searchParams}
                       bookingData={bookingData}
                       updateData={setBookingData}
-                      onPrev={handlePrev}
                       onFinish={handleFinish}
                       packageData={packageData}
                       totalPrice={totalPrice}
@@ -840,6 +862,13 @@ const PackageCheckout = () => {
                       {formatPackageAmount(totalPrice)}
                     </div>
                     <div className="price-sidebar-sub">AED</div>
+                    {priceBreakdown.supplierHotelSelected && (
+                      <div className="price-sidebar-mealplan">
+                        Package rate AED{" "}
+                        {formatPackageAmount(priceBreakdown.packageRate)} + Hotel
+                        AED {formatPackageAmount(priceBreakdown.supplierHotel)}
+                      </div>
+                    )}
                     {bookingData.selections?.selectedMealPlan && (
                       <div className="price-sidebar-mealplan">
                         +{" "}

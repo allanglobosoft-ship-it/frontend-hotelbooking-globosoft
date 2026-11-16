@@ -1466,3 +1466,161 @@
     justify-content: center;
   }
 }
+
+/* ---- Ported from HBS (new selectors only; fork rules unchanged) ---- */
+.hs-progress-anchor {
+  display: contents;
+}
+
+.hs-progress--below-summary .search-progress-bar-wrap {
+  top: calc(64px + var(--hs-summary-h, 56px) + 6px) !important;
+}
+
+.search-progress-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #EC0B43;
+  margin-right: 8px;
+  box-shadow: 0 0 0 rgba(236, 11, 67, 0.5);
+  animation: hsProgressDot 1.05s ease-in-out infinite;
+}
+
+.search-progress-ellipsis {
+  display: inline-flex;
+  margin-left: 2px;
+  letter-spacing: 1px;
+}
+
+.search-progress-ellipsis > span {
+  opacity: 0.25;
+  animation: hsProgressBlink 1.2s ease-in-out infinite;
+}
+
+.search-progress-ellipsis > span:nth-child(2) { animation-delay: 0.18s; }
+
+.search-progress-ellipsis > span:nth-child(3) { animation-delay: 0.36s; }
+
+@keyframes hsProgressEnter {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes hsProgressGlow {
+  0%, 100% { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06); }
+  50%      { box-shadow: 0 4px 16px rgba(236, 11, 67, 0.22); }
+}
+
+@keyframes hsProgressDot {
+  0%, 100% { transform: scale(1);   opacity: 1;   box-shadow: 0 0 0 0    rgba(236, 11, 67, 0.5); }
+  50%      { transform: scale(0.7); opacity: 0.55; box-shadow: 0 0 0 6px rgba(236, 11, 67, 0);   }
+}
+
+@keyframes hsProgressBlink {
+  0%, 100% { opacity: 0.25; }
+  50%      { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search-progress-bar-wrap,
+  .search-progress-fill,
+  .search-progress-fill::after,
+  .search-progress-dot,
+  .search-progress-ellipsis > span {
+    animation: none !important;
+  }
+  .search-progress-fill::after { display: none; }
+  .search-progress-ellipsis > span { opacity: 1; }
+}
+
+.search-progress-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    transparent 35%,
+    rgba(255, 255, 255, 0.85) 50%,
+    transparent 65%,
+    transparent 100%
+  );
+  background-size: 220% 100%;
+  animation: hsProgressShine 1.4s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes hsProgressShine {
+  0%   { background-position: 220% 0; }
+  100% { background-position: -120% 0; }
+}
+
+.hs-hotel-img.ratio {
+  height: 100%;
+  min-height: 120px;
+  border-radius: 9px;
+}
+
+.hs-hotel-img.ratio::before {
+  padding-top: 0;
+}
+
+.hs-page .btn-add-room-premium.hs-add-room-btn-red {
+  padding: 0.22rem 0.55rem !important;
+  font-size: 0.68rem !important;
+  border-radius: 6px !important;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.05),
+    0 2px 5px rgba(236, 11, 67, 0.15) !important;
+  gap: 0.22rem !important;
+  line-height: 1.15 !important;
+  min-height: 0 !important;
+}
+
+.hs-page .btn-add-room-premium.hs-add-room-btn-red .add-room-plus {
+  font-size: 0.78rem !important;
+}
+
+.hs-page .rooms-summary-btn-modern {
+  padding: 6px 12px !important;
+  font-size: 0.85rem !important;
+  min-height: 0 !important;
+}
+
+.hs-page .rgs-grid { gap: 6px; }
+
+.hs-page .rgs-room-card {
+  padding: 5px 9px;
+  gap: 1px;
+  border-radius: 8px;
+}
+
+.hs-page .rgs-room-label { font-size: 0.7rem; }
+
+.hs-page .rgs-counters-col { gap: 0; }
+
+.hs-page .rgs-counter-row { padding: 1px 0; }
+
+.hs-page .rgs-counter-title { font-size: 0.7rem; line-height: 1.1; }
+
+.hs-page .rgs-counter-sub { font-size: 0.58rem; line-height: 1.1; }
+
+.hs-page .rgs-counter-btn {
+  width: 18px;
+  height: 18px;
+  font-size: 0.75rem;
+}
+
+.hs-page .rgs-counter-val { font-size: 0.78rem; }
+
+.hs-page .rgs-add-room-btn {
+  min-height: 38px;
+  padding: 3px 6px;
+  font-size: 0.72rem;
+  border-radius: 8px;
+}
+
+.hs-page .rgs-add-room-btn .rgs-add-icon { font-size: 0.9rem; }
+

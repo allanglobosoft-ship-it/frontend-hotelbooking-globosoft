@@ -18,12 +18,13 @@ import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
 import toast from "react-hot-toast";
+import RoomCountSummary from "../../components/RoomCountSummary";
 import "../../styles/HotelBookingListModern.css";
 
 // Unified "All Bookings" list — reads GET /api/unified-bookings/list, a
 // new, standalone, read-only endpoint that combines Hotel, 24 Hour,
-// Last Minute, Long Stay, Day Stay, Government Employee, Student and
-// Senior Citizen bookings into one list. This page is intentionally
+// Last Minute, Long Stay, Day Stay, Government Employee, Student,
+// Senior Citizen and Offline bookings into one list. This page is intentionally
 // built to look and behave exactly like HotelBookingList.jsx (same
 // shell, header, filters card, table, pagination, status colouring,
 // styling) — the ONLY functional addition is the Booking Type dropdown
@@ -67,6 +68,7 @@ const COLUMN_WIDTHS = {
   bookedBy: 120,      // "Booker" column — operator who created the booking (Hotel only)
   checkIn: 100,
   checkOut: 100,
+  noOfRooms: 105,    // total rooms + per-room-type breakdown
   deadlineDate: 105,
   paymentMode: 130,
   paymentStatus: 125,
@@ -95,6 +97,7 @@ const BOOKING_TYPE_OPTIONS = [
   { value: "Government Employee", label: "Government Employee" },
   { value: "Student", label: "Student" },
   { value: "Senior Citizen", label: "Senior Citizen" },
+  { value: "Offline", label: "Offline" },
 ];
 
 // Same badge palette idea as the reference page's "24H" badge — one
@@ -108,6 +111,7 @@ const TYPE_BADGE_CLASS = {
   "Government Employee": "bg-secondary-subtle text-secondary border border-secondary-subtle",
   "Student": "bg-dark-subtle text-dark border border-dark-subtle",
   "Senior Citizen": "bg-secondary-subtle text-secondary border border-secondary-subtle",
+  "Offline": "bg-light text-dark border border-dark-subtle",
 };
 
 // Resolve a human-readable Payment Mode label — identical logic to
@@ -161,6 +165,9 @@ const getPaymentModeLabel = (booking) => {
 // marker, so a Confirmed-then-Cancelled booking can carry reconfirmation=true
 // and would be wrongly reported as Paid.
 const getPaymentStatusLabel = (booking) => {
+  // Offline bookings are entered after the fact and have no payment flow,
+  // so their "Confirmed" must not read as "Payment Pending".
+  if (booking?.bookingType === "Offline") return "-";
   const rawStatus = String(booking?.confirmationStatus || "");
   const segments = rawStatus
     .split("/")
@@ -252,7 +259,7 @@ const years = Array.from({ length: currentYear - 2014 }, (_, i) => 2020 + i);
 
 const AllBookingsList = () => {
   const navigate = useNavigate();
-  const [role] = useState(() => localStorage.getItem("currentActiveRole")?.toLowerCase() || null);
+  const [role] = useState(() => sessionStorage.getItem("currentActiveRole")?.toLowerCase() || null);
 
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -399,7 +406,8 @@ const AllBookingsList = () => {
   // 14 columns visible to every role; admins additionally see Agent Name and
   // Supplier, so 16 total. Update in sync with the <thead> below.
   // Column count bumped by one — new "Booker" column sits after Hotel.
-  const colSpan = role === "admin" ? 17 : 15;
+  // Bumped again for the "No. of Rooms" column after Check Out.
+  const colSpan = role === "admin" ? 18 : 16;
   const tableMinWidth = Object.entries(COLUMN_WIDTHS)
     .filter(([key]) => role === "admin" || !ADMIN_ONLY_COLUMNS.includes(key))
     .reduce((sum, [, w]) => sum + w, 0);
@@ -545,7 +553,7 @@ const AllBookingsList = () => {
                     <Table
                       hover
                       size="sm"
-                      className="mb-0 align-middle table-bordered hbl-table"
+                      className="mb-0 align-middle table-bordered hbl-table abl-table"
                       style={{
                         // Fixed layout with a minWidth equal to the column
                         // sum: on wide screens the table fills the card,
@@ -616,6 +624,9 @@ const AllBookingsList = () => {
                           <th style={thStyle(undefined, COLUMN_WIDTHS.bookedBy)}>Booker</th>
                           <th style={thStyle("center", COLUMN_WIDTHS.checkIn)}>Check In</th>
                           <th style={thStyle("center", COLUMN_WIDTHS.checkOut)}>Check Out</th>
+                          {/* No. of Rooms — total rooms with the per-room-type
+                              breakdown (totalRooms / roomSummary). */}
+                          <th style={thStyle("center", COLUMN_WIDTHS.noOfRooms)}>No. of Rooms</th>
                           <th style={thStyle("center", COLUMN_WIDTHS.deadlineDate)}>Deadline Date</th>
                           <th style={thStyle("center", COLUMN_WIDTHS.paymentMode)}>Payment Mode</th>
                           {/* Payment Status — same mapping as
@@ -673,22 +684,22 @@ const AllBookingsList = () => {
                                 onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#e7f3ff"; }}
                                 onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = i % 2 === 0 ? "#ffffff" : "#f8f9fa"; }}
                               >
-                                <td className="text-muted fw-semibold" style={{ ...baseCellStyle, textAlign: "center", color: "#6c757d", width: COLUMN_WIDTHS.sn }}>
+                                <td data-label="SN" className="text-muted fw-semibold" style={{ ...baseCellStyle, textAlign: "center", color: "#6c757d", width: COLUMN_WIDTHS.sn }}>
                                   {serialNumberBase + i + 1}
                                 </td>
                                 {role === "admin" && (
-                                  <td style={{ ...baseCellStyle, width: COLUMN_WIDTHS.agentName }} title={b.agentName || ""}>
+                                  <td data-label="Agent Name" style={{ ...baseCellStyle, width: COLUMN_WIDTHS.agentName }} title={b.agentName || ""}>
                                     <span className="fw-medium text-dark">{b.agentName || "-"}</span>
                                   </td>
                                 )}
                                 {role === "admin" && (
-                                  <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.supplier }} title={b.supplierName || ""}>
+                                  <td data-label="Supplier" style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.supplier }} title={b.supplierName || ""}>
                                     <span className="fw-medium text-dark">
                                       {b.supplierName || "-"}
                                     </span>
                                   </td>
                                 )}
-                                <td style={{ ...baseCellStyle, width: COLUMN_WIDTHS.booker }} title={b.primaryGuestName || ""}>
+                                <td data-label="Pax Name" style={{ ...baseCellStyle, width: COLUMN_WIDTHS.booker }} title={b.primaryGuestName || ""}>
                                   <span className="d-inline-flex align-items-center" style={{ gap: "0.3rem" }}>
                                     <FaUser style={{ color: "#6c757d", fontSize: "0.78rem", flexShrink: 0 }} />
                                     <span className="fw-medium text-dark">{b.primaryGuestName || "-"}</span>
@@ -715,6 +726,7 @@ const AllBookingsList = () => {
                                   {formatDate(b.bookingDate) || "-"}
                                 </td>
                                 <td
+                                  data-label="Hotel"
                                   style={{
                                     ...baseCellStyle,
                                     width: COLUMN_WIDTHS.hotel,
@@ -746,7 +758,7 @@ const AllBookingsList = () => {
                                     non-Hotel rows and legacy hotel rows
                                     without agent_staff_name / created_by,
                                     so we render "-" for those. */}
-                                <td style={{ ...baseCellStyle, width: COLUMN_WIDTHS.bookedBy }} title={b.bookerName || ""}>
+                                <td data-label="Booker" style={{ ...baseCellStyle, width: COLUMN_WIDTHS.bookedBy }} title={b.bookerName || ""}>
                                   {b.bookerName ? (
                                     <span className="fw-medium text-dark">{b.bookerName}</span>
                                   ) : (
@@ -759,10 +771,22 @@ const AllBookingsList = () => {
                                 <td className="text-muted" style={{ ...noWrapCellStyle, textAlign: "center", width: COLUMN_WIDTHS.checkOut }} title={formatDate(b.checkOutDate) || ""}>
                                   {formatDate(b.checkOutDate) || "-"}
                                 </td>
+                                <td
+                                  style={{
+                                    ...baseCellStyle,
+                                    textAlign: "center",
+                                    width: COLUMN_WIDTHS.noOfRooms,
+                                    // Total + breakdown stack on separate lines.
+                                    whiteSpace: "normal",
+                                    wordBreak: "break-word",
+                                  }}
+                                >
+                                  <RoomCountSummary total={b.totalRooms} lines={b.roomSummary} />
+                                </td>
                                 <td className="text-muted" style={{ ...noWrapCellStyle, textAlign: "center", fontFamily: "monospace", width: COLUMN_WIDTHS.deadlineDate }} title={b.deadlineDate || ""}>
                                   {formatDeadlineDate(b.deadlineDate)}
                                 </td>
-                                <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.paymentMode }} title={getPaymentModeLabel(b)}>
+                                <td data-label="Payment Mode" style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.paymentMode }} title={getPaymentModeLabel(b)}>
                                   {(() => {
                                     const label = getPaymentModeLabel(b);
                                     if (label === "-") return <span className="text-muted">-</span>;
@@ -976,7 +1000,7 @@ function NotificationCell({ booking: b }) {
           {showConfirmIcon && (
             <FaExclamationCircle
               style={{ fontSize: "15px", color: "#ff9800", transition: "all 0.2s ease" }}
-              title="Non-refundable booking."
+              title="Non Refundable booking."
               onMouseEnter={(e) => { e.currentTarget.style.color = "#f57c00"; e.currentTarget.style.transform = "scale(1.15)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.color = "#ff9800"; e.currentTarget.style.transform = "scale(1)"; }}
             />

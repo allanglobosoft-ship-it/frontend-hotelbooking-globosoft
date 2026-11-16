@@ -49,9 +49,13 @@ import {
   FaUserAlt,
   FaPrayingHands,
   FaShieldAlt,
+  FaAddressCard,
 } from "react-icons/fa";
 import axiosInstance from "./AxiosInstance";
 import { toast } from "react-hot-toast";
+import { ContactPanel } from "./FooterLegalLinks";
+import NotificationBell from "./NotificationBell";
+import { getUserRole, getCurrentActiveRole, getUserName, clearAuthSession } from "../utils/authSession";
 
 export default function TopBar() {
   const location = useLocation();
@@ -69,17 +73,18 @@ export default function TopBar() {
     supplier: "/supplierDashboard",
     dmc: "/dmcDashboard",
   };
-  const storedRoles = (localStorage.getItem("userRole") || "")
+  const storedRoles = getUserRole()
     .split(",")
     .map((r) => r.trim().toLowerCase())
     .filter(Boolean);
   const currentRole =
-    localStorage.getItem("currentActiveRole")?.trim().toLowerCase() ||
+    getCurrentActiveRole().trim().toLowerCase() ||
     storedRoles[0] ||
     "";
   const backToDashboardPath = DASHBOARD_BY_ROLE[currentRole];
   const showBackToDashboard =
     !!backToDashboardPath && location.pathname !== backToDashboardPath;
+  const showNotificationBell = ["admin", "super_admin", "agent"].includes(currentRole);
 
   // Clicking the Globosoft brand mark opens this accordion for agent logins
   // only — same Quick Actions tile set as AgentDashboard.jsx's bookingActions,
@@ -142,6 +147,11 @@ export default function TopBar() {
   const [cartLoading, setCartLoading] = useState(false);
   const [cartCount, setCartCount] = useState(0);
   const [markups, setMarkups] = useState({});
+  // Contact Details modal (same panel the footer opens). State lives here so
+  // the panel can be rendered OUTSIDE the sticky <Navbar> — the sticky bar
+  // creates its own stacking context, which was hiding the fixed-position
+  // panel when it was mounted inside the nav row.
+  const [showContactModal, setShowContactModal] = useState(false);
 
   const getCartAgentId = () =>
     sessionStorage.getItem("makeYourOwnPackageAgentId") ||
@@ -452,18 +462,9 @@ export default function TopBar() {
     } catch {
       // Best-effort: still finish the client-side logout if the call fails.
     }
-    // Remove specific items
-    localStorage.removeItem("authToken");
-    localStorage.removeItem("userRole");
-    localStorage.removeItem("UserName");
-    localStorage.removeItem("currentActiveRole");
-    // End the ad-view session so the next login counts ad views fresh.
-    localStorage.removeItem("adSessionId");
-    // Supplier / DMC approved-feature snapshot (hooks/usePartnerAccess.js).
-    localStorage.removeItem("partnerAccess");
-    // RegionalClock country cache (components/RegionalClock.jsx), so the next
-    // login does not inherit the previous user's timezone.
-    localStorage.removeItem("regionalClockProfile");
+    // Clears this tab's session only — see utils/authSession.js. Other open
+    // tabs keep whatever user they were independently logged in as.
+    clearAuthSession();
 
     // Optionally redirect to login page
     window.location.href = "/";
@@ -837,6 +838,23 @@ export default function TopBar() {
        </div>
 
         <Nav className="ms-auto d-flex flex-row align-items-center gap-2 gap-md-3 flex-nowrap">
+  {/* Contact Details — same Contact panel the footer already opens, promoted
+      into the topbar so the info is one click away without scrolling to the
+      footer. Only the trigger lives inside the sticky navbar; the panel
+      itself is rendered outside <Navbar> further down to escape its
+      sticky/stacking context. On a phone it gives its place to the alerts bell,
+      which would not fit otherwise, and moves into the profile menu. */}
+  <Button
+    variant="link"
+    className={`text-dark text-decoration-none p-0 align-items-center ${showNotificationBell ? "d-none d-sm-flex" : "d-flex"}`}
+    onClick={() => setShowContactModal(true)}
+    style={{ border: "none", background: "none", minWidth: "auto" }}
+    aria-label="Contact Details"
+    title="Contact Details"
+  >
+    <FaAddressCard size={20} />
+  </Button>
+
   {/* Cart Button — hidden in the v3 flow (no Redis cart there;
        selection is held in component state on /results) */}
   {sessionStorage.getItem("makePkgFlow") !== "v3" && (
@@ -859,6 +877,10 @@ export default function TopBar() {
     </Button>
   )}
 
+  {/* Alerts bell — only the roles that receive alerts. Other logins would just
+      poll an empty inbox. */}
+  {showNotificationBell && <NotificationBell />}
+
   {/* Profile Dropdown */}
   <Dropdown align="end">
     <Dropdown.Toggle
@@ -868,13 +890,22 @@ export default function TopBar() {
       style={{ minWidth: "auto" }}
     />
     <Dropdown.Menu className="shadow-sm">
+      {showNotificationBell && (
+        <>
+          <Dropdown.Item className="d-sm-none" onClick={() => setShowContactModal(true)}>
+            <FaAddressCard className="me-2" />
+            Contact Details
+          </Dropdown.Item>
+          <Dropdown.Divider className="d-sm-none" />
+        </>
+      )}
       <Dropdown.Item href="change-password">
         <FaKey className="me-2" />
         Change Password
       </Dropdown.Item>
-      {/* Agent-only: only agent logins are challenged for a second factor, so
-          showing this to an admin/staff/extranet user would offer them a
-          setting that never takes effect. The route and the backend endpoints
+      {/* Agents only: they are the only logins challenged for a second
+          factor, so showing this to anyone else would offer them a setting
+          that never takes effect. The route and the backend endpoints
           enforce the same restriction. */}
       {currentRole === "agent" && (
         <>
@@ -1029,6 +1060,12 @@ export default function TopBar() {
         </Modal.Footer>
       </Modal>
     </Navbar>
+    {/* Contact Details panel — mounted OUTSIDE <Navbar> so it isn't trapped
+        inside the sticky bar's stacking context. Same ContactPanel the
+        footer link uses, so both entry points open the exact same modal. */}
+    {showContactModal && (
+      <ContactPanel onClose={() => setShowContactModal(false)} />
+    )}
     {showQuickActionsOnThisPage && showQuickActions && (
       <>
         <style>{topbarQuickActionsCss}</style>
@@ -1147,23 +1184,15 @@ const ProfileToggle = React.forwardRef(({ onClick }, ref) => {
   const [userName, setUserName] = React.useState("");
 
   React.useEffect(() => {
-    const updateUserName = () => {
-      const name =
-        localStorage.getItem("UserName") ||
-        sessionStorage.getItem("UserName") ||
-        "";
-      setUserName(name);
-    };
-
-    // Initial load
-    updateUserName();
-
-    // Listen for storage changes (in case username is updated in another tab)
-    window.addEventListener("storage", updateUserName);
-
-    return () => {
-      window.removeEventListener("storage", updateUserName);
-    };
+    // This tab's own username only (sessionStorage — see utils/authSession.js).
+    // Previously this also listened for the native "storage" event to react
+    // to ANOTHER tab's localStorage write, which was the exact cross-tab
+    // leak this fixes: logging in on tab 2 would flip tab 1's profile name
+    // to tab 2's user the instant tab 2's login resolved. sessionStorage
+    // writes never fire "storage" in other tabs, so there is nothing to
+    // listen for any more — each tab's name only ever changes from its own
+    // login/logout, which already re-renders this component via navigation.
+    setUserName(getUserName());
   }, []);
 
   return (

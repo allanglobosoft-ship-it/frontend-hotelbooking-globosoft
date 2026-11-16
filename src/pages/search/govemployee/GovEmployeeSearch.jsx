@@ -30,10 +30,12 @@ import Sidebar from "../../../components/Sidebar";
 import TopBar from "../../../components/TopBar";
 import axiosInstance from "../../../components/AxiosInstance";
 import { logAgentSearch } from "../../../utils/agentSearchLog";
+import { apiIdOfResult } from "../../../utils/hotelSearchResults";
 import AdvertisementCarousel from "../../../components/AdvertisementCarousel";
 import AgentCreditBalance from "../../../components/AgentCreditBalance";
 import DateInput from "../../../components/DateInput";
 import "../../../styles/HotelSearch.css";
+import { isAgentLogin } from "../../../utils/supplierDisplay";
 
 // ─────────────────────────────────────────────
 // Counter — inlined copy of the same widget defined in HotelSearch.jsx
@@ -251,10 +253,10 @@ export default function GovEmployeeSearch() {
   // agent-required validation is skipped. currentActiveRole isn't set for
   // single-role logins, so fall back to userRole; admin/super-admin/staff
   // keep the picker exactly as before.
-  const activeRole = (localStorage.getItem("currentActiveRole") || "")
+  const activeRole = (sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
     : storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN");
@@ -263,7 +265,6 @@ export default function GovEmployeeSearch() {
   // agent themselves, so the "Booking Done By Employee" picker is hidden and
   // this name is shown instead. Empty for admin/staff.
   const loggedInAgentName =
-    localStorage.getItem("UserName") ||
     sessionStorage.getItem("UserName") ||
     "";
 
@@ -331,10 +332,10 @@ export default function GovEmployeeSearch() {
 
   useEffect(() => {
     if (!isAgentRole) return;
-    const cached = localStorage.getItem("userId");
+    const cached = sessionStorage.getItem("userId");
     if (cached) { setSelfAgentId(cached); return; }
     const userName =
-      localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+      sessionStorage.getItem("UserName");
     if (!userName) return;
     let cancelled = false;
     axiosInstance
@@ -342,7 +343,7 @@ export default function GovEmployeeSearch() {
       .then((res) => {
         if (!cancelled && res?.data?.id != null) {
           const idv = String(res.data.id);
-          localStorage.setItem("userId", idv);
+          sessionStorage.setItem("userId", idv);
           setSelfAgentId(idv);
         }
       })
@@ -746,18 +747,6 @@ export default function GovEmployeeSearch() {
   };
 
   // ── click "View Rooms" → navigate to gov-employee room-list ─────
-  const apiIdFromType = (apiType) => {
-    const map = {
-      inhouse: 1,
-      jumeirah: 10,
-      iwtx: 12,
-      x3: 15,
-      ratehawk: 14,
-      darina: 16,
-      atharva: 3,
-    };
-    return map[(apiType || "").toLowerCase()] || 1;
-  };
   const handleBookHotel = (h) => {
     // Use the first room's counts as the "primary" room for the
     // room-list page header; the page itself shows all rooms in the
@@ -775,7 +764,7 @@ export default function GovEmployeeSearch() {
       address: h.hotelAddress,
       starRating: h.starRating,
       apiType: h.apiType,
-      apiId: apiIdFromType(h.apiType),
+      apiId: apiIdOfResult(h),
       nationalityCode:
         (selectedNationality?.code || "").length === 2
           ? selectedNationality.code
@@ -808,7 +797,9 @@ export default function GovEmployeeSearch() {
     } catch (e) {
       /* ignore quota / serialization issues — new tab can still open */
     }
-    window.open("/gov-employee-room-list", "_blank", "noopener");
+    // No "noopener": the login lives in per-tab sessionStorage
+    // (utils/authSession.js), which a new tab only inherits from its opener.
+    window.open("/gov-employee-room-list", "_blank");
   };
 
   const hasResultsView = results.length > 0;
@@ -1364,7 +1355,7 @@ export default function GovEmployeeSearch() {
                               Hidden for AGENT logins (agents book only
                               through their contracted channel and the
                               backend already scopes results). */}
-                          {!isAgentRole && (
+                          {!isAgentLogin() && (
                             <>
                               <hr />
 

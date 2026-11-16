@@ -151,7 +151,7 @@ const ExtranetSpecialRates = () => {
   const fetchHotelPromotions = async () => {
     try {
       setLoading(true);
-      const res = await axiosInstance.get(`api/hotelPromotions/${id}`);
+      const res = await axiosInstance.get(`/api/hotelPromotions/${id}`);
       const hotelPromotionsData = res.data || [];
       setHotelPromotions(hotelPromotionsData);
     } catch {
@@ -164,7 +164,7 @@ const ExtranetSpecialRates = () => {
   const seasonList = async () => {
     try {
       setLoading(true);
-      const seasonRes = await axiosInstance.get(`api/seasonType`);
+      const seasonRes = await axiosInstance.get(`/api/seasonType`);
       console.log("seasonRes::", seasonRes.data);
       if (seasonRes.data) {
         setSeasonData(seasonRes.data);

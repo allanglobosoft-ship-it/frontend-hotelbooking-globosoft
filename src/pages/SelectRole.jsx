@@ -2,6 +2,7 @@ import React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import "../styles/SelectRole.css";
 import DashboardRedirections from "../components/DashboardRedirections";
+import { setCurrentActiveRole } from "../utils/authSession";
 
 const SelectRole = () => {
   const { state } = useLocation();
@@ -57,8 +58,10 @@ const SelectRole = () => {
 
   const handleRoleSelection = (role) => {
     DashboardRedirections(role, navigate);
-   
-    localStorage.setItem("currentActiveRole", role);
+
+    // THIS tab's sessionStorage (utils/authSession.js), like the rest of the
+    // sign-in state, so picking a role here never changes another tab's role.
+    setCurrentActiveRole(role);
     console.log(`Role selected: ${role}`);
   };
 

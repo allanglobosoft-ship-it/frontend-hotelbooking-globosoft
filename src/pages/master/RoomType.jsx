@@ -263,7 +263,7 @@ export default function RoomType() {
   const handleDelete = (item) => {
     console.log("delete item :::" , item);
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.name} Room Type`,
+      titleText: `Are you sure? You want to delete ${item.name} Room Type`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

@@ -401,7 +401,7 @@ export default function CompanyProfile() {
 
   const handleDelete = (item) => {
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.companyName}`,
+      titleText: `Are you sure? You want to delete ${item.companyName}`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

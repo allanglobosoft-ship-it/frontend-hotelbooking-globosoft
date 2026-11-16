@@ -18,10 +18,19 @@ import AsyncSelect from "react-select/async";
 import { FaUnlink, FaSearch, FaExclamationTriangle } from "react-icons/fa";
 import "../../styles/CityMapping.css";
 import BackButton from "../../components/BackButton";
+import { apiErrorMessage } from "../../utils/apiErrorMessage";
+
+// Rows per page. The list used to load only the first 100 rows with no way
+// to see the rest (bulk mapping created thousands per supplier).
+const PAGE_SIZE = 100;
 
 const UnMappingCity = () => {
   const [loading, setLoading] = useState(false);
   const [mappings, setMappings] = useState([]);
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  // Same supplier list as the City Mapping page — GRN and GoGlobal were
+  // missing, so their mappings could not be unmapped here.
   const [platforms] = useState([
     "Iwtx",
     "Darina",
@@ -29,6 +38,8 @@ const UnMappingCity = () => {
     "X3",
     "Ratehawk",
     "Atharva",
+    "Grn",
+    "Goglobal",
   ]);
 
   const [filters, setFilters] = useState({
@@ -59,6 +70,8 @@ const UnMappingCity = () => {
     X3: { countries: "api/iwtx/countrylist" },
     Ratehawk: { countries: "/api/ratehawk/countrylist" },
     Atharva: { countries: "/api/atharva/countrylist" },
+    Grn: { countries: "/api/grn/countrylist" },
+    Goglobal: { countries: "/api/goglobal/countrylist" },
   };
 
   const platformCityApis = {
@@ -68,6 +81,8 @@ const UnMappingCity = () => {
     X3: { cities: "/api/iwtx/citylist" },
     Ratehawk: { cities: "/api/ratehawk/citylist" },
     Atharva: { cities: "/api/atharva/citylist" },
+    Grn: { cities: "/api/grn/citylist" },
+    Goglobal: { cities: "/api/goglobal/citylist" },
   };
 
   // 1. Load Master Countries
@@ -187,13 +202,12 @@ const UnMappingCity = () => {
     setSelectedPlatformCityOption(null);
   };
 
-  const fetchMappings = async () => {
+  const fetchMappings = async (pageToLoad = 0) => {
     if (!filters.apiProvider) {
       toast.error("Please select a Platform");
       return;
     }
 
-    console.log("filters::", filters);
     setLoading(true);
     try {
       const response = await axiosInstance.get("/api/cityMapping", {
@@ -201,14 +215,18 @@ const UnMappingCity = () => {
           apiProvider: filters.apiProvider || "",
           countryId: filters.countryId || "",
           cityId: filters.cityId || "",
-          page: 0,
-          limit: 100,
+          page: pageToLoad,
+          limit: PAGE_SIZE,
         },
       });
-      setMappings(response.data || []);
+      const rows = Array.isArray(response.data) ? response.data : [];
+      setMappings(rows);
+      setPage(pageToLoad);
+      // The endpoint returns a plain list; a full page means there may be more.
+      setHasMore(rows.length === PAGE_SIZE);
     } catch (error) {
       console.error("Error fetching mappings:", error);
-      toast.error("Failed to fetch mappings");
+      toast.error(apiErrorMessage(error, "Failed to fetch mappings"));
     } finally {
       setLoading(false);
     }
@@ -239,7 +257,7 @@ const UnMappingCity = () => {
       setItemToUnmap(null);
     } catch (error) {
       console.error("Unmapping error:", error);
-      toast.error("Failed to unmap city ❌");
+      toast.error(apiErrorMessage(error, "Failed to unmap city ❌"));
     } finally {
       setIsUnmapping(false);
     }
@@ -340,7 +358,7 @@ const UnMappingCity = () => {
                   <Button
                     variant="primary"
                     className="w-100 btn-lg fs-6 fw-bold d-flex align-items-center justify-content-center"
-                    onClick={fetchMappings}
+                    onClick={() => fetchMappings(0)}
                     style={{ height: "38px" }}
                     disabled={loading}
                   >
@@ -429,6 +447,30 @@ const UnMappingCity = () => {
                   )}
                 </tbody>
               </Table>
+              {(page > 0 || hasMore) && (
+                <div className="d-flex justify-content-between align-items-center p-3 border-top bg-white">
+                  <Button
+                    variant="outline-secondary"
+                    size="sm"
+                    disabled={loading || page === 0}
+                    onClick={() => fetchMappings(page - 1)}
+                  >
+                    Previous
+                  </Button>
+                  <span className="small text-muted">
+                    Page {page + 1} · rows {page * PAGE_SIZE + 1}–
+                    {page * PAGE_SIZE + mappings.length}
+                  </span>
+                  <Button
+                    variant="outline-secondary"
+                    size="sm"
+                    disabled={loading || !hasMore}
+                    onClick={() => fetchMappings(page + 1)}
+                  >
+                    Next
+                  </Button>
+                </div>
+              )}
             </Card.Body>
           </Card>
 

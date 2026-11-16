@@ -909,7 +909,6 @@ const getPickupLandmarkAddress = (b) => {
     try {
       setSavingNote(true);
       const createdBy =
-        localStorage.getItem("UserName") ||
         sessionStorage.getItem("UserName") ||
         "unknown";
       const res = await axiosInstance.post(`/api/scheffer/${bookingId}/notes`, {

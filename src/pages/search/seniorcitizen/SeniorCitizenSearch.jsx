@@ -32,6 +32,7 @@ import Select from "react-select";
 import AgentSelect from "../../../components/AgentSelect";
 import axiosInstance from "../../../components/AxiosInstance";
 import { logAgentSearch } from "../../../utils/agentSearchLog";
+import { apiIdOfResult } from "../../../utils/hotelSearchResults";
 import AdvertisementCarousel from "../../../components/AdvertisementCarousel";
 import AgentCreditBalance from "../../../components/AgentCreditBalance";
 import DateInput from "../../../components/DateInput";
@@ -39,6 +40,8 @@ import { FaSearch, FaStar, FaArrowLeft } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
 import "../../../styles/HotelSearch.css";
 import DashboardRedirections from "../../../components/DashboardRedirections";
+import { isAgentLogin } from "../../../utils/supplierDisplay";
+import { getCurrentActiveRole } from "../../../utils/authSession";
 
 function Counter({ value, min, max, onChange }) {
   return (
@@ -216,10 +219,10 @@ export default function SeniorCitizenSearch() {
   // as-is. So for an agent login we resolve their own Agent id (via
   // /api/personalProfile/{UserName}) and seed it into `agent` below, so the
   // search payload + results call still carry a valid agentId.
-  const activeRole = (localStorage.getItem("currentActiveRole") || "")
+  const activeRole = (sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
     : storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN");
@@ -228,7 +231,6 @@ export default function SeniorCitizenSearch() {
   // agent themselves, so the "Booking Done By Employee" picker is hidden and
   // this name is shown instead. Empty for admin/staff.
   const loggedInAgentName =
-    localStorage.getItem("UserName") ||
     sessionStorage.getItem("UserName") ||
     "";
 
@@ -479,13 +481,13 @@ export default function SeniorCitizenSearch() {
   // (returns the Agent entity id for an AGENT account).
   useEffect(() => {
     if (!isAgentRole) return;
-    const cached = localStorage.getItem("userId");
+    const cached = sessionStorage.getItem("userId");
     if (cached) {
       setAgent(cached);
       return;
     }
     const userName =
-      localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+      sessionStorage.getItem("UserName");
     if (!userName) return;
     let cancelled = false;
     axiosInstance
@@ -494,7 +496,7 @@ export default function SeniorCitizenSearch() {
         if (cancelled) return;
         if (res?.data?.id != null) {
           const id = String(res.data.id);
-          localStorage.setItem("userId", id);
+          sessionStorage.setItem("userId", id);
           setAgent(id);
         }
       })
@@ -803,19 +805,6 @@ export default function SeniorCitizenSearch() {
     return res;
   }, [allResults, starRating, hotelSearchTerm, hotelType, channelType, sortBy]);
 
-  const apiIdFromType = (apiType) => {
-    const m = {
-      inhouse: 1,
-      jumeirah: 10,
-      iwtx: 12,
-      x3: 15,
-      ratehawk: 14,
-      darina: 16,
-      atharva: 3,
-    };
-    return m[(apiType || "").toLowerCase()] || 1;
-  };
-
   const handleViewRooms = (h) => {
     // Open /senior-citizen-room-list in a NEW browser tab. React Router's
     // navigate-state can't cross a tab boundary, so the handoff context is
@@ -831,7 +820,7 @@ export default function SeniorCitizenSearch() {
       address: h.hotelAddress,
       starRating: h.starRating,
       apiType: h.apiType,
-      apiId: apiIdFromType(h.apiType),
+      apiId: apiIdOfResult(h),
       nationalityCode: (selectedNationality?.code || "IN")
         .toUpperCase()
         .slice(0, 2),
@@ -868,7 +857,9 @@ export default function SeniorCitizenSearch() {
     } catch (e) {
       /* ignore quota / serialization issues — new tab can still open */
     }
-    window.open("/senior-citizen-room-list", "_blank", "noopener");
+    // No "noopener": the login lives in per-tab sessionStorage
+    // (utils/authSession.js), which a new tab only inherits from its opener.
+    window.open("/senior-citizen-room-list", "_blank");
   };
 
   const hasResultsView = hasSearchResult || allResults.length > 0;
@@ -884,7 +875,7 @@ export default function SeniorCitizenSearch() {
           <div className="mb-3">
             <Button
               variant="outline-secondary"
-              onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+              onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
               className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
             >
               <FaArrowLeft />
@@ -1478,7 +1469,7 @@ export default function SeniorCitizenSearch() {
                             Hidden for AGENT logins (agents book only through
                             their contracted channel and the backend already
                             scopes results). */}
-                        {!isAgentRole && (
+                        {!isAgentLogin() && (
                           <>
                             <hr />
                             <Form.Group>
@@ -1620,7 +1611,7 @@ export default function SeniorCitizenSearch() {
                                       !isAgentRole guard on the Channel Form
                                       Group), so surfacing it on each result
                                       card is out of scope for the agent. */}
-                                  {!isAgentRole && (
+                                  {!isAgentLogin() && (
                                     <div className="small text-muted mt-1">
                                       Channel:{" "}
                                       {(hotel.apiType || "INHOUSE").toUpperCase()}

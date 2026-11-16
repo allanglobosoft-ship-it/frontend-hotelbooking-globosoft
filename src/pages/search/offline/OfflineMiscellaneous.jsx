@@ -13,7 +13,31 @@ const initialForm = {
   sellingPrice: "",
 };
 
-const OfflineMiscellaneous = ({ mainBasicId, invoiceNo, onAdd }) => {
+// A row of the Offline screen's line table → this form's fields. The row
+// carries the same values the line was saved with (description, quantity,
+// unit price, tax, selling price, supplier id + name).
+const formFromEntry = (entry) => {
+  const hasSupplier = entry.supplierId && entry.supplierId !== "null";
+  const asText = (v, fallback) => (v === null || v === undefined ? fallback : String(v));
+  return {
+    supplier: hasSupplier
+      ? {
+          value: Number.isNaN(Number(entry.supplierId)) ? entry.supplierId : Number(entry.supplierId),
+          label: entry.supplierName || entry.supplierId,
+        }
+      : null,
+    miscellaneousDescription: entry.description || "",
+    price: asText(entry.unitPrice, ""),
+    tax: asText(entry.tax, "0"),
+    quantity: asText(entry.quantity, "1"),
+    sellingPrice: asText(entry.sellingPrice, ""),
+  };
+};
+
+// editingEntry: a line-table row being edited (null = adding a new line).
+// onCancelEdit: leave edit mode without saving.
+const OfflineMiscellaneous = ({ mainBasicId, invoiceNo, onAdd, editingEntry, onCancelEdit }) => {
+  const isEditing = Boolean(editingEntry);
   const [form, setForm] = useState(initialForm);
   const [errors, setErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -46,6 +70,12 @@ const OfflineMiscellaneous = ({ mainBasicId, invoiceNo, onAdd }) => {
   useEffect(() => {
     fetchSuppliers();
   }, []);
+
+  // Edit button in the line table → load that line; leaving edit mode → empty form.
+  useEffect(() => {
+    setForm(editingEntry ? formFromEntry(editingEntry) : initialForm);
+    setErrors({});
+  }, [editingEntry]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -90,7 +120,8 @@ const OfflineMiscellaneous = ({ mainBasicId, invoiceNo, onAdd }) => {
 
     setIsSubmitting(true);
     const payload = {
-      miscellaneousId: "0",
+      // "0" adds a new line; an existing id updates that line in place.
+      miscellaneousId: isEditing ? String(editingEntry.miscellaneousId) : "0",
       supplierMainBasicId: String(mainBasicId),
       supplierId: String(form.supplier?.value),
       miscellaneousDescription: form.miscellaneousDescription,
@@ -108,12 +139,18 @@ const OfflineMiscellaneous = ({ mainBasicId, invoiceNo, onAdd }) => {
         payload
       );
       if (response.data && response.data !== 0) {
-        toast.success("Miscellaneous details added successfully");
+        toast.success(
+          isEditing
+            ? "Miscellaneous details updated successfully"
+            : "Miscellaneous details added successfully"
+        );
         if (onAdd) onAdd();
         setForm(initialForm);
         setErrors({});
       } else {
-        toast.error("Failed to add miscellaneous details");
+        toast.error(
+          isEditing ? "Failed to update miscellaneous details" : "Failed to add miscellaneous details"
+        );
       }
     } catch (error) {
       console.error("Error saving miscellaneous:", error);
@@ -128,7 +165,7 @@ const OfflineMiscellaneous = ({ mainBasicId, invoiceNo, onAdd }) => {
 
   return (
     <div className="supplier-form-panel">
-      <h5 className="supplier-form-title">Miscellaneous</h5>
+      <h5 className="supplier-form-title">{isEditing ? "Edit Miscellaneous" : "Miscellaneous"}</h5>
       <Form onSubmit={handleSubmit}>
         <Row className="g-3">
           <Col lg={4} md={6}>
@@ -227,7 +264,7 @@ const OfflineMiscellaneous = ({ mainBasicId, invoiceNo, onAdd }) => {
             </Form.Group>
           </Col>
 
-          <Col lg={4} md={12} className="d-flex align-items-end">
+          <Col lg={4} md={12} className="d-flex align-items-end gap-2">
             <Button
               type="submit"
               className="supplier-submit-btn w-100"
@@ -235,10 +272,23 @@ const OfflineMiscellaneous = ({ mainBasicId, invoiceNo, onAdd }) => {
             >
               {isSubmitting ? (
                 <><Spinner animation="border" size="sm" className="me-2" />Saving...</>
+              ) : isEditing ? (
+                <>Update &rarr;</>
               ) : (
                 <>Add &rarr;</>
               )}
             </Button>
+            {isEditing && (
+              <Button
+                type="button"
+                variant="outline-secondary"
+                className="w-50"
+                disabled={isSubmitting}
+                onClick={() => onCancelEdit && onCancelEdit()}
+              >
+                Cancel
+              </Button>
+            )}
           </Col>
         </Row>
       </Form>

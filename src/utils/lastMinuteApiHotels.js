@@ -23,6 +23,33 @@ import axiosInstance from "../components/AxiosInstance";
 const API_ID_PREFIX = "API";
 
 /**
+ * Suppliers Last Minute never lists, even though the fan-out returns them:
+ *   INHOUSE — the fan-out's inhouse leg carries NORMAL contract rates. Last
+ *             Minute already lists its own last-minute contract rates, so these
+ *             would be duplicate cards at the wrong price, and an unmapped one
+ *             opens an empty room list (ExternalApiRoomList drops the inhouse
+ *             block in Last Minute mode).
+ *   JUNIPER — searchable, but no room-list search exists for it yet
+ *             (/api/hotel-rooms/search has no apiId 17), so its hotels could
+ *             not be opened. Remove it from here once that lands.
+ * The backend holds the same list and drops them BEFORE its mapped-hotel dedup
+ * when /results is asked with forPage=last-minute, so the request names no
+ * supplier. Re-checked client-side for an older backend.
+ */
+const EXCLUDED_API_TYPES = ["INHOUSE", "JUNIPER"];
+
+/**
+ * Upper bound on supplier hotels fetched per poll. /results paginates
+ * server-side (default size 10); Last Minute filters and sorts client-side,
+ * so it asks for every hotel in one page.
+ */
+const MAX_API_HOTELS = 1000;
+
+function isExcludedApiType(apiType) {
+  return EXCLUDED_API_TYPES.includes(String(apiType || "").toUpperCase());
+}
+
+/**
  * Read the server-side kill switch.
  *
  * Fails CLOSED: any error is treated as "disabled", so a backend that is old,
@@ -102,7 +129,9 @@ export function mapApiHotelToLastMinuteRow(hotel, searchId) {
     apiType,
     hotelCode,
     searchId,
-    hotelId: `${API_ID_PREFIX}-${apiType}-${hotelCode}`,
+    // What opens the room list. Agents' replies carry this and no apiType.
+    apiId: hotel.apiId || 0,
+    hotelId: `${API_ID_PREFIX}-${apiType || hotel.apiId || ""}-${hotelCode}`,
 
     // ── display fields, matching the inhouse HotelResult shape ──
     hotelName: hotel.hotelName || "Unknown Hotel",
@@ -124,6 +153,12 @@ export function mapApiHotelToLastMinuteRow(hotel, searchId) {
     latitude: hotel.latitude,
     longitude: hotel.longitude,
     contactNumber: hotel.contactNumber || "",
+
+    // Refund flags the hotel search sent (null = unknown). Read only by the
+    // Refund Policy filter (utils/refundPolicyFilter.js).
+    hasRefundable: hotel.hasRefundable ?? null,
+    hasPartial: hotel.hasPartial ?? null,
+    hasNonRefundable: hotel.hasNonRefundable ?? null,
   };
 }
 
@@ -140,72 +175,164 @@ export function isApiHotel(hotel) {
  * every poll tick so the page can render supplier hotels progressively
  * instead of waiting for the slowest one.
  *
+ * Two phases, mirroring /new-booking/hotel:
+ *   1. For timeoutMs, fetch the full list every intervalMs.
+ *   2. Then, until the backend reports every supplier finished (at most
+ *      lateWindowMs more), make a cheap size=1 check every lateIntervalMs and
+ *      refetch the full list only when the hotel count moved or the search
+ *      completed. Slow suppliers routinely finish after the first 30 s (GRN's
+ *      availability calls take 30–40 s for Dubai, and X3/IWTX slow down under
+ *      load), so without this phase their hotels never reached the page.
+ *
  * Never throws. A supplier-side failure must not take down the inhouse
- * results that are already on screen, so errors are logged and reported via
- * the returned object.
+ * results that are already on screen, so errors are logged and retried until
+ * the window closes.
  *
  * @param {object}   payload           from buildApiSearchPayload()
  * @param {function} onPartial         (rows, searchId) => void
  * @param {object}   opts
- * @param {number}   opts.intervalMs   poll cadence   (default 2000)
- * @param {number}   opts.timeoutMs    give-up window (default 20000)
+ * @param {number}   opts.intervalMs      phase-1 poll cadence (default 2000)
+ * @param {number}   opts.timeoutMs       phase-1 length (default 30000 — the
+ *                                        same window /new-booking/hotel uses)
  * @param {number}   opts.initialDelay wait before first poll (default 2000)
- * @returns {Promise<{rows: Array, searchId: string|null, failed: boolean}>}
+ * @param {number}   opts.lateIntervalMs  phase-2 check cadence (default 4000)
+ * @param {number}   opts.lateWindowMs    phase-2 length (default 220000, the search deadline)
+ * @param {function} opts.isCancelled     () => boolean; true stops polling
+ *                                        (e.g. a newer search started)
+ * @param {function} opts.onStatus        (statuses, finalStatus) => void, after
+ *                                        every poll — statuses maps lower-cased
+ *                                        supplier key → "IN_PROGRESS"/"COMPLETED"
+ *                                        (excluded suppliers left out). Drives
+ *                                        the page's progress bar.
+ * @returns {Promise<{rows: Array, searchId: string|null, failed: boolean,
+ *                    completed: boolean}>} completed = every supplier finished
  */
 export async function searchApiHotels(payload, onPartial, opts = {}) {
-  const { intervalMs = 2000, timeoutMs = 20000, initialDelay = 2000 } = opts;
+  const {
+    intervalMs = 2000,
+    timeoutMs = 30000,
+    initialDelay = 2000,
+    lateIntervalMs = 4000,
+    lateWindowMs = 220000,
+    isCancelled = () => false,
+    onStatus = null,
+  } = opts;
 
   let searchId = null;
   const byId = new Map();
 
   const snapshot = () => Array.from(byId.values());
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   try {
     const startRes = await axiosInstance.post("/api/hotel-search/search", payload);
     searchId = startRes?.data?.searchId || null;
     if (!searchId) {
       console.warn("Last Minute: fan-out returned no searchId; skipping API hotels.");
-      return { rows: [], searchId: null, failed: true };
+      return { rows: [], searchId: null, failed: true, completed: false };
     }
 
-    const params = { agentId: payload.agentId, page: 0, pageSize: 100 };
+    // `size`, not `pageSize` — /results only reads `size` (default 10), so the
+    // old key silently capped Last Minute at the 10 cheapest supplier hotels.
+    const params = {
+      agentId: payload.agentId,
+      page: 0,
+      size: MAX_API_HOTELS,
+      forPage: "last-minute",
+    };
     const startedAt = Date.now();
 
     const absorb = (data) => {
       const list = Array.isArray(data?.result) ? data.result : [];
+      // Each poll returns the FULL current list, so it replaces the previous
+      // one. Merging instead would keep stale rows: as more suppliers reply,
+      // a mapped hotel's cheapest offer can move to another supplier, which
+      // changes its synthetic id and would leave the old card behind.
+      byId.clear();
       list.forEach((hotel) => {
+        if (isExcludedApiType(hotel.apiType)) return; // older backend fallback
         const row = mapApiHotelToLastMinuteRow(hotel, searchId);
-        byId.set(row.hotelId, row); // later polls supersede earlier ones
+        byId.set(row.hotelId, row);
       });
+      if (Number(data?.totalResults) > list.length) {
+        console.warn(
+          `Last Minute: showing ${list.length} of ${data.totalResults} supplier hotels (MAX_API_HOTELS cap).`,
+        );
+      }
       if (onPartial) onPartial(snapshot(), searchId);
     };
 
-    await new Promise((resolve) => {
-      const poll = async () => {
+    const fetchResults = (size) =>
+      axiosInstance.get(`/api/hotel-search/results/${searchId}`, {
+        params: { ...params, size },
+      });
+
+    // Per-supplier progress (the response's `status` map) for the page's
+    // progress bar. Excluded suppliers are left out — their hotels never
+    // reach the page, so they should not count towards its progress.
+    const reportStatus = (data) => {
+      if (!onStatus || !data?.status || isCancelled()) return;
+      const statuses = {};
+      Object.entries(data.status).forEach(([api, status]) => {
+        if (!isExcludedApiType(api)) statuses[String(api).toLowerCase()] = status;
+      });
+      onStatus(statuses, data.finalStatus);
+    };
+
+    let completed = false;
+    let lastTotal = null;
+
+    // ── Phase 1: full list every intervalMs ──
+    await sleep(initialDelay);
+    while (!isCancelled()) {
         try {
-          const res = await axiosInstance.get(`/api/hotel-search/results/${searchId}`, { params });
-          absorb(res.data);
-
-          if (res.data?.finalStatus === "COMPLETED") return resolve();
-          if (Date.now() - startedAt >= timeoutMs) {
-            console.warn("Last Minute: API hotel poll timed out; showing what arrived.");
-            return resolve();
-          }
-          setTimeout(poll, intervalMs);
-        } catch (err) {
-          // Resolve rather than reject — partial supplier results are still
-          // worth showing next to the inhouse ones.
-          console.warn("Last Minute: API hotel poll failed; showing what arrived.", err);
-          resolve();
+        const res = await fetchResults(MAX_API_HOTELS);
+        if (isCancelled()) break;
+        absorb(res.data);
+        reportStatus(res.data);
+        lastTotal = Number(res.data?.totalResults) || 0;
+        if (res.data?.finalStatus === "COMPLETED") {
+          completed = true;
+          break;
         }
-      };
-      setTimeout(poll, initialDelay);
-    });
+      } catch (err) {
+        console.warn("Last Minute: API hotel poll failed; will retry.", err);
+      }
+      if (Date.now() - startedAt >= timeoutMs) break;
+      await sleep(intervalMs);
+    }
 
-    return { rows: snapshot(), searchId, failed: false };
+    // ── Phase 2: late suppliers ──
+    const lateStartedAt = Date.now();
+    while (!completed && !isCancelled() && Date.now() - lateStartedAt < lateWindowMs) {
+      await sleep(lateIntervalMs);
+      if (isCancelled()) break;
+      try {
+        const check = await fetchResults(1);
+        const done = check.data?.finalStatus === "COMPLETED";
+        const total = Number(check.data?.totalResults) || 0;
+        if (done || total !== lastTotal) {
+          const res = await fetchResults(MAX_API_HOTELS);
+          if (isCancelled()) break;
+          absorb(res.data);
+          lastTotal = Number(res.data?.totalResults) || 0;
+        }
+        // Reported after the refetch, so the bar only reaches 100% once the
+        // final hotels are already on the page.
+        reportStatus(check.data);
+        completed = done;
+      } catch (err) {
+        console.warn("Last Minute: late supplier check failed; will retry.", err);
+      }
+    }
+    if (!completed && !isCancelled()) {
+      console.warn("Last Minute: some suppliers never finished; showing what arrived.");
+    }
+
+    return { rows: snapshot(), searchId, failed: false, completed };
   } catch (err) {
     console.warn("Last Minute: API hotel search failed; inhouse results are unaffected.", err);
-    return { rows: snapshot(), searchId, failed: true };
+    return { rows: snapshot(), searchId, failed: true, completed: false };
   }
 }
 
@@ -228,6 +355,7 @@ const API_TYPE_TO_API_ID = {
   DARINA: 16,
   ATHARVA: 3,
   GRN: 20,
+  GOGLOBAL: 21,
 };
 
 /**
@@ -239,4 +367,53 @@ const API_TYPE_TO_API_ID = {
 export function apiIdForApiType(apiType) {
   if (!apiType) return 0;
   return API_TYPE_TO_API_ID[String(apiType).toUpperCase()] || 0;
+}
+
+/**
+ * Rows for the Last Minute Channel filter, with the same order and labels as
+ * the Channel filter on /new-booking/hotel. Values are the lower-cased
+ * apiType the page filters rows by ("inhouse" = the page's own last-minute
+ * contract rates). Suppliers in EXCLUDED_API_TYPES are left out — their
+ * hotels never reach this page. Also the row list of the Build Your Own
+ * Package Channel filter (utils/packageHotelSearch.js).
+ */
+export const CHANNEL_OPTIONS = [
+  { value: "inhouse", label: "Inhouse" },
+  { value: "iwtx", label: "Iwtx" },
+  { value: "x3", label: "x3" },
+  { value: "atharva", label: "Atharva" },
+  { value: "jumeirah", label: "Jumeirah" },
+  { value: "ratehawk", label: "Ratehawk" },
+  { value: "darina", label: "Darina" },
+  { value: "grn", label: "GRN" },
+  { value: "goglobal", label: "GoGlobal" },
+];
+
+/**
+ * The channels the caller's company has ENABLED on /admin/api-access, as
+ * Channel-filter rows. Reads the same /api/hotel-search/my-allowed-suppliers
+ * endpoint the normal hotel search uses, and lists its `codes` — granted by
+ * super_admin AND switched on by the admin — so an API switched off there
+ * (INHOUSE included) is not offered here at all. The page badges each row
+ * LIVE/OFF from the results.
+ *
+ * Fails open: an unconfigured company, or any error, lists every channel —
+ * the same "empty allow-list = no restriction" rule the backend applies.
+ *
+ * @returns {Promise<Array<{value: string, label: string}>>}
+ */
+export async function fetchChannelOptions() {
+  try {
+    const res = await axiosInstance.get("/api/hotel-search/my-allowed-suppliers");
+    if (res?.data?.unrestricted !== false) return CHANNEL_OPTIONS;
+    const enabled = new Set(
+      (Array.isArray(res?.data?.codes) ? res.data.codes : []).map((c) =>
+        String(c || "").toLowerCase(),
+      ),
+    );
+    return CHANNEL_OPTIONS.filter((o) => enabled.has(o.value));
+  } catch (err) {
+    console.warn("Last Minute: could not read enabled channels; listing all.", err);
+    return CHANNEL_OPTIONS;
+  }
 }

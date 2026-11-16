@@ -102,6 +102,14 @@
 
 .lg-brand-foot { font-size: 12.5px; opacity: .72; letter-spacing: -.004em; }
 
+/* About us · Contact us · Terms and Conditions, under the copyright line.
+   Plain links to the public pages (opened in a new tab); they take the
+   footer's own colour so they read on the red panel and the mobile stack. */
+.lg-legal { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; margin-top: 6px; }
+.lg-legal a { color: inherit; font-weight: 500; text-decoration: none; }
+.lg-legal a:hover,
+.lg-legal a:focus-visible { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+
 /* ── Offer images · promo showcase on the brand panel ────────────────────── */
 .lg-offers { display: flex; flex-direction: column; gap: 14px; }
 

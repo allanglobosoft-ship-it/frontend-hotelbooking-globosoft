@@ -20,6 +20,8 @@ import {
 } from "react-bootstrap";
 import Supplier from "../../components/filters/Supplier";
 import DestinationCity from "../../components/filters/DestinationCity";
+import { escapeHtml } from "../../utils/safeHtml";
+import { csvCell } from "../../utils/csvSafe";
 
 export default function CancellationReport() {
 
@@ -174,11 +176,11 @@ export default function CancellationReport() {
                 ${filteredcancellation.map((c, index) => `
                   <tr>
                     <td>${index + 1}</td>
-                    <td>${c.bookingCode}</td>
-                     <td>${c.bookingDate ? c.bookingDate.split('T')[0]:'_'}</td>
-                    <td>${c.customerName}</td>
-                    <td>${c.bookingDoneBy}</td>
-                    <td>${c.nativeCountry}</td>
+                    <td>${escapeHtml(c.bookingCode)}</td>
+                     <td>${escapeHtml(c.bookingDate ? c.bookingDate.split('T')[0]:'_')}</td>
+                    <td>${escapeHtml(c.customerName)}</td>
+                    <td>${escapeHtml(c.bookingDoneBy)}</td>
+                    <td>${escapeHtml(c.nativeCountry)}</td>
                    </tr>
                 `).join('')}
               </tbody>
@@ -219,15 +221,8 @@ export default function CancellationReport() {
       const headers = ['Sl.No', 'Booking Code', 'Booking Date', 'Customer Name', 'Booking Done By', 'Native Country'];
       
       // Create CSV content with proper escaping
-      const escapeCSV = (value) => {
-        if (value === null || value === undefined) return '';
-        const stringValue = String(value);
-        // If value contains comma, newline, or quote, wrap it in quotes and escape quotes
-        if (stringValue.includes(',') || stringValue.includes('\n') || stringValue.includes('"')) {
-          return `"${stringValue.replace(/"/g, '""')}"`;
-        }
-        return stringValue;
-      };
+      // csvCell neutralises text a spreadsheet would run as a formula.
+      const escapeCSV = (value) => csvCell(value);
       
       const csvContent = [
         headers.map(escapeCSV).join(','),

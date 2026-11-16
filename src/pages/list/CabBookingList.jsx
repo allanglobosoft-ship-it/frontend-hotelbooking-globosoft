@@ -23,8 +23,10 @@ import axiosInstance from "../../components/AxiosInstance";
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/TopBar";
 import { toast } from "react-hot-toast";
+import { hidesTransporter } from "../../utils/supplierDisplay";
 import "../../styles/HotelBookingListModern.css";
 import DashboardRedirections from "../../components/DashboardRedirections";
+import { getCurrentActiveRole } from "../../utils/authSession";
 
 const PER_PAGE_OPTIONS = [10, 25, 50, 100];
 
@@ -75,9 +77,9 @@ const STATUS_META = {
 // on the row entirely (fetched before this field existed) OR null (booking
 // created but never refreshed) is treated the same as 0 — "On Request" is
 // the correct label for "nothing has happened yet on i'way's side", it's
-// not a "no data" placeholder. Only cab rows with apiType "IWAY" carry a
-// real iway_trip_status; in-house rows return null here and fall back to
-// the pre-existing generic bucketing untouched.
+// not a "no data" placeholder. Only outside transfers (external) carry a
+// real trip status; in-house rows return null here and fall back to the
+// pre-existing generic bucketing untouched.
 const IWAY_BUCKET_BY_STATUS = {
   0: "onrequest",
   1: "confirmed",
@@ -87,8 +89,8 @@ const IWAY_BUCKET_BY_STATUS = {
   5: "cancelled",
 };
 const iwayBucketFor = (b) => {
-  if (b.apiType !== "IWAY") return null;
-  const s = b.iwayTripStatus == null ? 0 : b.iwayTripStatus;
+  if (!b.external) return null;
+  const s = b.tripStatus == null ? 0 : b.tripStatus;
   return IWAY_BUCKET_BY_STATUS[s] || "reconfirmed";
 };
 
@@ -147,10 +149,10 @@ const formatPaymentMode = (value) => {
 const CabBookingList = () => {
   const navigate = useNavigate();
   const [role, setRole] = useState(() => {
-    return localStorage.getItem("currentActiveRole")?.toLowerCase() || null;
+    return sessionStorage.getItem("currentActiveRole")?.toLowerCase() || null;
   });
   const [userId, setUserId] = useState(() => {
-    const stored = localStorage.getItem("userId");
+    const stored = sessionStorage.getItem("userId");
     return (stored && stored !== "null") ? stored : null;
   });
 
@@ -201,11 +203,11 @@ const CabBookingList = () => {
 
   // Handle role sync if it's missing from localStorage initially
   useEffect(() => {
-    const storedRole = localStorage.getItem("currentActiveRole")?.toLowerCase();
+    const storedRole = sessionStorage.getItem("currentActiveRole")?.toLowerCase();
     if (storedRole && storedRole !== role) {
       setRole(storedRole);
     } else if (!storedRole) {
-      const userRoles = (localStorage.getItem("userRole") || "").toLowerCase().split(",");
+      const userRoles = (sessionStorage.getItem("userRole") || "").toLowerCase().split(",");
       if (userRoles.includes("agent")) setRole("agent");
       else if (userRoles.includes("staff")) setRole("staff");
       else if (userRoles.includes("admin")) setRole("admin");
@@ -216,14 +218,14 @@ const CabBookingList = () => {
   useEffect(() => {
     const fetchUserId = async () => {
       if (userId && userId !== "null") return;
-      const userName = localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+      const userName = sessionStorage.getItem("UserName");
       if (!userName) return;
       try {
         const response = await axiosInstance.get(`/api/personalProfile/${userName}`);
         if (response.data && response.data.id) {
           const id = String(response.data.id);
           setUserId(id);
-          localStorage.setItem("userId", id);
+          sessionStorage.setItem("userId", id);
         }
       } catch (error) {
         console.error("Error fetching user profile for ID:", error);
@@ -389,7 +391,7 @@ const CabBookingList = () => {
         const hay = [
           b.packageBookCode,
           b.cabName,
-          b.transporter,
+          hidesTransporter(b) ? null : b.transporter,
           b.customer?.firstName,
           b.customer?.lastName,
           b.customer?.emailId,
@@ -498,7 +500,7 @@ const CabBookingList = () => {
             <div className="mb-3">
               <Button
                 variant="outline-secondary"
-                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
                 className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
               >
                 <FaArrowLeft />
@@ -896,7 +898,7 @@ const CabBookingList = () => {
                                     >
                                       {b.cabName || "-"}
                                     </span>
-                                    {b.transporter && (
+                                    {b.transporter && !hidesTransporter(b) && (
                                       <span
                                         className="text-muted"
                                         style={{ fontSize: "0.75rem" }}

@@ -36,6 +36,12 @@ import TopBar from "../components/TopBar";
 import AgentBalanceDisplay from "../components/AgentBalanceDisplay";
 import RoomFilters from "../components/roomlist/RoomFilters";
 import useRoomFilters from "../hooks/useRoomFilters";
+import RefundBadge from "../components/RefundBadge";
+import {
+  REFUND_FLEXIBLE,
+  REFUND_NON_REFUNDABLE,
+  uaeToday,
+} from "../utils/refundLabel";
 import "../styles/RoomList.css";
 
 /**
@@ -116,16 +122,13 @@ const isRateNonRefundable = (rate, checkInDate) => {
   const deadline = new Date(cin);
   deadline.setDate(deadline.getDate() - Math.max(...days));
   deadline.setHours(0, 0, 0, 0);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return today > deadline;
+  return uaeToday() > deadline;
 };
 
-const getRefundBadge = (rate, checkInDate) =>
-  isRateNonRefundable(rate, checkInDate) ? (
-    <Badge bg="danger">Non-Refundable</Badge>
-  ) : (
-    <Badge bg="success">Flexible</Badge>
+const getRefundBadge = (rate, checkInDate) => (
+  <RefundBadge
+    label={isRateNonRefundable(rate, checkInDate) ? REFUND_NON_REFUNDABLE : REFUND_FLEXIBLE}
+  />
   );
 
 // Availability badge — mirrors /room-list. "On Request" (yellow) when the
@@ -223,11 +226,14 @@ export default function LastMinuteRoomList() {
   const [selectedRooms, setSelectedRooms] = useState([]);
 
   // Shared Room-Type + Refund-Policy filters (same UX as /room-list).
-  // Last-minute rates carry `refundable` (boolean) + `mealPlanName`.
+  // Last-minute rates carry `refundable` (boolean) + `mealPlanName`. The refund
+  // box follows the badge, so a rate past its deadline counts as Non Refundable.
   const filters = useRoomFilters();
   const rateVisible = (r) =>
     filters.rateMatches({
-      isNonRefundable: r.refundable === false,
+      label: isRateNonRefundable(r, payload?.results?.checkInDate)
+        ? REFUND_NON_REFUNDABLE
+        : REFUND_FLEXIBLE,
       mealPlan: r.mealPlanName,
     });
 
@@ -532,7 +538,7 @@ export default function LastMinuteRoomList() {
                           <small className="text-muted">
                             <strong>Please note:</strong>{" "}
                             <span className="someproperties">
-                              Last-minute rates are typically non-refundable.
+                              Each rate shows its own refund terms.
                               Some properties may collect additional charges
                               such as city tax, resort fees, or security
                               deposits during check-in.
@@ -1057,7 +1063,7 @@ export default function LastMinuteRoomList() {
                     (c) => (c.rates || []).filter(rateVisible).length === 0,
                   ) && (
                     <Alert variant="info" className="mb-0">
-                      No rates match the selected filters.
+                      No rates match the selected filters, please check other filters.
                     </Alert>
                   )}
                 </Accordion>
@@ -1264,9 +1270,9 @@ export default function LastMinuteRoomList() {
                       Cancellation Policy
                     </h6>
                     <p className="text-muted mb-0">
-                      Last-minute bookings are non-refundable once
-                      confirmed. Cancellations or no-shows will be charged
-                      100% of the total booking value.
+                      Each rate shows its own refund terms. A Non Refundable
+                      rate is charged 100% of the total booking value if it
+                      is cancelled or not used.
                     </p>
                   </div>
 
@@ -1391,9 +1397,9 @@ export default function LastMinuteRoomList() {
             Cancellation Policy
           </h6>
           <p className="text-muted mb-4">
-            Last-minute bookings are non-refundable once confirmed.
-            Cancellations or no-shows will be charged 100% of the total
-            booking value.
+            Each rate shows its own refund terms. A Non Refundable rate is
+            charged 100% of the total booking value if it is cancelled or not
+            used.
           </p>
 
           <h6 className="text-warning mb-2 pt-2 border-top">

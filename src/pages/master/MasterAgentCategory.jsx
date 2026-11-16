@@ -220,7 +220,7 @@ export default function MasterAgentCategory() {
   const handleDelete = (item) => {
     console.log("delete item :::" , item);
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.name} Agent Category`,
+      titleText: `Are you sure? You want to delete ${item.name} Agent Category`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

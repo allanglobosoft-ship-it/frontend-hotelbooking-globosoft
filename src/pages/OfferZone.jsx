@@ -371,7 +371,7 @@ export default function OfferZone() {
 
   const handleDelete = (item) => {
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.title}`,
+      titleText: `Are you sure? You want to delete ${item.title}`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

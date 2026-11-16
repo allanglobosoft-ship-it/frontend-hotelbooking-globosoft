@@ -21,6 +21,7 @@ import {
   openPackageBooking,
   resolvePackageImageUrl,
 } from "../../utils/packageBookingHandoff";
+import { getCurrentActiveRole, getUserId, getUserName, getUserRole, setUserId } from "../../utils/authSession";
 
 /**
  * "Recommended Existing Packages" — read-only suggestion strip rendered on
@@ -94,8 +95,8 @@ const formatRate = (pkg) => {
 // login carries its own agent id (markup) exactly as on the search page.
 const detectAgentRole = () => {
   try {
-    const activeRole = (localStorage.getItem("currentActiveRole") || "").trim().toUpperCase();
-    const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+    const activeRole = (getCurrentActiveRole() || "").trim().toUpperCase();
+    const storedRoles = (getUserRole() || "").toUpperCase();
     return activeRole
       ? activeRole === "AGENT"
       : storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN");
@@ -174,7 +175,7 @@ export default function MyopV2PackageSuggestions({
   // that resolution has settled so the query runs once, with the right agent.
   const [selfAgentId, setSelfAgentId] = useState(() => {
     try {
-      return localStorage.getItem("userId") || "";
+      return getUserId() || "";
     } catch {
       return "";
     }
@@ -185,7 +186,7 @@ export default function MyopV2PackageSuggestions({
   useEffect(() => {
     if (!isAgentRole || selfAgentId) return undefined;
     const userName =
-      localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+      getUserName() || sessionStorage.getItem("UserName");
     if (!userName) {
       setSelfAgentSettled(true);
       return undefined;
@@ -200,7 +201,7 @@ export default function MyopV2PackageSuggestions({
         const idv = res?.data?.id != null ? String(res.data.id) : "";
         if (idv) {
           try {
-            localStorage.setItem("userId", idv);
+            setUserId(idv);
           } catch {
             /* ignore */
           }

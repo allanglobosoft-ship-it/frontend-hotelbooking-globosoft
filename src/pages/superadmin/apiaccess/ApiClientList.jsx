@@ -258,7 +258,7 @@ export default function ApiClientList() {
 
   const confirmDeactivate = (row) => {
     Swal.fire({
-      title: `Deactivate ${row.clientName}?`,
+      titleText: `Deactivate ${row.clientName}?`,
       text: "Their API key will stop working immediately.",
       icon: "warning",
       showCancelButton: true,
@@ -274,7 +274,7 @@ export default function ApiClientList() {
   const confirmDelete = (row) => {
     const isLinked = !!row.companyProfileId;
     Swal.fire({
-      title: `Delete ${row.clientName}?`,
+      titleText: `Delete ${row.clientName}?`,
       html: isLinked
         ? "This removes the API key and every supplier/endpoint permission for this client.<br/><br/>"
           + "Because the client is linked to a company, a fresh (empty) client will be auto-provisioned on the next backend restart — the company keeps working, restrictions reset."
@@ -299,7 +299,7 @@ export default function ApiClientList() {
 
   const confirmRegenerate = (row) => {
     Swal.fire({
-      title: `Regenerate key for ${row.clientName}?`,
+      titleText: `Regenerate key for ${row.clientName}?`,
       html: "The current key becomes invalid <b>immediately</b>. You must share the new key with the client.",
       icon: "warning",
       showCancelButton: true,

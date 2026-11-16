@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import axiosInstance from "./AxiosInstance";
+import { getUserName } from "../utils/authSession";
 
 /**
  * RegionalClock
@@ -188,7 +189,7 @@ const RegionalClock = ({
     fetchedRef.current = true;
     let alive = true;
     const userName =
-      localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+      getUserName() || sessionStorage.getItem("UserName");
     if (!userName) return;
     axiosInstance
       .get(`/api/personalProfile/${userName}`)

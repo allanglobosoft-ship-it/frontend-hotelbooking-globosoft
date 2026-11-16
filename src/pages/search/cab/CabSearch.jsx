@@ -23,21 +23,25 @@ import {
   FaInfoCircle,
   FaHourglassHalf,
   FaRoad,
+  FaExchangeAlt,
 } from "react-icons/fa";
 import { useLocation, useNavigate } from "react-router-dom";
 import Select from "react-select";
 import AgentSelect from "../../../components/AgentSelect";
 import axiosInstance from "../../../components/AxiosInstance";
 import { logAgentSearch } from "../../../utils/agentSearchLog";
+import { isAgentLogin } from "../../../utils/supplierDisplay";
 import { toast } from "react-hot-toast";
 import Sidebar from "../../../components/Sidebar";
 import TopBar from "../../../components/TopBar";
 import AgentBalanceDisplay from "../../../components/AgentBalanceDisplay";
 import AdvertisementCarousel from "../../../components/AdvertisementCarousel";
 import TimeApplyPicker from "../../../components/TimeApplyPicker";
+import TravellersPicker from "../../../components/TravellersPicker";
 import AgentCreditBalance from "../../../components/AgentCreditBalance";
 import "../../../styles/HotelSearch.css";
 import "../../../styles/CabTransferModal.css";
+import "../../../styles/CabSearch.css";
 
 function LazyImage({ src, alt, className }) {
   const containerRef = useRef(null);
@@ -215,6 +219,18 @@ const DUMMY_CAB_RESULTS = [
   },
 ];
 
+// Transfer supplier channels for the results-page Channel filter, keyed by
+// the channelType each backend caller stamps on its rows
+// (InhouseCabSearchApiCaller → "inhouse", IwayCabSearchApiCaller → "iway").
+const TRANSFER_CHANNELS = [
+  { value: "inhouse", label: "Inhouse" },
+  { value: "iway", label: "IWay" },
+];
+
+// Channel a result row came from. Demo cards carry no tag and are in-house.
+const channelOf = (cab) =>
+  String(cab?.channelType || cab?.apiType || "inhouse").toLowerCase();
+
 export const CabSearch = () => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -224,13 +240,15 @@ export const CabSearch = () => {
   // agent-required validation is skipped. currentActiveRole isn't set for
   // single-role logins, so fall back to userRole; admin/super-admin/staff
   // keep the picker exactly as before.
-  const activeRole = (localStorage.getItem("currentActiveRole") || "")
+  const activeRole = (sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
     : storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN");
+  // Agent-side logins (main agent, sub-agent, sub-user) never see supplier names.
+  const hideSupplierNames = isAgentLogin();
 
   // Try to use state from previous page if available
   const searchCriteria = location.state || {};
@@ -290,19 +308,56 @@ export const CabSearch = () => {
   // ── Result-page filter / sort / pagination state ─────────────────────
   // Mirrors the Juniper-style result page in the reference screenshot:
   //   - free-text "Search by Transfer Name"
-  //   - multi-select "Suppliers" (built from the unique cab providers
-  //     in the current result set)
-  //   - sort by Price (default) or Transfer Name
+  //   - multi-select "Channel" (inhouse / iway — see TRANSFER_CHANNELS),
+  //     each row LIVE/OFF-badged like the hotel page's Channel filter
+  //   - sort by Price low→high (default, "price"), high→low ("priceDesc")
+  //     or Transfer Name ("name")
   //   - basic page-of-N pagination, default 5 cards/page
   // None of these touch the search API — they're applied on top of the
   // already-fetched transferResults array.
+  // Every filter applies the moment it changes (no Apply button), like the
+  // hotel page. selectedSuppliers holds channel keys ("inhouse", "iway").
   const [nameFilter, setNameFilter] = useState("");
-  const [pendingNameFilter, setPendingNameFilter] = useState("");
   const [selectedSuppliers, setSelectedSuppliers] = useState([]);
-  const [pendingSuppliers, setPendingSuppliers] = useState([]);
+  // Supplier keys the backend dispatched the last search to (the
+  // `suppliers` list POST /api/cab-search/search returns) — lets any
+  // transfer API the backend adds show up in the Channel filter on its own.
+  const [searchChannels, setSearchChannels] = useState([]);
+  // The search the results on screen came from. The booking uses it to take
+  // the provider name and vehicle photo from the cached search row.
+  const lastSearchIdRef = useRef(null);
   const [sortBy, setSortBy] = useState("price");
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 5;
+
+  // Supplier codes super_admin registered for the caller's company (the
+  // rows /admin/api-access shows, enabled or not), lower-cased. null =
+  // unrestricted / unknown → every transfer channel is listed. Same
+  // endpoint and fail-open rule as the hotel page's Channel filter.
+  const [registeredChannels, setRegisteredChannels] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    axiosInstance
+      .get("/api/hotel-search/my-allowed-suppliers")
+      .then((res) => {
+        if (cancelled) return;
+        const unrestricted = res?.data?.unrestricted !== false;
+        const registered = Array.isArray(res?.data?.registered)
+          ? res.data.registered
+          : [];
+        setRegisteredChannels(
+          unrestricted
+            ? null
+            : new Set(registered.map((c) => String(c || "").toLowerCase())),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setRegisteredChannels(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Country & Destination state
   const [nationalityList, setNationalityList] = useState([]);
@@ -576,7 +631,7 @@ export const CabSearch = () => {
       // offers the same real-world place twice. The /registration/cabProvider
       // zone modal deliberately leaves this off so every in-house record
       // stays available for zone building.
-      params.set("applyIwayMapping", "true");
+      params.set("applyLocationMapping", "true");
 
       const res = await axiosInstance.get(
         `/api/cab-search/lookup?${params.toString()}`,
@@ -594,7 +649,11 @@ export const CabSearch = () => {
       push("ZONES", d.zones, (r) => r?.id != null);
       push("HOTELS", d.hotels, (r) => r?.id != null);
       push("AIRPORTS", d.airports, (r) => r?.id != null);
-      push("IWAY LOCATIONS", d.external, (r) => !!r?.externalId);
+      push(
+        hideSupplierNames ? "OTHER LOCATIONS" : "IWAY LOCATIONS",
+        d.external,
+        (r) => !!r?.externalId,
+      );
       return groups;
     } catch (err) {
       console.warn("Location lookup failed:", err?.message || err);
@@ -997,7 +1056,10 @@ export const CabSearch = () => {
 
   const handleTransferChildAgeChange = (index, value) => {
     const updatedAges = [...transferChildAges];
-    updatedAges[index] = parseInt(value) || 5;
+    // Not `parseInt(value) || 5` — that turned a valid age 0 ("Under 1")
+    // into 5. Only an unparseable value falls back to the default.
+    const age = parseInt(value, 10);
+    updatedAges[index] = Number.isNaN(age) ? 5 : age;
     setTransferChildAges(updatedAges);
   };
 
@@ -1015,7 +1077,7 @@ export const CabSearch = () => {
     // is supplier-native at BOTH ends never touches the in-house tables, so
     // demanding a city there would block a search we can actually serve.
     const routeIsFullyExternal =
-      pickupItem?.source === "IWAY" && dropoffItem?.source === "IWAY";
+      !!pickupItem?.externalId && !!dropoffItem?.externalId;
 
     if (!city && !routeIsFullyExternal) errs.city = "City is required.";
     if (changeDropCity && !dropCity && !routeIsFullyExternal)
@@ -1027,16 +1089,40 @@ export const CabSearch = () => {
     // validated here.
     if (!pickupItem) errs.pickupItem = "Please select a pickup location.";
 
-    if (!arrivalTime) errs.arrivalTime = "Arrival time is required.";
+    // Wording matches the field's label, which follows the pickup kind.
+    if (!arrivalTime)
+      errs.arrivalTime =
+        pickupKind === "AIRPORT"
+          ? "Flight arrival time is required."
+          : "Pickup time is required.";
 
     if (!dropoffItem) errs.dropoffItem = "Please select a drop-off location.";
 
     // Departure time is required whenever the Departure Time field is shown
     // (non-HOTEL drops). Hotel drops hide the field, so it's skipped there.
     if (dropoffKind !== "HOTEL" && !dropDepartureTime)
-      errs.dropDepartureTime = "Departure time is required.";
+      errs.dropDepartureTime =
+        dropoffKind === "AIRPORT"
+          ? "Flight departure time is required."
+          : "Departure time is required.";
 
     return errs;
+  };
+
+  // Swap Pickup ⇄ Drop-off (e.g. turning DXB → DWC into the return leg).
+  // Each location's kind travels with it; a hotel drop-off takes no
+  // departure time, so clear it if one is swapped into the drop-off slot.
+  const handleSwapLocations = () => {
+    setPickupItem(dropoffItem);
+    setDropoffItem(pickupItem);
+    setPickupKind(dropoffKind);
+    setDropoffKind(pickupKind);
+    if (pickupKind === "HOTEL") {
+      setDropDepartureTime("");
+      clearError("dropDepartureTime");
+    }
+    if (dropoffItem) clearError("pickupItem");
+    if (pickupItem) clearError("dropoffItem");
   };
 
   // ── Real cab ids for the demo route ──────────────────────────────────
@@ -1111,14 +1197,17 @@ export const CabSearch = () => {
     apiType: cab.apiType || null,
     channelType: cab.channelType || null,
     source: cab.apiType || cab.source || null,
-    iwayPriceId: cab.iwayPriceId || null,
-    iwayPriceUid: cab.iwayPriceUid || null,
+    // Neutral routing fields, sent for every login. Agent-side logins get no
+    // apiType / channelType, so booking never routes on those.
+    external: cab.external === true,
+    offerId: cab.offerId ?? null,
+    offerUid: cab.offerUid ?? null,
     // flexible_tariff flag from the i'way price offer (guide §11.6.2).
     // Carried through so CabBookingPage can forward it to /api/cab/book,
     // where the backend uses it to decide whether to send text_tablet
     // (Meet & Greet sign) on the create-order payload. Null on in-house
     // rows — the backend treats null as "M&G included" (safe default).
-    iwayFlexibleTariff:
+    flexibleTariff:
       cab.flexibleTariff != null ? Boolean(cab.flexibleTariff) : null,
     // allowable_time (seconds) from the i'way price offer — carried
     // through so CabBookingPage can forward it to /api/cab/book, where
@@ -1126,7 +1215,7 @@ export const CabSearch = () => {
     // §11.10 locally (pickup_time - now >= allowable_time + 20 min). Null
     // on in-house rows and on any i'way row whose search response omitted
     // the field — the backend then no-ops the check for backwards compat.
-    iwayAllowableTime:
+    allowableTime:
       cab.allowableTime != null ? Number(cab.allowableTime) : null,
     searchCabDetailsDTO: Array.isArray(cab.searchCabDetailsDTO)
       ? cab.searchCabDetailsDTO.map((d) => ({
@@ -1155,7 +1244,7 @@ export const CabSearch = () => {
   const pollUntilCabSearchComplete = async (
     searchId,
     onUpdate,
-    { intervalMs = 2000, timeoutMs = 30000, initialDelay = 500 } = {},
+    { intervalMs = 2000, timeoutMs = 210000, initialDelay = 500 } = {},
   ) => {
     return new Promise((resolve, reject) => {
       const startTime = Date.now();
@@ -1273,18 +1362,20 @@ export const CabSearch = () => {
               ? Array(transferChildren).fill(0)
               : [],
         agentId: agentId ? Number(agentId) : null,
-        // IWay leg piggybacked on the same request — backend skips the
-        // IWay fan-out when iwayEnabled=false or coords are missing.
-        iwayEnabled: iwayReady,
-        iwayStartPlaceId: iwayReady ? iwayPickupSelected.placeId : null,
-        iwayStartLat: iwayReady ? iwayPickupSelected.lat : null,
-        iwayStartLng: iwayReady ? iwayPickupSelected.lng : null,
-        iwayStartLabel: iwayReady ? iwayPickupSelected.label : null,
-        iwayFinishPlaceId: iwayReady ? iwayDropSelected.placeId : null,
-        iwayFinishLat: iwayReady ? iwayDropSelected.lat : null,
-        iwayFinishLng: iwayReady ? iwayDropSelected.lng : null,
-        iwayFinishLabel: iwayReady ? iwayDropSelected.label : null,
-        iwayCurrency: iwayReady ? currency?.value || null : null,
+        // IWay leg piggybacked on the same request. Sent only when it is
+        // requested, so an ordinary search names no supplier.
+        ...(iwayReady && {
+          iwayEnabled: true,
+          iwayStartPlaceId: iwayPickupSelected.placeId,
+          iwayStartLat: iwayPickupSelected.lat,
+          iwayStartLng: iwayPickupSelected.lng,
+          iwayStartLabel: iwayPickupSelected.label,
+          iwayFinishPlaceId: iwayDropSelected.placeId,
+          iwayFinishLat: iwayDropSelected.lat,
+          iwayFinishLng: iwayDropSelected.lng,
+          iwayFinishLabel: iwayDropSelected.label,
+          iwayCurrency: currency?.value || null,
+        }),
       };
 
       // Agent search log (Unbooked Opportunities → Searches tab) —
@@ -1322,6 +1413,7 @@ export const CabSearch = () => {
       );
       const searchId = initRes?.data?.searchId;
       if (!searchId) throw new Error("No searchId returned");
+      lastSearchIdRef.current = searchId;
 
       // Which suppliers the backend actually dispatched to, after agent
       // exclusion + company allow-list. Used below to decide whether a
@@ -1329,6 +1421,7 @@ export const CabSearch = () => {
       const dispatchedSuppliers = Array.isArray(initRes?.data?.suppliers)
         ? initRes.data.suppliers.map((s) => String(s).toLowerCase())
         : [];
+      setSearchChannels(dispatchedSuppliers);
 
       if (iwayReady) setIwayLoading(true);
 
@@ -1508,7 +1601,7 @@ export const CabSearch = () => {
 
   const handleBookNow = (cab, cabDetail) => {
 
-    const isIway = cab?.channelType === "iway" || cab?.source === "IWAY";
+    const isIway = cab?.external === true;
 
     // Recompute the row's price the same way the table shows it so the
     // booking page receives a consistent total. We carry BOTH the
@@ -1557,7 +1650,7 @@ export const CabSearch = () => {
           (agent && String(agent)) ||
           sessionStorage.getItem("makeYourOwnPackageAgentId") ||
           localStorage.getItem("makeYourOwnPackageAgentId") ||
-          (isAgentRole ? localStorage.getItem("userId") : "") ||
+          (isAgentRole ? sessionStorage.getItem("userId") : "") ||
           "",
         nationality,
         destination,
@@ -1593,14 +1686,15 @@ export const CabSearch = () => {
         // request already sent, so the backend can re-resolve i'way
         // place_id/coordinates via IwayPlaceResolver at booking time exactly
         // as it did at search time.
-        apiType: isIway ? "IWAY" : null,
-        iwayPriceId: isIway ? (cab?.iwayPriceId ?? null) : null,
-        iwayPriceUid: isIway ? (cab?.iwayPriceUid ?? null) : null,
+        external: isIway,
+        offerId: isIway ? (cab?.offerId ?? null) : null,
+        offerUid: isIway ? (cab?.offerUid ?? null) : null,
+        searchId: isIway ? lastSearchIdRef.current : null,
         // Guide §11.10 pre-order time check on the backend needs the
         // offer's allowable_time. Carried on searchCriteria so
         // CabBookingPage doesn't have to re-read it off the cab row.
         // Null on in-house rows and on i'way rows whose offer omitted it.
-        iwayAllowableTime: isIway ? (cab?.iwayAllowableTime ?? null) : null,
+        allowableTime: isIway ? (cab?.allowableTime ?? null) : null,
         originLocation: isIway ? toTransferLocation(pickupItem, "AIRPORT") : null,
         destinationLocation: isIway ? toTransferLocation(dropoffItem, "HOTEL") : null,
       },
@@ -1702,8 +1796,10 @@ export const CabSearch = () => {
                       </span>
                     )}
                     <span className="hs-summary-chip">
-                      {transferAdults} adults
-                      {transferChildren ? `, ${transferChildren} child` : ""}
+                      {transferAdults} adult{transferAdults === 1 ? "" : "s"}
+                      {transferChildren
+                        ? `, ${transferChildren} ${transferChildren === 1 ? "child" : "children"}`
+                        : ""}
                     </span>
                   </div>
                   <Button
@@ -1907,11 +2003,11 @@ export const CabSearch = () => {
                       </Col>
                     </Row>
 
-                    {/* Row 2 — Transfer Date on its own line so it isn't
-                        squeezed against Row 1's identity fields. md=4 keeps
-                        it a comfortable width without stretching all the way
-                        across; the extra space on the right stays clean. */}
-                    <Row className="g-3 mb-3 align-items-end">
+                    {/* Row 2 — "when & who": Transfer Date + Passengers, on
+                        the same md=4 grid as Row 1 so the columns line up.
+                        align-items-start keeps both labels level even when
+                        the date shows a validation message. */}
+                    <Row className="g-3 mb-3 align-items-start">
                       <Col md={4}>
                         <Form.Label className="fw-semibold">
                           Transfer Date{" "}
@@ -1931,6 +2027,24 @@ export const CabSearch = () => {
                         <Form.Control.Feedback type="invalid">
                           {validationErrors.pickupDate}
                         </Form.Control.Feedback>
+                      </Col>
+                      {/* Passengers — Adults / Children steppers and each
+                          child's age in one popover (replaces the separate
+                          Adults, Children and Child Ages fields). Feeds the
+                          same transferAdults / transferChildren /
+                          transferChildAges state as before. */}
+                      <Col md={4}>
+                        <Form.Label className="fw-semibold">
+                          Passengers
+                        </Form.Label>
+                        <TravellersPicker
+                          adults={transferAdults}
+                          children={transferChildren}
+                          childAges={transferChildAges}
+                          onAdultsChange={setTransferAdults}
+                          onChildrenChange={setTransferChildren}
+                          onChildAgeChange={handleTransferChildAgeChange}
+                        />
                       </Col>
                     </Row>
 
@@ -1996,8 +2110,11 @@ export const CabSearch = () => {
                           Accommodation / Place category step is gone — the
                           category now comes FROM the picked option's `source`
                           (see onChange), which is all the downstream logic
-                          ever needed it for. */}
-                      <Col md={6}>
+                          ever needed it for.
+                          Location columns take the width (lg=10) so long
+                          airport / hotel names aren't truncated; the time
+                          beside each only needs lg=2. */}
+                      <Col lg={10} md={8}>
                         <Form.Label className="fw-semibold">
                           Pickup <span className="text-danger">*</span>
                         </Form.Label>
@@ -2060,14 +2177,19 @@ export const CabSearch = () => {
                         )}
                       </Col>
 
-                      <Col md={3}>
+                      {/* Label follows the pickup: an airport pickup is
+                          timed by the flight landing, anything else by when
+                          the driver should arrive. */}
+                      <Col lg={2} md={4}>
                         <Form.Label className="fw-semibold">
-                          Arrival Time{" "}
+                          {pickupKind === "AIRPORT" ? "Flight Arrival" : "Pickup Time"}{" "}
                           <span className="text-danger">*</span>
                         </Form.Label>
                         {/* Same OK/Cancel + AM/PM picker used on
                             /new-booking/hotel-24hr — value stays "HH:MM"
                             24-hour, so the arrivalTime payload is unchanged. */}
+                        <div className="cab-time-field">
+                          <FaClock className="cab-time-icon" />
                         <TimeApplyPicker
                           value={arrivalTime}
                           isInvalid={!!validationErrors.arrivalTime}
@@ -2075,45 +2197,39 @@ export const CabSearch = () => {
                             setArrivalTime(v);
                             if (v) clearError("arrivalTime");
                           }}
-                          placeholder="Select arrival time"
+                            placeholder="Select time"
                         />
+                        </div>
                         {validationErrors.arrivalTime && (
                           <div className="invalid-feedback d-block">
                             {validationErrors.arrivalTime}
                           </div>
                         )}
                       </Col>
-
-                      {/* Adults moved into the pickup row's empty tail (was
-                          in its own row below with Children) to remove the
-                          otherwise mostly-empty Pax row and tighten vertical
-                          space. Row totals 12: Pickup 3 + Facility 3 +
-                          Arrival 3 + Adults 3. */}
-                      <Col md={3}>
-                        <Form.Label className="fw-semibold">Adults</Form.Label>
-                        <Form.Select
-                          style={{ height: "46px" }}
-                          value={transferAdults}
-                          onChange={(e) =>
-                            setTransferAdults(parseInt(e.target.value) || 1)
-                          }
-                        >
-                          {Array.from({ length: 9 }, (_, i) => i + 1).map(
-                            (num) => (
-                              <option key={num} value={num}>
-                                {num} Adult{num > 1 ? "s" : ""}
-                              </option>
-                            ),
-                          )}
-                        </Form.Select>
-                      </Col>
                     </Row>
 
                     <Row className="g-3 mb-3 align-items-end">
-                      <Col md={6}>
+                      <Col lg={10} md={8}>
+                        <div className="d-flex justify-content-between align-items-center">
                         <Form.Label className="fw-semibold">
                           Drop-off <span className="text-danger">*</span>
                         </Form.Label>
+                          <Button
+                            type="button"
+                            variant="link"
+                            size="sm"
+                            className="p-0 mb-2 text-decoration-none fw-semibold"
+                            onClick={handleSwapLocations}
+                            disabled={!pickupItem && !dropoffItem}
+                            title="Swap pickup and drop-off"
+                          >
+                            <FaExchangeAlt
+                              className="me-1"
+                              style={{ transform: "rotate(90deg)" }}
+                            />
+                            Swap
+                          </Button>
+                        </div>
                         <Select
                           options={dropLocationOptions}
                           value={dropoffItem}
@@ -2169,57 +2285,47 @@ export const CabSearch = () => {
                         )}
                       </Col>
 
-                      {/* Departure Time is hidden when the drop is an
-                          Accommodation — a hotel drop has no onward
-                          departure time to capture. md=3 mirrors Arrival
-                          Time on the pickup row above so both time fields
-                          have identical widths. */}
-                      {dropoffKind !== "HOTEL" && (
-                        <Col md={3}>
+                      {/* Departure time — label follows the drop-off (an
+                          airport drop is timed by the flight). A hotel drop
+                          has no onward departure, so the picker is swapped
+                          for a short note rather than removed, keeping the
+                          Drop-off field the same width as Pickup above. */}
+                      <Col lg={2} md={4}>
                           <Form.Label className="fw-semibold">
-                            Departure Time{" "}
+                          {dropoffKind === "AIRPORT" ? "Flight Departure" : "Departure Time"}
+                      {dropoffKind !== "HOTEL" && (
+                            <>
+                              {" "}
                             <span className="text-danger">*</span>
-                          </Form.Label>
-                          <TimeApplyPicker
-                            value={dropDepartureTime}
-                            isInvalid={!!validationErrors.dropDepartureTime}
-                            onApply={(v) => {
-                              setDropDepartureTime(v);
-                              if (v) clearError("dropDepartureTime");
-                            }}
-                            placeholder="Select departure time"
-                          />
-                          {validationErrors.dropDepartureTime && (
-                            <div className="invalid-feedback d-block">
-                              {validationErrors.dropDepartureTime}
-                            </div>
+                            </>
                           )}
-                        </Col>
-                      )}
-
-                      {/* Children moved into the drop row's tail — same
-                          consolidation as Adults on the pickup row above.
-                          Row totals: Drop 3 + Facility 3 + Departure 3
-                          (when shown) + Children 3 = 12; when Departure is
-                          hidden for HOTEL drops the row collapses to 9,
-                          leaving the space where Departure would be blank. */}
-                      <Col md={3}>
-                        <Form.Label className="fw-semibold">
-                          Children
                         </Form.Label>
-                        <Form.Select
+                        {dropoffKind === "HOTEL" ? (
+                          <div
+                            className="form-control d-flex align-items-center bg-light text-muted small"
                           style={{ height: "46px" }}
-                          value={transferChildren}
-                          onChange={(e) =>
-                            setTransferChildren(parseInt(e.target.value) || 0)
-                          }
                         >
-                          {Array.from({ length: 6 }, (_, i) => i).map((num) => (
-                            <option key={num} value={num}>
-                              {num} Child{num !== 1 ? "ren" : ""}
-                            </option>
-                          ))}
-                        </Form.Select>
+                            Not needed for hotels
+                          </div>
+                        ) : (
+                          <div className="cab-time-field">
+                            <FaClock className="cab-time-icon" />
+                            <TimeApplyPicker
+                              value={dropDepartureTime}
+                              isInvalid={!!validationErrors.dropDepartureTime}
+                              onApply={(v) => {
+                                setDropDepartureTime(v);
+                                if (v) clearError("dropDepartureTime");
+                              }}
+                              placeholder="Select time"
+                            />
+                          </div>
+                        )}
+                        {validationErrors.dropDepartureTime && (
+                          <div className="invalid-feedback d-block">
+                            {validationErrors.dropDepartureTime}
+                          </div>
+                        )}
                       </Col>
                     </Row>
 
@@ -3018,39 +3124,6 @@ export const CabSearch = () => {
                     </div>
                     </div>
 
-                    {/* Child Ages — moved above the Search button so it
-                        follows the natural top-to-bottom form order (inputs
-                        then CTA). Only rendered when there is at least one
-                        child to enter an age for. */}
-                    {transferChildren > 0 && (
-                      <Row className="g-2 mb-3">
-                        <Col md={12}>
-                          <Form.Label className="mb-2 fw-semibold">
-                            Child Ages
-                          </Form.Label>
-                          <div className="d-flex flex-wrap gap-2">
-                            {transferChildAges.map((age, index) => (
-                              <Form.Control
-                                key={index}
-                                type="number"
-                                min="0"
-                                max="17"
-                                placeholder={`Child ${index + 1}`}
-                                value={age}
-                                style={{ width: "100px", height: "46px" }}
-                                onChange={(e) =>
-                                  handleTransferChildAgeChange(
-                                    index,
-                                    e.target.value,
-                                  )
-                                }
-                              />
-                            ))}
-                          </div>
-                        </Col>
-                      </Row>
-                    )}
-
                     <Row className="justify-content-center">
                       <Col
                         md={4}
@@ -3156,13 +3229,32 @@ export const CabSearch = () => {
                     details.forEach((d) => rows.push({ cab, detail: d }));
                   });
 
-                  const supplierNames = Array.from(
-                    new Set(
-                      transferResults
-                        .map((c) => c.cabProviderName)
-                        .filter(Boolean),
-                    ),
+                  // Channel filter rows — every transfer channel registered
+                  // for the company (in-house is never gated, so always
+                  // listed), plus every supplier the backend searched and
+                  // any channel that returned rows, so a newly added
+                  // transfer API is listed without a frontend change.
+                  // LIVE = it has results in this search, OFF = none.
+                  const channelsWithResults = new Set(
+                    transferResults.map(channelOf),
                   );
+                  const channelOptions = TRANSFER_CHANNELS.filter(
+                    (o) =>
+                      o.value === "inhouse" ||
+                      !registeredChannels ||
+                      registeredChannels.has(o.value),
+                  );
+                  [...searchChannels, ...channelsWithResults].forEach((c) => {
+                    if (!channelOptions.some((o) => o.value === c)) {
+                      const known = TRANSFER_CHANNELS.find((o) => o.value === c);
+                      channelOptions.push(
+                        known || {
+                          value: c,
+                          label: c.charAt(0).toUpperCase() + c.slice(1),
+                        },
+                      );
+                    }
+                  });
 
                   const trimmedName = nameFilter.trim().toLowerCase();
                   const filtered = rows.filter(({ cab }) => {
@@ -3176,7 +3268,7 @@ export const CabSearch = () => {
                     }
                     if (
                       selectedSuppliers.length > 0 &&
-                      !selectedSuppliers.includes(cab.cabProviderName)
+                      !selectedSuppliers.includes(channelOf(cab))
                     ) {
                       return false;
                     }
@@ -3191,7 +3283,7 @@ export const CabSearch = () => {
                     }
                     const pa = priceDetail(a.detail).total || 0;
                     const pb = priceDetail(b.detail).total || 0;
-                    return pa - pb;
+                    return sortBy === "priceDesc" ? pb - pa : pa - pb;
                   });
 
                   const totalPages = Math.max(
@@ -3264,7 +3356,7 @@ export const CabSearch = () => {
                       <Row className="g-3">
                         {/* ── LEFT: Filter panel ─────────────────────── */}
                         <Col lg={3} md={4}>
-                          <Card className="border-0 shadow-sm rounded-3 mb-3">
+                          {/* <Card className="border-0 shadow-sm rounded-3 mb-3">
                             <Card.Header className="bg-white border-bottom fw-semibold d-flex justify-content-between align-items-center">
                               <span className="text-primary">
                                 Search by Transfer Name
@@ -3302,39 +3394,73 @@ export const CabSearch = () => {
                                 </Button>
                               </div>
                             </Card.Body>
-                          </Card>
+                          </Card> */}
 
+                          {/* Channel lists supplier names, so agent-side logins
+                              do not get it. Nothing selects a channel for them,
+                              so their results are never narrowed by it. */}
+                          {!hideSupplierNames && (
                           <Card className="border-0 shadow-sm rounded-3 mb-3">
                             <Card.Header className="bg-white border-bottom fw-semibold d-flex justify-content-between align-items-center">
-                              <span className="text-primary">Suppliers</span>
+                                {/* <span className="text-primary">Suppliers</span> */}
+                                <span className="text-primary">Channel</span>
                               <span className="text-muted small">▾</span>
                             </Card.Header>
                             <Card.Body className="p-3">
-                              {supplierNames.length === 0 ? (
-                                <div className="text-muted small">
-                                  No suppliers in results.
+                                {/* filter-checkbox-list (HotelSearch.css) gives
+                                    the same checkbox rows as the hotel page's
+                                    Channel filter; badge styling matches too. */}
+                                <div className="filter-checkbox-list">
+                                  {channelOptions.map(({ value, label }) => {
+                                    const isLive = channelsWithResults.has(value);
+                                    return (
+                                      <div
+                                        key={value}
+                                        className="d-flex align-items-center justify-content-between gap-2"
+                                        style={{ minHeight: 26 }}
+                                      >
+                                        <Form.Check
+                                          type="checkbox"
+                                          id={`channel-${value}`}
+                                          label={label}
+                                          checked={selectedSuppliers.includes(value)}
+                                          onChange={(e) => {
+                                            setSelectedSuppliers((prev) =>
+                                              e.target.checked
+                                                ? [...prev, value]
+                                                : prev.filter((x) => x !== value),
+                                            );
+                                            setCurrentPage(1);
+                                          }}
+                                        />
+                                        <span
+                                          title={
+                                            isLive
+                                              ? "Transfers from this channel are in the results"
+                                              : "No transfers from this channel in the results"
+                                          }
+                                          style={{
+                                            fontSize: "0.65rem",
+                                            fontWeight: 700,
+                                            padding: "1px 6px",
+                                            borderRadius: 10,
+                                            lineHeight: 1.4,
+                                            color: "#fff",
+                                            backgroundColor: isLive
+                                              ? "#198754"
+                                              : "#dc3545",
+                                            whiteSpace: "nowrap",
+                                          }}
+                                        >
+                                          {isLive ? "LIVE" : "OFF"}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
-                              ) : (
-                                supplierNames.map((s) => (
-                                  <Form.Check
-                                    key={s}
-                                    type="checkbox"
-                                    id={`supplier-${s}`}
-                                    label={s}
-                                    className="small"
-                                    checked={pendingSuppliers.includes(s)}
-                                    onChange={(e) => {
-                                      setPendingSuppliers((prev) =>
-                                        e.target.checked
-                                          ? [...prev, s]
-                                          : prev.filter((x) => x !== s),
-                                      );
-                                    }}
-                                  />
-                                ))
-                              )}
                             </Card.Body>
                           </Card>
+                              )}
 
                           <Card className="border-0 shadow-sm rounded-3 mb-3">
                             <Card.Header className="bg-white border-bottom fw-semibold d-flex justify-content-between align-items-center">
@@ -3381,22 +3507,13 @@ export const CabSearch = () => {
                             </Card.Body>
                           </Card>
 
-                          <Button
-                            variant="primary"
-                            className="w-100 fw-bold"
-                            onClick={() => {
-                              setNameFilter(pendingNameFilter);
-                              setSelectedSuppliers(pendingSuppliers);
-                              setCurrentPage(1);
-                            }}
-                          >
-                            APPLY FILTERS
-                          </Button>
                         </Col>
 
                         {/* ── RIGHT: Results column ──────────────────── */}
                         <Col lg={9} md={8}>
-                          {/* Sort bar */}
+                          {/* Sort bar — same pills, Clear and right-aligned
+                              name search as the /new-booking/hotel results
+                              bar (sort-pill / clear-pill in HotelSearch.css). */}
                           <Card className="border-0 shadow-sm rounded-3 mb-3">
                             <Card.Body className="py-2 px-3 d-flex flex-wrap align-items-center gap-2">
                               <span className="text-muted small me-1">
@@ -3404,35 +3521,68 @@ export const CabSearch = () => {
                               </span>
                               <Button
                                 size="sm"
-                                variant={
-                                  sortBy === "price" ? "primary" : "light"
-                                }
-                                className="px-3"
+                                className={`sort-pill ${sortBy === "price" ? "active" : ""}`}
                                 onClick={() => setSortBy("price")}
                               >
-                                ↕ Price
+                                Low to High
                               </Button>
                               <Button
                                 size="sm"
-                                variant={
-                                  sortBy === "name" ? "primary" : "light"
-                                }
-                                className="px-3"
+                                className={`sort-pill ${sortBy === "priceDesc" ? "active" : ""}`}
+                                onClick={() => setSortBy("priceDesc")}
+                              >
+                                High to Low
+                              </Button>
+                              <Button
+                                size="sm"
+                                className={`sort-pill ${sortBy === "name" ? "active" : ""}`}
                                 onClick={() => setSortBy("name")}
                               >
                                 ↕ Transfer Name
                               </Button>
+                              {/* Resets sort, name search and the sidebar
+                                  filters — mirrors the hotel page's Clear. */}
+                              <Button
+                                size="sm"
+                                variant="outline-primary"
+                                className="clear-pill"
+                                onClick={() => {
+                                  setSortBy("price");
+                                  setNameFilter("");
+                                  setSelectedSuppliers([]);
+                                  setTransferType("All");
+                                  setCurrentPage(1);
+                                }}
+                              >
+                                Clear
+                              </Button>
+                              {/* Transfer-name search, filtering as you type. */}
+                              <Form.Control
+                                type="text"
+                                placeholder="Search Transfer"
+                                value={nameFilter}
+                                onChange={(e) => {
+                                  setNameFilter(e.target.value);
+                                  setCurrentPage(1);
+                                }}
+                                className="ms-auto ps-3"
+                                style={{
+                                  height: "36px",
+                                  maxWidth: "260px",
+                                  minWidth: "180px",
+                                }}
+                              />
                             </Card.Body>
                           </Card>
 
                           {/* Page-of-N + count */}
-                          <div className="d-flex justify-content-between align-items-center mb-2 small text-muted">
+                          {/* <div className="d-flex justify-content-between align-items-center mb-2 small text-muted">
                             <div>
                               Page {safePage} of {totalPages} ({filtered.length}{" "}
                               records)
                             </div>
                             {totalPages > 1 && renderPagination()}
-                          </div>
+                          </div> */}
 
                           {(transferType === "Shared" ||
                             transferType === "All") && (
@@ -3471,8 +3621,10 @@ export const CabSearch = () => {
                                             external supplier obvious at a
                                             glance without disturbing rows
                                             that come from the in-house
-                                            cabProvider search. */}
-                                        {(cab.channelType === "iway" ||
+                                            cabProvider search. Never for
+                                            agent-side logins. */}
+                                        {!hideSupplierNames &&
+                                          (cab.channelType === "iway" ||
                                           cab.source === "IWAY") && (
                                           <span
                                             className="badge"
@@ -3568,7 +3720,7 @@ export const CabSearch = () => {
                                                 {detail.dropOff || "N/A"}
                                               </div>
                                             )}
-                                            {cab.cabProviderName && (
+                                            {!hideSupplierNames && cab.cabProviderName && (
                                               <div className="small text-muted">
                                                 by {cab.cabProviderName}
                                               </div>
@@ -3631,7 +3783,12 @@ export const CabSearch = () => {
                           )}
 
                           {totalPages > 1 && (
-                            <div className="d-flex justify-content-end mt-3">
+                            // <div className="d-flex justify-content-end mt-3">
+                            <div className="d-flex justify-content-between align-items-center mb-2 small text-muted">
+                              <div>
+                              Page {safePage} of {totalPages} ({filtered.length}{" "}
+                              records)
+                            </div>
                               {renderPagination()}
                             </div>
                           )}
@@ -3717,7 +3874,7 @@ export const CabSearch = () => {
           const maxPax = cab.vehicleMaxCapacity ?? cab.capacityMax ?? "—";
           const maxLuggage =
             cab.vehicleMaxLuggage ?? cab.capacityMax ?? "—";
-          const supplier = cab.cabProviderName || "";
+          const supplier = hideSupplierNames ? "" : cab.cabProviderName || "";
           const { total: priceTotal, perUnit, label: priceLabel } =
             priceDetail(detail);
           const fmtAed = (n) =>
@@ -3908,12 +4065,14 @@ export const CabSearch = () => {
                             {cab.cabname || "—"} or similar
                           </span>
                         </div>
+                        {!hideSupplierNames && (
                         <div className="ctm-info-row">
                           <span className="ctm-info-label">Supplier</span>
                           <span className="ctm-info-value">
                             {supplier || "—"}
                           </span>
                         </div>
+                        )}
                         <div className="ctm-info-row">
                           <span className="ctm-info-label">Availability</span>
                           <span className="ctm-info-value text-success">

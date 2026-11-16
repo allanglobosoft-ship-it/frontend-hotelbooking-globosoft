@@ -220,7 +220,7 @@ export default function SeasonType() {
   const handleDelete = (item) => {
     console.log("delete item :::" , item);
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.season} Season Type`,
+      titleText: `Are you sure? You want to delete ${item.season} Season Type`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

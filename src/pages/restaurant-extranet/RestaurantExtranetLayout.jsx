@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import axiosInstance from "../../components/AxiosInstance";
+import { getAuthToken, getUserName, clearAuthSession } from "../../utils/authSession";
 import { Button, Container, Spinner } from "react-bootstrap";
 import { toast } from "react-hot-toast";
 import {
@@ -26,7 +27,7 @@ import {
  * function that receives `{ restaurantId, restaurantName, refresh }`).
  *
  * Auth posture matches the rest of the platform:
- *   • Standard `authToken` from localStorage is auto-attached by
+ *   • Standard `authToken` from this tab's sessionStorage is auto-attached by
  *     `axiosInstance`.
  *   • Missing token → redirect to /login.
  *   • 401/403 from any wrapped page → logout + redirect to /login.
@@ -45,10 +46,10 @@ const RestaurantExtranetLayout = ({ children, title, subtitle }) => {
   const [me, setMe] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const username = localStorage.getItem("UserName") || "";
+  const username = getUserName();
 
   const fetchMe = useCallback(async () => {
-    if (!localStorage.getItem("authToken")) {
+    if (!getAuthToken()) {
       navigate("/login", { replace: true });
       return;
     }
@@ -63,9 +64,7 @@ const RestaurantExtranetLayout = ({ children, title, subtitle }) => {
       }
     } catch (err) {
       if (err?.response?.status === 401 || err?.response?.status === 403) {
-        localStorage.removeItem("authToken");
-        localStorage.removeItem("userRole");
-        localStorage.removeItem("UserName");
+        clearAuthSession();
         toast.error("Session expired. Please log in again.");
         navigate("/login", { replace: true });
         return;
@@ -83,16 +82,13 @@ const RestaurantExtranetLayout = ({ children, title, subtitle }) => {
 
   const handleLogout = async () => {
     // Same as TopBar.handleLogout: record logout_date_time server-side while
-    // the Bearer token is still in localStorage, then clear the client.
+    // the Bearer token is still in sessionStorage, then clear the client.
     try {
       await axiosInstance.post("/auth/logout", {}, { withCredentials: true });
     } catch {
       // Best-effort: still finish the client-side logout if the call fails.
     }
-    localStorage.removeItem("authToken");
-    localStorage.removeItem("userRole");
-    localStorage.removeItem("UserName");
-    localStorage.removeItem("currentActiveRole");
+    clearAuthSession();
     navigate("/login", { replace: true });
   };
 

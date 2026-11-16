@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Card,
   Button,
@@ -7,6 +7,7 @@ import {
   Form,
   Spinner,
   Badge,
+  Pagination,
 } from "react-bootstrap";
 import { FaSearch, FaStar } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
@@ -19,7 +20,63 @@ import { logAgentSearch } from "../../../utils/agentSearchLog";
 import AdvertisementCarousel from "../../../components/AdvertisementCarousel";
 import AgentCreditBalance from "../../../components/AgentCreditBalance";
 import DateInput from "../../../components/DateInput";
+import PriceRangeSlider from "../../../components/PriceRangeSlider";
+import HotelSearchProgressBar from "../../../components/HotelSearchProgressBar";
+import useRefundFlags from "../../../hooks/useRefundFlags";
+import {
+  NO_REFUND_POLICY,
+  isRefundPolicyActive,
+  refundPolicyMatches,
+  fetchDayStayRefundFlags,
+  supplierRefundFlags,
+} from "../../../utils/refundPolicyFilter";
+import { toast } from "react-hot-toast";
+import {
+  buildApiSearchPayload,
+  searchApiHotels,
+  apiIdForApiType,
+  fetchChannelOptions,
+} from "../../../utils/lastMinuteApiHotels";
+import {
+  fetchDayStayApiHotelsEnabled,
+  toDayStayHotelRow,
+  isSupplierDayStayHotel,
+  dayStayCheckOutDate,
+} from "../../../utils/dayStayApiHotels";
+import { isAgentLogin } from "../../../utils/supplierDisplay";
 import "../../../styles/HotelSearch.css";
+
+// Bars in the Budget price chart — the same count Last Minute uses and
+// HotelSearchController.PRICE_HISTOGRAM_BARS sends to /new-booking/hotel.
+const PRICE_HISTOGRAM_BARS = 40;
+
+// Hotels per results page — the same 10 as /new-booking/hotel and Last Minute.
+const PAGE_SIZE = 10;
+
+// Page buttons, same rule as /new-booking/hotel and Last Minute: always the
+// first 3 and last 3 pages, plus the current page and its neighbours; "…" fills
+// each gap, and a gap of a single page shows that page instead. pageIndex is
+// 0-based; the buttons are 1-based. Empty when there is only one page.
+function pageButtons(pageIndex, totalPages) {
+  if (totalPages <= 1) return [];
+  const EDGE_PAGES = 3;
+  const current = pageIndex + 1;
+  const shown = new Set();
+  for (let i = 1; i <= Math.min(EDGE_PAGES, totalPages); i++) shown.add(i);
+  for (let i = Math.max(1, totalPages - EDGE_PAGES + 1); i <= totalPages; i++) shown.add(i);
+  for (let i = Math.max(1, current - 1); i <= Math.min(totalPages, current + 1); i++) {
+    shown.add(i);
+  }
+  const sorted = Array.from(shown).sort((a, b) => a - b);
+  const nums = [];
+  sorted.forEach((n, idx) => {
+    const prev = sorted[idx - 1];
+    if (prev !== undefined && n - prev === 2) nums.push(prev + 1);
+    else if (prev !== undefined && n - prev > 2) nums.push(`ellipsis-${prev}`);
+    nums.push(n);
+  });
+  return nums;
+}
 
 // ─────────────────────────────────────────────
 // Counter — same +/- counter as HotelSearch.jsx.
@@ -194,10 +251,10 @@ export default function DayStaySearch() {
   // agent-required validation is skipped. currentActiveRole isn't set for
   // single-role logins, so fall back to userRole; admin/super-admin/staff
   // keep the picker exactly as before.
-  const activeRole = (localStorage.getItem("currentActiveRole") || "")
+  const activeRole = (sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
     : storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN");
@@ -206,7 +263,6 @@ export default function DayStaySearch() {
   // agent themselves, so the "Booking Done By Employee" picker is hidden and
   // this name is shown instead. Empty for admin/staff.
   const loggedInAgentName =
-    localStorage.getItem("UserName") ||
     sessionStorage.getItem("UserName") ||
     "";
 
@@ -303,6 +359,81 @@ export default function DayStaySearch() {
     { value: "inhouse", label: "Inhouse" },
   ];
 
+  // Budget slider — the same control /new-booking/hotel and Last Minute have.
+  // [lo, hi] in AED on the price each card shows; an end left at its edge is
+  // null ("no limit"), and null as a whole means the full range (no
+  // filtering). Client-side, like every other filter on this page.
+  const [priceSlider, setPriceSlider] = useState(null);
+
+  // Refund Policy — the same three boxes as /new-booking/hotel; ticking one
+  // clears the others (utils/refundPolicyFilter.js).
+  const [refundPolicy, setRefundPolicy] = useState(NO_REFUND_POLICY);
+
+  // ── Supplier API hotels ─────────────────────────────────────────────────
+  // Driven by hbs.day-stay.api-hotels.enabled on the backend, the same way
+  // Long Stay and Last Minute show supplier hotels. While false (also the state
+  // until the check returns, and if it fails) nothing below runs and this page
+  // works exactly as it did before suppliers were added.
+  const [apiHotelsEnabled, setApiHotelsEnabled] = useState(false);
+  // Channel rows: the channels the company has enabled on /admin/api-access.
+  const [allowedChannelOptions, setAllowedChannelOptions] = useState(null);
+  const [apiHotels, setApiHotels] = useState([]);
+  const [apiPollStatus, setApiPollStatus] = useState("IDLE");
+  // Per-supplier status ({ grn: "COMPLETED", … }) for the progress bar.
+  const [apiChannelStatuses, setApiChannelStatuses] = useState({});
+  // Bumped on every search, so a slow supplier reply from an older search is
+  // dropped instead of landing in the newer results.
+  const apiSearchSeqRef = useRef(0);
+
+  // Results page (0-based), 10 hotels a page like /new-booking/hotel. Back to
+  // the first page whenever the list itself changes — a new search or any
+  // filter / sort — but not while supplier hotels stream in, so the page being
+  // read doesn't jump.
+  const [pageIndex, setPageIndex] = useState(0);
+  useEffect(() => {
+    setPageIndex(0);
+  }, [
+    results,
+    starRating,
+    sortBy,
+    hotelSearchTerm,
+    hotelType,
+    channelType,
+    priceSlider,
+    refundPolicy,
+  ]);
+  // Change page and bring the top of the results back into view — same as
+  // /new-booking/hotel, so paging from the bottom of the list does not leave
+  // the user at the bottom of the next page.
+  const goToPage = (idx, totalPages) => {
+    if (idx < 0 || idx >= totalPages) return;
+    setPageIndex(idx);
+    setTimeout(() => {
+      if (resultsRef.current) {
+        resultsRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }, 0);
+  };
+
+  // Collapsed search-summary strip, measured so the sticky progress bar can sit
+  // just below it (the same arrangement as /new-booking/hotel).
+  const summaryBarRef = useRef(null);
+  const [summaryBarHeight, setSummaryBarHeight] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchDayStayApiHotelsEnabled().then((enabled) => {
+      if (cancelled || !enabled) return;
+      setApiHotelsEnabled(true);
+      fetchChannelOptions().then((options) => {
+        if (!cancelled) setAllowedChannelOptions(options);
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Display currency + rate-conversion helpers. Rates come back from the
   // search endpoint quoted in AED; the conversion here is purely
   // display-only. Admins/SuperAdmins see the dropdown and can switch;
@@ -363,13 +494,13 @@ export default function DayStaySearch() {
   // currency below. Mirrors HotelSearch line-for-line.
   useEffect(() => {
     if (!isAgentRole) return;
-    const cached = localStorage.getItem("userId");
+    const cached = sessionStorage.getItem("userId");
     if (cached) {
       setSelfAgentId(cached);
       return;
     }
     const userName =
-      localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+      sessionStorage.getItem("UserName");
     if (!userName) return;
     let cancelled = false;
     axiosInstance
@@ -378,7 +509,7 @@ export default function DayStaySearch() {
         if (cancelled) return;
         if (res?.data?.id != null) {
           const idv = String(res.data.id);
-          localStorage.setItem("userId", idv);
+          sessionStorage.setItem("userId", idv);
           setSelfAgentId(idv);
         }
       })
@@ -597,7 +728,71 @@ export default function DayStaySearch() {
   const totalAdults = rooms.reduce((a, r) => a + (Number(r.adults) || 0), 0);
   const totalChildren = rooms.reduce((a, r) => a + (Number(r.children) || 0), 0);
   const totalRooms = rooms.length;
+
+  // The AED price a result card shows (the rate for the picked rooms and
+  // guests, markup included) — the same formula as the result card below, so
+  // the Budget slider filters on the number the agent sees. Null = "Rate on
+  // request".
+  const dayStayDisplayRateOf = (hotel) => {
+    const baseRate = Number(hotel?.dayStayRate || 0);
+    if (!(baseRate > 0)) return null;
+    const pct = Number(hotel.percentage || 0);
+    const adultsN = totalAdults || 1;
+    const perRoom =
+      baseRate +
+      Math.max(0, adultsN - 1) * Number(hotel.minAdultRate || 0) +
+      totalChildren * Number(hotel.minChildRate || 0);
+    const grossPerRoom = +(perRoom * (1 + pct / 100)).toFixed(2);
+    return grossPerRoom * (totalRooms || 1);
+  };
   const flatChildAges = rooms.flatMap((r) => r.childAges || []);
+
+  // Refund Policy flags, one per hotel, looked up only while a box is ticked:
+  // the same /api/day-stay-contract/rooms-search call /day-stay-room-list
+  // makes for the hotel (same body, all its contracts), read the way that page
+  // labels each rate. The key carries everything the answer depends on, so a
+  // new search is looked up anew.
+  const refundLookups = useMemo(() => {
+    const byHotel = new Map();
+    results.forEach((h) => {
+      const entry = byHotel.get(h.hotelId);
+      if (!entry) {
+        byHotel.set(h.hotelId, { hotel: h, ids: [h.contractId] });
+        return;
+      }
+      if (!entry.ids.includes(h.contractId)) entry.ids.push(h.contractId);
+      // The card shows the hotel's cheapest contract; the room list gets its %.
+      if (Number(h.dayStayRate || 0) < Number(entry.hotel.dayStayRate || Infinity)) {
+        entry.hotel = h;
+      }
+    });
+    return [...byHotel.values()].map(({ hotel, ids }) => ({
+      hotelId: hotel.hotelId,
+      key: `${hotel.hotelId}|${checkInDate}|${ids.join(",")}|${totalAdults}|${totalChildren}|${totalRooms}`,
+      fetchFlags: () =>
+        fetchDayStayRefundFlags({
+          hotelId: hotel.hotelId,
+          hotelName: hotel.hotelName,
+          hotelAddress: hotel.hotelAddress,
+          starRating: hotel.starRating,
+          contractIds: ids,
+          adults: totalAdults,
+          children: totalChildren,
+          rooms: totalRooms,
+          checkInDate,
+          basePctRate: Number(hotel.percentage || 0),
+          nationality:
+            selectedNationality?.label || selectedNationality?.code || "",
+        }),
+    }));
+  }, [results, checkInDate, totalAdults, totalChildren, totalRooms, selectedNationality]);
+  const refundActive = isRefundPolicyActive(refundPolicy);
+  const { flags: refundFlagsByKey, loading: refundFlagsLoading } =
+    useRefundFlags(refundActive, refundLookups);
+  const refundKeyByHotel = useMemo(
+    () => new Map(refundLookups.map((l) => [l.hotelId, l.key])),
+    [refundLookups],
+  );
 
   const validate = () => {
     const e = {};
@@ -611,6 +806,106 @@ export default function DayStaySearch() {
     return e;
   };
 
+  // Supplier search (switch on only): runs alongside the day-stay one, not
+  // awaited, because suppliers can take a minute or more. Suppliers sell no
+  // day-use rates, so it searches one night from the check-in date.
+  // searchApiHotels never throws, and rows appear as each supplier replies.
+  const startSupplierSearch = () => {
+    const seq = ++apiSearchSeqRef.current;
+    const isCurrent = () => seq === apiSearchSeqRef.current;
+    setApiHotels([]);
+    setApiChannelStatuses({});
+    setApiPollStatus("IN_PROGRESS");
+    searchApiHotels(
+      buildApiSearchPayload({
+        nationalityId: selectedNationality?.value,
+        nationalityCode: selectedNationality?.code,
+        destinationCityId: selectedDestination?.value,
+        destinationCountryId: selectedDestination?.countryId,
+        checkIn: checkInDate,
+        checkOut: dayStayCheckOutDate(checkInDate),
+        rooms,
+        agentId: (isAgentRole ? selfAgentId : agent) || 1,
+      }),
+      (rows) => {
+        if (isCurrent()) setApiHotels(rows.map(toDayStayHotelRow));
+      },
+      {
+        isCancelled: () => !isCurrent(),
+        onStatus: (statuses) => {
+          if (isCurrent()) setApiChannelStatuses({ ...statuses });
+        },
+      },
+    ).then((result) => {
+      if (isCurrent()) {
+        setApiPollStatus(result?.completed ? "COMPLETED" : "TIMEOUT");
+      }
+    });
+  };
+
+  // "View Rooms" on a supplier hotel opens the normal supplier room list (one
+  // night from the check-in date), with dayStayBooking added so the booking is
+  // tagged and listed as Day Stay.
+  const openSupplierRooms = (hotel) => {
+    const apiId = apiIdForApiType(hotel.apiType);
+    if (!apiId) {
+      toast.error(
+        isAgentLogin()
+          ? "Unable to open rooms for this hotel."
+          : `Unknown supplier "${hotel.apiType || ""}" — cannot open rooms.`,
+      );
+      return;
+    }
+    const payload = {
+      checkInDate,
+      checkOutDate: dayStayCheckOutDate(checkInDate),
+      hotelCode: hotel.hotelCode || "",
+      nationality:
+        (selectedNationality?.code || "").length === 2
+          ? selectedNationality.code
+          : " ",
+      agentId: String((isAgentRole ? selfAgentId : agent) || ""),
+      agentName: loggedInAgentName,
+      destinationLabel: selectedDestination?.label || "",
+      nationalityLabel: selectedNationality?.label || "",
+      employeeName: null,
+      nightsCount: 1,
+      apiId,
+      rooms: rooms.map((r) => ({
+        adults: r.adults || 1,
+        children: r.children || 0,
+        childAges: r.childAges || [],
+        adultAges: Array.from({ length: r.adults || 1 }, () => 30),
+      })),
+      parentBookingCode: null,
+      employeeId: selectedEmployee?.value || null,
+      dayStayBooking: true,
+    };
+    const meta = {
+      hotelName: hotel.hotelName,
+      address: hotel.hotelAddress || hotel.city,
+      starRating: hotel.starRating || 0,
+      phone: hotel.contactNumber || "",
+      hotelImage: hotel.hotelImage,
+    };
+    try {
+      sessionStorage.setItem(
+        "roomListPayload",
+        JSON.stringify({
+          payload,
+          meta,
+          currency: { code: displayCurrencyCode, factor: convertFromAed(1) },
+        }),
+      );
+    } catch (e) {
+      console.error("Failed to write sessionStorage:", e);
+    }
+    setClickedHotelIds((prev) =>
+      prev.includes(hotel.contractId) ? prev : [...prev, hotel.contractId],
+    );
+    window.open("/api-room-list", "_blank");
+  };
+
   const handleSearch = async (ev) => {
     ev.preventDefault();
     const errs = validate();
@@ -621,6 +916,12 @@ export default function DayStaySearch() {
     setHasSearched(true);
     setIsEditingSearch(false);
     setResults([]);
+    // A new search has its own price range, so the Budget starts from the full
+    // range again (as on /new-booking/hotel).
+    setPriceSlider(null);
+    // Supplier hotels (switch on only) — started first so they search while
+    // the day-stay contracts load. Nothing runs here while the switch is off.
+    if (apiHotelsEnabled) startSupplierSearch();
     try {
       // checkInTime / checkOutTime intentionally omitted — Day Stay
       // search now lists every hotel with a contract for the picked
@@ -678,6 +979,235 @@ export default function DayStaySearch() {
   // the sticky summary strip then, unless the user chose to modify the search.
   const collapseSearch = hasSearched && !isEditingSearch;
 
+  // Track the summary strip's live height, as /new-booking/hotel does, so the
+  // sticky progress bar sits right below it instead of under it.
+  useEffect(() => {
+    if (!collapseSearch) {
+      setSummaryBarHeight(0);
+      return undefined;
+    }
+    const el = summaryBarRef.current;
+    if (!el) return undefined;
+    setSummaryBarHeight(el.offsetHeight);
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const ro = new ResizeObserver(() => {
+      const h = el.offsetHeight;
+      setSummaryBarHeight((prev) => (prev === h ? prev : h));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [collapseSearch]);
+
+  // Search progress bar — the same bar /new-booking/hotel shows. It counts the
+  // day-stay contract search as one source and, with supplier hotels on, each
+  // supplier as another; it fills as each one answers and goes away once all
+  // have. Until the suppliers report in, it says "Asking suppliers". If a
+  // supplier never finishes it is hidden instead (TIMEOUT), like Long Stay.
+  const supplierKeys = apiHotelsEnabled ? Object.keys(apiChannelStatuses) : [];
+  const suppliersSearching = apiHotelsEnabled && apiPollStatus === "IN_PROGRESS";
+  const progressPollStatus = !hasSearched
+    ? "IDLE"
+    : isLoading || suppliersSearching
+      ? "IN_PROGRESS"
+      : apiHotelsEnabled && apiPollStatus === "TIMEOUT"
+        ? "TIMEOUT"
+        : "COMPLETED";
+  const searchProgress =
+    suppliersSearching && supplierKeys.length === 0
+      ? { total: 0, answered: 0, failed: 0, complete: false }
+      : {
+          total: 1 + supplierKeys.length,
+          answered:
+            (isLoading ? 0 : 1) +
+            supplierKeys.filter((k) => apiChannelStatuses[k] === "COMPLETED")
+              .length,
+          failed: 0,
+          complete: progressPollStatus === "COMPLETED",
+        };
+  const hotelsSoFar =
+    new Set(results.map((h) => h.hotelId)).size +
+    (apiHotelsEnabled ? apiHotels.length : 0);
+
+  // Result card for a supplier hotel (switch on only). Same frame as the
+  // day-stay card below; the chip names the supplier (agents see "API"), and the
+  // price is the supplier's rate for one night from the check-in date.
+  const renderSupplierHotelCard = (hotel) => {
+    const adultsN = totalAdults || 1;
+    const childrenN = totalChildren;
+    const roomsN = totalRooms || 1;
+    return (
+      <Col xs={12} key={hotel.contractId}>
+        <div
+          style={{
+            position: "relative",
+            backgroundColor: "white",
+            border: "1px solid #dee2e6",
+            borderRadius: "12px",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+            overflow: "hidden",
+          }}
+        >
+          <Row className="g-0">
+            <Col md={4}>
+              <div style={{ position: "relative", height: "100%", padding: "10px" }}>
+                {/* Same photo box as /new-booking/hotel (hs-hotel-img in
+                    HotelSearch.css): the photo fills the card's height and is
+                    cropped, so a tall photo can't stretch the card. */}
+                <div
+                  className="ratio rounded-xl overflow-hidden hs-hotel-img"
+                  style={{ "--bs-aspect-ratio": "66.25%" }}
+                >
+                  <img
+                    src={hotel.hotelImage}
+                    alt={hotel.hotelName}
+                    loading="lazy"
+                    onError={(e) => {
+                      e.currentTarget.src =
+                        "https://via.placeholder.com/480x270?text=Hotel";
+                    }}
+                    className="img-cover"
+                  />
+                </div>
+                <div
+                  style={{
+                    position: "absolute",
+                    top: "25px",
+                    left: "25px",
+                    backgroundColor: "rgba(0,0,0,0.7)",
+                    color: "white",
+                    padding: "5px 10px",
+                    borderRadius: "15px",
+                    fontSize: "12px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "5px",
+                  }}
+                >
+                  <FaStar className="text-warning" />
+                  {hotel.starRating || 0}
+                  {/* Supplier pill — same grey pill and capitals as the
+                      /new-booking/hotel result card, and like that page it is
+                      hidden for every agent-side login. */}
+                  {!isAgentLogin() && (
+                    <span
+                      style={{
+                        marginLeft: "5px",
+                        backgroundColor: "#6c757d",
+                        padding: "2px 6px",
+                        borderRadius: "10px",
+                      }}
+                    >
+                      {String(hotel.apiType || "API").toUpperCase()}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </Col>
+            <Col md={8}>
+              <div
+                style={{
+                  padding: "12px 14px",
+                  display: "flex",
+                  flexDirection: "column",
+                  height: "100%",
+                }}
+              >
+                <h6
+                  style={{
+                    fontSize: "1.0rem",
+                    fontWeight: "600",
+                    marginBottom: "4px",
+                    color: "#333",
+                  }}
+                >
+                  {hotel.hotelName || "Hotel Name Not Available"}
+                </h6>
+                <p style={{ fontSize: "0.875rem", color: "#666", marginBottom: "4px" }}>
+                  📍 {hotel.hotelAddress || hotel.city || "Address Not Available"}
+                </p>
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "6px",
+                    marginBottom: "6px",
+                    alignItems: "center",
+                  }}
+                >
+                  <span
+                    style={{
+                      backgroundColor: hotel.fromRate ? "#28a745" : "#6c757d",
+                      color: "white",
+                      padding: "4px 8px",
+                      borderRadius: "4px",
+                      fontSize: "0.75rem",
+                      display: "inline-block",
+                    }}
+                  >
+                    {hotel.fromRate ? "Rate Available" : "Rate Unavailable"}
+                  </span>
+                  <span
+                    style={{
+                      backgroundColor: "#0d6efd",
+                      color: "white",
+                      padding: "4px 8px",
+                      borderRadius: "4px",
+                      fontSize: "0.75rem",
+                      display: "inline-block",
+                    }}
+                  >
+                    1 night stay from the check-in date
+                  </span>
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginTop: "auto",
+                    paddingTop: "8px",
+                    borderTop: "1px solid #eee",
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: "1.1rem", fontWeight: "600", color: "#333" }}>
+                      {hotel.fromRate
+                        ? `from ${displayCurrencyCode} ${convertFromAed(
+                            hotel.fromRate,
+                          ).toLocaleString(undefined, {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}`
+                        : "Rate on request"}
+                    </div>
+                    <small className="text-muted">
+                      1 night · {adultsN} adult{adultsN > 1 ? "s" : ""}
+                      {childrenN
+                        ? `, ${childrenN} child${childrenN > 1 ? "ren" : ""}`
+                        : ""}{" "}
+                      · {roomsN} room{roomsN > 1 ? "s" : ""}
+                    </small>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant={
+                      clickedHotelIds.includes(hotel.contractId)
+                        ? "secondary"
+                        : "primary"
+                    }
+                    onClick={() => openSupplierRooms(hotel)}
+                  >
+                    View Rooms
+                  </Button>
+                </div>
+              </div>
+            </Col>
+          </Row>
+        </div>
+      </Col>
+    );
+  };
+
   return (
     <div className="min-vh-100 bg-light d-flex flex-column">
       <TopBar />
@@ -698,7 +1228,7 @@ export default function DayStaySearch() {
               Shown once results are on screen. "Modify Search" re-expands
               the full form by flipping isEditingSearch. */}
           {collapseSearch && (
-            <div className="hs-summary-bar">
+            <div className="hs-summary-bar" ref={summaryBarRef}>
               <div className="hs-summary-chips">
                 {selectedDestination?.label && (
                   <span className="hs-summary-chip hs-summary-chip-main">
@@ -1109,6 +1639,27 @@ export default function DayStaySearch() {
           </div>
           )}
 
+          {/* ── Progress Bar ──
+              Same bar and placement as /new-booking/hotel: between the search
+              summary/form and the results, sticky while the search runs. The
+              --below-summary modifier moves it down below the collapsed
+              summary strip so the strip doesn't cover it. */}
+          <div
+            className={
+              collapseSearch
+                ? "hs-progress-anchor hs-progress--below-summary"
+                : "hs-progress-anchor"
+            }
+            style={{ "--hs-summary-h": `${summaryBarHeight}px` }}
+          >
+            <HotelSearchProgressBar
+              pollStatus={progressPollStatus}
+              progress={searchProgress}
+              hotelsSoFar={hotelsSoFar}
+              isLoading={isLoading}
+            />
+          </div>
+
           {!hasSearched && (
             <Card className="shadow-sm rounded-xl">
               <Card.Body className="text-center text-muted py-5">
@@ -1124,7 +1675,12 @@ export default function DayStaySearch() {
 
           {hasSearched && (
             <div ref={resultsRef}>
-              {results.length === 0 && !isLoading && (
+              {results.length === 0 &&
+                !isLoading &&
+                // With supplier hotels on, wait for them too before saying
+                // nothing was found. Off, this is the original condition.
+                (!apiHotelsEnabled ||
+                  (apiHotels.length === 0 && apiPollStatus !== "IN_PROGRESS")) && (
                 <Card className="shadow-sm rounded-xl">
                   <Card.Body className="text-center text-muted py-5">
                     <FaSearch className="display-4 text-muted mb-3" />
@@ -1172,8 +1728,62 @@ export default function DayStaySearch() {
                     return acc;
                   }, {}),
                 );
+                // Budget slider + price chart: worked out over every hotel
+                // found (before any other filter), the same way Last Minute
+                // does — PRICE_HISTOGRAM_BARS equal-width bars across
+                // [floor(cheapest), ceil(dearest)], at least 1 wide. Null
+                // (section hidden) until a hotel has a price.
+                // Supplier hotels — an empty list while the switch is off, so
+                // everything below then works on the day-stay contracts alone,
+                // exactly as before.
+                const supplierRows = apiHotelsEnabled ? apiHotels : [];
+                const candidates =
+                  supplierRows.length > 0
+                    ? [...deduped, ...supplierRows]
+                    : deduped;
+                // Channels with at least one hotel in the results: the LIVE /
+                // OFF badge, with the same meaning it has on Long Stay.
+                const channelsWithResults = new Set([
+                  ...deduped.map((h) =>
+                    String(h.channelType || "inhouse").toLowerCase(),
+                  ),
+                  ...supplierRows.map((h) => h.channelType),
+                ]);
+                // The AED price a card shows: the day-stay rate for a
+                // contract, the supplier's one-night rate for a supplier hotel.
+                const priceOf = (h) =>
+                  isSupplierDayStayHotel(h)
+                    ? h.fromRate
+                    : dayStayDisplayRateOf(h);
+                const priceBounds = (() => {
+                  const rates = candidates
+                    .map((h) => priceOf(h))
+                    .filter((r) => Number.isFinite(r) && r > 0);
+                  if (rates.length === 0) return null;
+                  let min = rates[0];
+                  let max = rates[0];
+                  rates.forEach((r) => {
+                    if (r < min) min = r;
+                    if (r > max) max = r;
+                  });
+                  const lo = Math.floor(min);
+                  const hi = Math.max(Math.ceil(max), lo + 1);
+                  const width = (hi - lo) / PRICE_HISTOGRAM_BARS;
+                  const histogram = new Array(PRICE_HISTOGRAM_BARS).fill(0);
+                  rates.forEach((r) => {
+                    const i = Math.floor((r - lo) / width);
+                    histogram[
+                      Math.max(0, Math.min(PRICE_HISTOGRAM_BARS - 1, i))
+                    ] += 1;
+                  });
+                  return { min: lo, max: hi, histogram };
+                })();
+                const budgetMin = priceBounds ? priceBounds.min : 0;
+                const budgetMax = priceBounds ? priceBounds.max : 0;
+                const minPrice = priceSlider?.[0] ?? null;
+                const maxPrice = priceSlider?.[1] ?? null;
                 const needle = hotelSearchTerm.trim().toLowerCase();
-                const displayed = deduped
+                const displayed = candidates
                   .filter((h) =>
                     starRating
                       ? Number(h.starRating) === Number(starRating.value)
@@ -1204,12 +1814,66 @@ export default function DayStaySearch() {
                         )
                       : true,
                   )
+                  // Budget — inclusive AED bounds; an open (null) end sets no
+                  // limit on that side. While a bound is set, hotels without
+                  // a rate ("Rate on request") are hidden. Same rule as
+                  // /new-booking/hotel and Last Minute.
+                  .filter((h) => {
+                    if (minPrice === null && maxPrice === null) return true;
+                    const p = priceOf(h);
+                    return (
+                      Number.isFinite(p) &&
+                      (minPrice === null || p >= minPrice) &&
+                      (maxPrice === null || p <= maxPrice)
+                    );
+                  })
+                  // Refund Policy — strict, as on /new-booking/hotel: only
+                  // hotels known to have a rate of the ticked kind stay;
+                  // unknown (still being checked, or the check failed) is
+                  // hidden too.
+                  .filter((h) =>
+                    refundActive
+                      ? refundPolicyMatches(
+                          refundPolicy,
+                          isSupplierDayStayHotel(h)
+                            ? supplierRefundFlags(h)
+                            : refundFlagsByKey[refundKeyByHotel.get(h.hotelId)],
+                        )
+                      : true,
+                  )
                   .sort((a, b) => {
+                    // Supplier hotels in the list: compare the price each card
+                    // shows, with hotels that have no rate last. Day-stay
+                    // contracts alone keep the original order below.
+                    if (supplierRows.length > 0) {
+                      const pa = Number(priceOf(a)) || 0;
+                      const pb = Number(priceOf(b)) || 0;
+                      if (!pa || !pb) return (pb ? 1 : 0) - (pa ? 1 : 0);
+                      return sortBy === "priceDesc" ? pb - pa : pa - pb;
+                    }
                     const ra = Number(a.dayStayRate || 0);
                     const rb = Number(b.dayStayRate || 0);
                     return sortBy === "priceDesc" ? rb - ra : ra - rb;
                   });
                 const totalDisplayed = displayed.length;
+                // Paging, 10 a page like /new-booking/hotel. The page is kept
+                // inside the range in case the list shrank.
+                const totalPages = Math.max(
+                  1,
+                  Math.ceil(totalDisplayed / PAGE_SIZE),
+                );
+                const currentPage = Math.min(pageIndex, totalPages - 1);
+                const pageHotels = displayed.slice(
+                  currentPage * PAGE_SIZE,
+                  (currentPage + 1) * PAGE_SIZE,
+                );
+                const startEntry =
+                  totalDisplayed === 0 ? 0 : currentPage * PAGE_SIZE + 1;
+                const endEntry = Math.min(
+                  totalDisplayed,
+                  (currentPage + 1) * PAGE_SIZE,
+                );
+                const pageNumbers = pageButtons(currentPage, totalPages);
                 return (
                   <Row className="g-4">
                     {/* Left Sidebar — mirrors HotelSearch.filtersection */}
@@ -1232,15 +1896,9 @@ export default function DayStaySearch() {
                               </button>
                             </div>
 
-                            <Form.Control
-                              type="text"
-                              placeholder="Search Hotel Name..."
-                              className="ps-3 mb-2"
-                              value={hotelSearchTerm}
-                              onChange={(e) =>
-                                setHotelSearchTerm(e.target.value)
-                              }
-                            />
+                            {/* Hotel-name search moved to the top filter
+                                row, next to Clear — same placement as
+                                /new-booking/hotel. Same state and handler. */}
 
                             {/* Display currency — converts the shown
                                 rates from AED into the chosen currency
@@ -1297,6 +1955,106 @@ export default function DayStaySearch() {
                               </>
                             )}
 
+                            {/* Budget — a bar chart of how many hotels sit
+                                at each price, with a two-handle slider under
+                                it to narrow the list. Same control and
+                                placement as /new-booking/hotel. Values are
+                                AED; labels are in the display currency.
+                                Shown once any hotel has a price. */}
+                            {priceBounds && (
+                              <>
+                                <Form.Group className="mb-2">
+                                  <Form.Label className="fw-semibold small">
+                                    Budget
+                                  </Form.Label>
+                                  <PriceRangeSlider
+                                    min={budgetMin}
+                                    max={budgetMax}
+                                    value={[
+                                      priceSlider?.[0] ?? budgetMin,
+                                      priceSlider?.[1] ?? budgetMax,
+                                    ]}
+                                    // An end dragged back to its edge means
+                                    // "no limit" on that side — stored as null.
+                                    onChange={([lo, hi]) =>
+                                      setPriceSlider(
+                                        lo <= budgetMin && hi >= budgetMax
+                                          ? null
+                                          : [
+                                              lo <= budgetMin ? null : lo,
+                                              hi >= budgetMax ? null : hi,
+                                            ],
+                                      )
+                                    }
+                                    histogram={priceBounds.histogram}
+                                    format={(aed) =>
+                                      `${displayCurrencyCode} ${Math.round(
+                                        convertFromAed(aed),
+                                      ).toLocaleString()}`
+                                    }
+                                    ariaLabel="Budget"
+                                  />
+                                </Form.Group>
+
+                                <hr />
+                              </>
+                            )}
+
+                            {/* Refund Policy — same boxes and placement as
+                                /new-booking/hotel. The boxes are mutually
+                                exclusive: ticking one clears the others,
+                                and unticking shows every hotel again. */}
+                            <Form.Group className="mb-2">
+                              <Form.Label className="fw-semibold small">
+                                Refund Policy
+                                {refundActive && refundFlagsLoading && (
+                                  <span className="text-muted fw-normal ms-2">
+                                    Checking…
+                                  </span>
+                                )}
+                              </Form.Label>
+                              <div className="filter-checkbox-list">
+                                <Form.Check
+                                  type="checkbox"
+                                  id="refund-policy-refundable"
+                                  label="Flexible"
+                                  checked={refundPolicy.refundable}
+                                  onChange={(e) =>
+                                    setRefundPolicy({
+                                      ...NO_REFUND_POLICY,
+                                      refundable: e.target.checked,
+                                    })
+                                  }
+                                />
+                                <Form.Check
+                                  type="checkbox"
+                                  id="refund-policy-partial"
+                                  label="Flexible - Partial"
+                                  checked={refundPolicy.partial}
+                                  onChange={(e) =>
+                                    setRefundPolicy({
+                                      ...NO_REFUND_POLICY,
+                                      partial: e.target.checked,
+                                    })
+                                  }
+                                />
+                                <Form.Check
+                                  type="checkbox"
+                                  id="refund-policy-non-refundable"
+                                  label="Non Refundable"
+                                  checked={refundPolicy.nonRefundable}
+                                  onChange={(e) =>
+                                    setRefundPolicy({
+                                      ...NO_REFUND_POLICY,
+                                      nonRefundable: e.target.checked,
+                                    })
+                                  }
+                                />
+                              </div>
+                            </Form.Group>
+
+                            <hr />
+
                             <Form.Group className="mb-2">
                               <Form.Label className="fw-semibold small">
                                 Hotel Type
@@ -1326,6 +2084,15 @@ export default function DayStaySearch() {
                               </div>
                             </Form.Group>
 
+                            {/* Channel — with supplier hotels switched on it
+                                lists the channels enabled on
+                                /admin/api-access with the same LIVE / OFF
+                                badge as Long Stay, and (like Long Stay) is
+                                hidden for agent logins so they never see a
+                                supplier name. Switched off, it is the
+                                original Inhouse-only list. */}
+                            {(!apiHotelsEnabled || !isAgentLogin()) && (
+                              <>
                             <hr />
 
                             <Form.Group>
@@ -1333,9 +2100,15 @@ export default function DayStaySearch() {
                                 Channel
                               </Form.Label>
                               <div className="filter-checkbox-list">
-                                {channelTypeOptions.map((item) => (
-                                  <Form.Check
+                                {(apiHotelsEnabled
+                                  ? allowedChannelOptions || channelTypeOptions
+                                  : channelTypeOptions
+                                ).map((item) => (
+                                  <div
                                     key={item.value}
+                                    className="d-flex align-items-center justify-content-between gap-2"
+                                  >
+                                  <Form.Check
                                     type="checkbox"
                                     id={`channel-${item.value}`}
                                     label={item.label}
@@ -1353,9 +2126,37 @@ export default function DayStaySearch() {
                                         );
                                     }}
                                   />
+                                  {/* Only meaningful once there are several channels. */}
+                                  {apiHotelsEnabled && (
+                                    <Badge
+                                      bg={
+                                        channelsWithResults.has(
+                                          String(item.value).toLowerCase(),
+                                        )
+                                          ? "success"
+                                          : "danger"
+                                      }
+                                      title={
+                                        channelsWithResults.has(
+                                          String(item.value).toLowerCase(),
+                                        )
+                                          ? "Hotels from this channel are in the results"
+                                          : "No hotels from this channel in the results"
+                                      }
+                                    >
+                                      {channelsWithResults.has(
+                                        String(item.value).toLowerCase(),
+                                      )
+                                        ? "LIVE"
+                                        : "OFF"}
+                                    </Badge>
+                                  )}
+                                  </div>
                                 ))}
                               </div>
                             </Form.Group>
+                              </>
+                            )}
                           </Card.Body>
                         </Card>
                       </div>
@@ -1363,7 +2164,7 @@ export default function DayStaySearch() {
 
                     {/* Right Content — sort bar + entry counter + cards */}
                     <Col lg={9}>
-                      {results.length > 0 && (
+                      {(results.length > 0 || supplierRows.length > 0) && (
                         <Card className="shadow-sm rounded-xl mb-3 filtersection">
                           <Card.Body className="p-2">
                             <div className="d-flex align-items-center gap-3 flex-wrap">
@@ -1420,30 +2221,56 @@ export default function DayStaySearch() {
                                   setHotelSearchTerm("");
                                   setHotelType([]);
                                   setChannelType([]);
+                                  setPriceSlider(null);
+                                  setRefundPolicy(NO_REFUND_POLICY);
                                 }}
                               >
                                 Clear
                               </Button>
+
+                              {/* Hotel-name search — moved here from the
+                                  left sidebar, same spot and size as on
+                                  /new-booking/hotel. Same state and
+                                  handler. ms-auto keeps it at the right
+                                  edge; on narrow screens it wraps below
+                                  the sort pills. */}
+                              <Form.Control
+                                type="text"
+                                placeholder="Search Hotel Name..."
+                                value={hotelSearchTerm}
+                                onChange={(e) =>
+                                  setHotelSearchTerm(e.target.value)
+                                }
+                                className="ms-auto ps-3"
+                                style={{
+                                  height: "36px",
+                                  maxWidth: "260px",
+                                  minWidth: "180px",
+                                }}
+                              />
                             </div>
                           </Card.Body>
                         </Card>
                       )}
 
                       {/* Entry counter — mirrors HotelSearch's "Showing
-                          X to Y of Z entries" strip. Day-Stay results
-                          aren't paginated client-side so start/end are
-                          always 1 and totalDisplayed respectively. */}
-                      {results.length > 0 && (
+                          X to Y of Z entries" strip, for the page on
+                          screen (10 hotels a page). */}
+                      {(results.length > 0 || supplierRows.length > 0) && (
                         <div className="d-flex justify-content-between align-items-center mb-3">
                           <small className="text-muted fw-semibold">
-                            Showing {totalDisplayed > 0 ? 1 : 0} to{" "}
-                            {totalDisplayed} of {totalDisplayed} entries
+                            Showing {startEntry} to {endEntry} of{" "}
+                            {totalDisplayed} entries
                           </small>
                         </div>
                       )}
 
                       <Row className="g-4">
-                        {displayed.map((hotel) => {
+                        {pageHotels.map((hotel) => {
+                  // Supplier hotels get their own card (switch on only).
+                  if (isSupplierDayStayHotel(hotel)) {
+                    return renderSupplierHotelCard(hotel);
+                  }
                   const baseRate = Number(hotel.dayStayRate || 0);
                   const pct = Number(hotel.percentage || 0);
                   // Pax-adjusted: base rate per room + extra adults +
@@ -1497,6 +2324,15 @@ export default function DayStaySearch() {
                                 padding: "10px",
                               }}
                             >
+                              {/* Same photo box as /new-booking/hotel
+                                  (hs-hotel-img in HotelSearch.css): the
+                                  photo fills the card's height and is
+                                  cropped, so a tall photo can't stretch
+                                  the card. */}
+                              <div
+                                className="ratio rounded-xl overflow-hidden hs-hotel-img"
+                                style={{ "--bs-aspect-ratio": "66.25%" }}
+                              >
                               <img
                                 src={
                                   hotel.hotelImage ||
@@ -1508,13 +2344,9 @@ export default function DayStaySearch() {
                                   e.currentTarget.src =
                                     "https://via.placeholder.com/480x270?text=Day+Stay";
                                 }}
-                                style={{
-                                  width: "100%",
-                                  height: "100%",
-                                  objectFit: "cover",
-                                  borderRadius: "9px",
-                                }}
+                                  className="img-cover"
                               />
+                              </div>
                               <div
                                 style={{
                                   position: "absolute",
@@ -1532,6 +2364,10 @@ export default function DayStaySearch() {
                               >
                                 <FaStar className="text-warning" />
                                 {hotel.starRating || 0}
+                                {/* Hidden for agent-side logins, like the
+                                    pill on the /new-booking/hotel result
+                                    card. */}
+                                {!isAgentLogin() && (
                                 <span
                                   style={{
                                     marginLeft: "5px",
@@ -1542,6 +2378,7 @@ export default function DayStaySearch() {
                                 >
                                   DAY STAY
                                 </span>
+                                )}
                               </div>
                             </div>
                           </Col>
@@ -1798,6 +2635,42 @@ export default function DayStaySearch() {
                   );
                 })}
                       </Row>
+
+                      {/* Pagination — same buttons, look and place as
+                          /new-booking/hotel, under the list. Shown once
+                          there is more than one page. */}
+                      {totalDisplayed > 0 && totalPages > 1 && (
+                        <div className="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4 mt-3">
+                          <small className="text-muted fw-semibold"></small>
+                          <Pagination className="mb-0 pagination-modern">
+                            <Pagination.Prev
+                              disabled={currentPage === 0}
+                              onClick={() =>
+                                goToPage(currentPage - 1, totalPages)
+                              }
+                            />
+                            {pageNumbers.map((n) =>
+                              typeof n === "number" ? (
+                                <Pagination.Item
+                                  key={n}
+                                  active={n === currentPage + 1}
+                                  onClick={() => goToPage(n - 1, totalPages)}
+                                >
+                                  {n}
+                                </Pagination.Item>
+                              ) : (
+                                <Pagination.Ellipsis key={n} disabled />
+                              ),
+                            )}
+                            <Pagination.Next
+                              disabled={currentPage >= totalPages - 1}
+                              onClick={() =>
+                                goToPage(currentPage + 1, totalPages)
+                              }
+                            />
+                          </Pagination>
+                        </div>
+                      )}
                     </Col>
                   </Row>
                 );

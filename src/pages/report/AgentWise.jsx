@@ -15,6 +15,8 @@ import Agent from "../../components/filters/Agent";
 import City from "../../components/filters/City";
 import Country from "../../components/filters/Country";
 import Supplier from "../../components/filters/Supplier";
+import { escapeHtml } from "../../utils/safeHtml";
+import { csvCell } from "../../utils/csvSafe";
 
 function AgentWise() {
 
@@ -24,8 +26,8 @@ const [emailAddress, setEmailAddress] = useState("");
 const [isSending, setIsSending] = useState(false);
 const [reportType,setReportType] = useState(null);
 
-const activeRole = (localStorage.getItem("currentActiveRole") || "").trim().toUpperCase();
-const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+const activeRole = (sessionStorage.getItem("currentActiveRole") || "").trim().toUpperCase();
+const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
 const isAgentRole = activeRole ? activeRole === "AGENT" : (storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN"));
 
 // Pagination states
@@ -198,7 +200,7 @@ const handleSendEmail = async () => {
   printWindow.document.write(`
     <html>
       <head>
-        <title>Agent Wise Report - ${reportType === 'inhouse' ? 'Inhouse' : 'API'}</title>
+        <title>Agent Wise Report - ${escapeHtml(reportType === 'inhouse' ? 'Inhouse' : 'API')}</title>
         <style>
           body { font-family: Arial, sans-serif; margin: 20px; }
           table { width: 100%; border-collapse: collapse; }
@@ -208,11 +210,11 @@ const handleSendEmail = async () => {
         </style>
       </head>
       <body>
-        <h1>Agent Wise Report - ${reportType === 'inhouse' ? 'Inhouse' : 'API'}</h1>
+        <h1>Agent Wise Report - ${escapeHtml(reportType === 'inhouse' ? 'Inhouse' : 'API')}</h1>
         <table>
           <thead>
             <tr>
-              ${columns.map(col => `<th>${col}</th>`).join('')}
+              ${columns.map(col => `<th>${escapeHtml(col)}</th>`).join('')}
             </tr>
           </thead>
           <tbody>
@@ -220,27 +222,27 @@ const handleSendEmail = async () => {
               if (reportType === 'inhouse') {
                 return `
                   <tr>
-                    <td>${booking.slNo}</td>
-                    <td>${booking.agentName}</td>
-                    <td>${booking.hotelName}</td>
-                    <td>${booking.hotelType}</td>
-                    <td>${booking.HotelCategory}</td>
-                    <td>${booking.roomCategory}</td>
-                    <td>${booking.noOfBooking}</td>
-                    <td>${booking.cancelledBooking}</td>
+                    <td>${escapeHtml(booking.slNo)}</td>
+                    <td>${escapeHtml(booking.agentName)}</td>
+                    <td>${escapeHtml(booking.hotelName)}</td>
+                    <td>${escapeHtml(booking.hotelType)}</td>
+                    <td>${escapeHtml(booking.HotelCategory)}</td>
+                    <td>${escapeHtml(booking.roomCategory)}</td>
+                    <td>${escapeHtml(booking.noOfBooking)}</td>
+                    <td>${escapeHtml(booking.cancelledBooking)}</td>
                   </tr>
                 `;
               } else {
                 return `
                   <tr>
-                    <td>${booking.slNo}</td>
-                    <td>${booking.hotelName}</td>
-                    <td>${booking.platform}</td>
-                    <td>${booking.checkIn}</td>
-                    <td>${booking.checkOut}</td>
-                    <td>${booking.hotelType}</td>
-                    <td>${booking.noOfRooms}</td>
-                    <td>${booking.customerName}</td>
+                    <td>${escapeHtml(booking.slNo)}</td>
+                    <td>${escapeHtml(booking.hotelName)}</td>
+                    <td>${escapeHtml(booking.platform)}</td>
+                    <td>${escapeHtml(booking.checkIn)}</td>
+                    <td>${escapeHtml(booking.checkOut)}</td>
+                    <td>${escapeHtml(booking.hotelType)}</td>
+                    <td>${escapeHtml(booking.noOfRooms)}</td>
+                    <td>${escapeHtml(booking.customerName)}</td>
                   </tr>
                 `;
               }
@@ -305,14 +307,8 @@ const handleSendEmail = async () => {
     : ['Sl.No', 'Hotel Name', 'Platform', 'Check In', 'Check Out', 'Hotel Type', 'No of Rooms', 'Customer Name'];
   
   // Create CSV content with proper escaping
-  const escapeCSV = (value) => {
-    if (value === null || value === undefined) return '';
-    const stringValue = String(value);
-    if (stringValue.includes(',') || stringValue.includes('\n') || stringValue.includes('"')) {
-      return `"${stringValue.replace(/"/g, '""')}"`;
-    }
-    return stringValue;
-  };
+  // csvCell neutralises text a spreadsheet would run as a formula.
+  const escapeCSV = (value) => csvCell(value);
   
   const csvContent = [
     headers.map(escapeCSV).join(','),

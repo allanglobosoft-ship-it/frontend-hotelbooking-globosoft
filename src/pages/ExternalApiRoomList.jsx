@@ -35,8 +35,20 @@ import {
 import { useLocation, useNavigate } from "react-router-dom";
 import "../styles/RoomList.css";
 import axiosInstance from "../components/AxiosInstance";
+import { SUPPLIER_SEARCH_TIMEOUT_MS } from "../config/apiTimeouts";
 import toast from "react-hot-toast";
 import { formatFlexibleDate } from "../utils/dateUtils";
+import { isAdminLogin, isAgentLogin, stripSupplierSuffix, supplierCodeForBlock, supplierDisplayName, withoutSupplierName } from "../utils/supplierDisplay";
+import AdminSupplierStrip from "../components/AdminSupplierStrip";
+import { streamRoomSearch } from "../utils/roomSearchStream";
+import { cleanRoomName, fullRoomName, roomMatchKey } from "../utils/roomNameMatch";
+import {
+  isNonRefundableRate,
+  sumSelectedRooms,
+  slotRateValue,
+  buildInhouseSingleBookingData,
+  buildInhouseMultiBookingData,
+} from "../utils/inhouseBookingData";
 import RoomFilters from "../components/roomlist/RoomFilters";
 import useRoomFilters from "../hooks/useRoomFilters";
 import { roomTypeNameForRate } from "../utils/mealPlanCategory";
@@ -49,9 +61,15 @@ import {
 } from "../components/grn/GrnPolicy";
 import {
   RateDeadlinePill,
-  resolveDeadlineDate,
-  isDeadlinePassed,
+  resolveInhouseDeadline,
 } from "../utils/rateDeadline";
+import RefundBadge from "../components/RefundBadge";
+import {
+  labelOfRate,
+  refundFilterOfPolicy,
+  repricedTerms,
+} from "../utils/refundLabel";
+import { sanitizeSupplierHtml } from "../utils/safeHtml";
 
 /**
  * Renders "Valid: <from> - <to>" for a policy validity period, or null when
@@ -108,6 +126,148 @@ const stripHtmlTags = (raw) => {
   return s;
 };
 
+/**
+ * First hotel of an IWTX / X3 accurate-rate (reprice) reply.
+ *
+ * When the picked rate can no longer be sold (typically fewer rooms of that
+ * type are left than were requested) the vendor answers with an empty
+ * <Hotels/> and an ErrorMessage such as "Not Available". The callers read
+ * `hotels.hotel[0]` straight away, so that reply surfaced to the agent as
+ * "Cannot read properties of null (reading '0')". Throw a readable error in
+ * the shape the callers' catch already reads instead. A reply that carries a
+ * hotel with rooms is returned untouched, so working flows are unchanged.
+ */
+const ROOM_NO_LONGER_AVAILABLE_MSG =
+  "This room is no longer available for the selected number of rooms. " +
+  "Please choose another room or reduce the number of rooms.";
+
+const repricedHotelOrThrow = (resp) => {
+  const hotel = resp?.data?.hotels?.hotel?.[0];
+  if (hotel?.roomTypeDetails?.rooms?.room) return hotel;
+  const vendorMsg = resp?.data?.errorMessage?.msg;
+  const message =
+    !vendorMsg || /not\s*available/i.test(vendorMsg)
+      ? ROOM_NO_LONGER_AVAILABLE_MSG
+      : vendorMsg;
+  const err = new Error(message);
+  err.response = { data: { message } };
+  throw err;
+};
+
+// ─── Hotels mapped across several suppliers ──────────────────────────────
+// /api/hotel-rooms/search returns ONE block per mapped supplier (hotel_mapping,
+// same master_hotel_id), each tagged with apiId / supplierHotelCode, and apiType
+// for logins that may see supplier names. Route on apiId: agents get no apiType.
+// This page shows ONE hotel and lists every block's room types one by one;
+// each rate keeps `_blockIndex` (set when there is more than one block, and
+// always on a streamed search) so it is re-checked and booked through its OWN
+// supplier's flow.
+
+// One-shot hand-off written by RoomList.jsx when the in-house room search came
+// back with other suppliers' blocks: { payloadKey, response }.
+const ROOM_LIST_PREFETCH_KEY = "roomListPrefetch";
+
+// In-house booking page — the route RoomList opens in the normal (non-
+// religious, non-24-hour) flow.
+const INHOUSE_BOOKING_PAGE_ROUTE = "/hotel-booking-page";
+
+// Every pop-up on this page. Its text can name a supplier: this page's own
+// per-supplier wording, or what a prebook or recheck endpoint answered.
+const alert = (message) => window.alert(withoutSupplierName(message));
+
+const isInhouseResponseBlock = (h) =>
+  String(h?.apiType || "").trim().toUpperCase() === "INHOUSE" ||
+  Number(h?.apiId) === 1;
+
+/**
+ * One list of every supplier block's room types for a mapped hotel. Each
+ * supplier's room type stays its own entry, even when two suppliers use the
+ * same name (Room Mapping off; combineSameRooms below handles on); the render
+ * sorts them cheapest first. Each rate keeps its `_blockIndex`, and each room
+ * type gets a `_catKey` that does not change while more suppliers arrive, so an
+ * open room type stays open. A single block is returned untouched.
+ */
+const mergeRoomCategories = (blocks) => {
+  if (!Array.isArray(blocks) || blocks.length === 0) return [];
+  if (blocks.length === 1) return blocks[0]?.roomCategories || [];
+  return blocks.flatMap((block, blockIndex) =>
+    (block?.roomCategories || []).map((cat, catIndex) => ({
+      ...cat,
+      _catKey: `${blockIndex}-${catIndex}`,
+      availableRates: [...(cat.availableRates || [])],
+    })),
+  );
+};
+
+/**
+ * Room Mapping on: one entry per room across all suppliers, matching on each
+ * supplier's full room name, so "Club Room, 1 King Bed" and "Club Room, 2 Twin
+ * Beds" stay apart even though the backend shortens both to "Club Room". Rate
+ * objects are kept as they are, so a picked rate stays the same object and each
+ * rate still books through its own supplier. `_catKey` comes from the name, so a
+ * room stays open while more suppliers answer. A name that can't be matched
+ * keeps its own entry.
+ */
+const combineSameRooms = (categories) => {
+  const rooms = new Map();
+  categories.forEach((cat, index) => {
+    const nameKey = roomMatchKey(fullRoomName(cat));
+    const key = nameKey ? `room-${nameKey}` : cat?._catKey || `unnamed-${index}`;
+    const room = rooms.get(key);
+    if (room) {
+      room.availableRates.push(...(cat?.availableRates || []));
+    } else {
+      rooms.set(key, {
+        ...cat,
+        _catKey: key,
+        availableRates: [...(cat?.availableRates || [])],
+      });
+    }
+  });
+  return [...rooms.values()];
+};
+
+/**
+ * One line above the room types while a mapped hotel's suppliers are still
+ * answering. Afterwards staff (never agents) see which supplier was left out
+ * because it timed out or failed.
+ */
+function SupplierProgressNote({ progress, showNames }) {
+  if (!progress || (progress.expected || 0) < 2) return null;
+  if (!progress.done) {
+    const pending = Math.max(0, progress.expected - progress.answered);
+    if (pending === 0) return null;
+    return (
+      <Alert variant="info" className="py-2 small d-flex align-items-center gap-2 mb-3" role="status">
+        <Spinner animation="border" size="sm" />
+        <span>
+          Checking {pending} more supplier{pending === 1 ? "" : "s"} for this
+          hotel — more room types may still appear.
+        </span>
+      </Alert>
+    );
+  }
+  if (progress.interrupted) {
+    return (
+      <Alert variant="warning" className="py-2 small mb-3">
+        The connection dropped before every supplier answered. Search again to
+        see all room types.
+      </Alert>
+    );
+  }
+  const missing = (progress.statuses || []).filter((s) =>
+    ["TIMEOUT", "ERROR", "BUSY"].includes(s?.status),
+  );
+  if (!showNames || missing.length === 0) return null;
+  const why = { TIMEOUT: "no answer in time", BUSY: "busy", ERROR: "error" };
+  return (
+    <Alert variant="warning" className="py-2 small mb-3">
+      Not included this time:{" "}
+      {missing.map((s) => `${s.apiType} (${why[s.status]})`).join(", ")}
+    </Alert>
+  );
+}
+
 function AccordionToggleButton({ eventKey, isActive }) {
   const decoratedOnClick = useAccordionButton(eventKey);
   return (
@@ -133,6 +293,8 @@ const ExternalApiRoomList = () => {
   // ─────────────────────────────── state ───────────────────────────────
   const [roomData, setRoomData] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Streamed search progress: { expected, answered, statuses[], done, interrupted }.
+  const [supplierProgress, setSupplierProgress] = useState(null);
   const [error, setError] = useState(null);
   const [showBookingModal, setShowBookingModal] = useState(false);
   const [hotelStaticData, setHotelStaticData] = useState(null);
@@ -150,6 +312,11 @@ const ExternalApiRoomList = () => {
   // modal (apiId 12/15). Kept as an array because ApiBookingPageForHotels
   // reads bookingData.selectedRate via .map/.flatMap.
   const [selectedRate, setSelectedRate] = useState([]);
+  // Index (in roomData.hotels) of the supplier block the Room Details modal's
+  // `selectedRate` belongs to. Always 0 for a single-supplier hotel; for a
+  // mapped hotel it is the block of the rate(s) being re-checked, so the
+  // modal's Continue books with that supplier's apiId + hotel code.
+  const [modalBlockIndex, setModalBlockIndex] = useState(0);
 
   // Display currency carried over from the hotel search. All rates remain
   // AED internally; this only re-formats numbers on screen.
@@ -230,13 +397,25 @@ const ExternalApiRoomList = () => {
   // out and GRN rejected the booking with 1513 "TW Issue".
   const [grnRecheckCache, setGrnRecheckCache] = useState({});
   const GRN_RECHECK_TTL_MS = 2 * 60 * 1000;
-  const grnRecheckKey = (rate) =>
-    [
-      roomData?.payload?.hotelCode,
-      roomData?.payload?.checkInDate,
-      roomData?.payload?.checkOutDate,
+  const grnRecheckKey = (rate) => {
+    // The rate's own supplier hotel code (mapped hotels hold several).
+    const ratePayload = payloadForRate(rate);
+    return [
+      ratePayload?.hotelCode,
+      ratePayload?.checkInDate,
+      ratePayload?.checkOutDate,
       rate?.rateKey,
     ].join("|");
+  };
+
+  // In-house rates of a mapped hotel (see INHOUSE handling below):
+  // Terms & Conditions are not in the search response, so they are
+  // lazy-fetched per local hotel id like RoomList does, and the
+  // free-cancellation deadline comes from the hotel's max cancellation
+  // nights (same rule RoomList / HotelBookingPage use).
+  const [inhouseTermsCache, setInhouseTermsCache] = useState({});
+  const [inhouseMaxCancellationNights, setInhouseMaxCancellationNights] =
+    useState(null);
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -258,9 +437,119 @@ const ExternalApiRoomList = () => {
     // HotelSearchCode as the rateKey — GoGlobal's session handle for
     // Booking Valuation / Booking Creation. No page-load recheck.
     GOGLOBAL: 21,
+    // In-house inventory. Only reachable on this page through a hotel mapped
+    // across several suppliers — its rates book via the in-house flow.
+    INHOUSE: 1,
   };
 
-  const activeUserRole = localStorage.getItem("currentActiveRole");
+  const activeUserRole = sessionStorage.getItem("currentActiveRole");
+
+  // ───────────────── per-supplier block helpers ───────────────────────
+  // For a hotel mapped across several suppliers roomData.hotels holds one
+  // block per supplier and every rate carries `_blockIndex`. For every other
+  // hotel there is one block, `_blockIndex` is absent and all of these
+  // resolve to hotels[0] / the search payload — i.e. today's behaviour.
+  const responseBlocks = roomData?.hotels || [];
+  const isMergedResponse = responseBlocks.length > 1;
+  // Room Mapping setting, only ever true for a mapped hotel: combine same-named
+  // rooms and show the cheapest rate. While the suppliers are still answering
+  // the value comes from the stream's first line (supplierProgress).
+  const combineRooms = Boolean(
+    roomData?.roomMappingEnabled ?? supplierProgress?.roomMappingEnabled,
+  );
+  const blockIndexOfRate = (rate) =>
+    Number.isInteger(rate?._blockIndex) && responseBlocks[rate._blockIndex]
+      ? rate._blockIndex
+      : 0;
+  const blockOfRate = (rate) => responseBlocks[blockIndexOfRate(rate)];
+
+  // Resolve the effective supplier apiId for a response block. Blocks of
+  // /api/hotel-rooms/search carry their own numeric `apiId` (and `apiType`);
+  // map `apiType` back to the numeric id that /api/hotel-booking/create and
+  // the accurate-rate endpoints expect when `apiId` is absent. Falls back to
+  // whatever the search payload carried.
+  const resolveApiId = (hotelObj) => {
+    const blockApiId = Number(hotelObj?.apiId);
+    if (Number.isFinite(blockApiId) && blockApiId > 0) return blockApiId;
+    const payloadApiId = roomData?.payload?.apiId;
+    const apiType =
+      hotelObj?.apiType ||
+      (typeof hotelObj?.hotelName === "string"
+        ? hotelObj.hotelName.split("(").pop().replace(")", "")
+        : "");
+    return apiIdMapping[String(apiType || "").toUpperCase()] || payloadApiId;
+  };
+  const apiIdOfRate = (rate) => resolveApiId(blockOfRate(rate));
+  // Supplier apiId the per-rate selection rules (Atharva vendor groups, GRN
+  // bundles) key on. Single-supplier hotels keep reading the search
+  // payload's apiId exactly as before.
+  const selectionApiIdOfRate = (rate) =>
+    isMergedResponse ? apiIdOfRate(rate) : roomData?.payload?.apiId;
+  // Multi-room, mapped hotel: index of another room slot holding a rate of a
+  // DIFFERENT supplier block than `rate` (→ the two can't be combined in one
+  // booking), or -1. Always -1 for single-supplier hotels.
+  const crossSupplierLockSlot = (roomIndex, rate) => {
+    if (!isMergedResponse) return -1;
+    const rateBlockIndex = blockIndexOfRate(rate);
+    return selectedRooms.findIndex(
+      (r, i) =>
+        i !== roomIndex &&
+        r?.selectedRate &&
+        blockIndexOfRate(r.selectedRate) !== rateBlockIndex,
+    );
+  };
+
+  // Search payload re-targeted at one supplier block: that supplier's apiId
+  // and the hotel code its room search ran with (supplierHotelCode). For the
+  // block of the supplier the search was made for this reduces to the search
+  // payload itself (+ the resolved apiId, as the booking handoff always did).
+  const payloadForBlock = (block) => {
+    const payload = roomData?.payload || {};
+    if (!block) return payload;
+    const apiId = resolveApiId(block);
+    const sameSupplier = Number(apiId) === Number(payload.apiId);
+    return {
+      ...payload,
+      apiId,
+      hotelCode:
+        block.supplierHotelCode ||
+        (sameSupplier ? payload.hotelCode : block.hotelId) ||
+        payload.hotelCode,
+    };
+  };
+  const payloadForRate = (rate) => payloadForBlock(blockOfRate(rate));
+
+  // Local (numeric) hotel id of an in-house block: hotelId is the local id
+  // as a string; supplierHotelCode is "IN<localId>".
+  const inhouseLocalHotelId = (block) => {
+    if (/^\d+$/.test(String(block?.hotelId ?? ""))) return Number(block.hotelId);
+    const m = /^IN(\d+)$/i.exec(String(block?.supplierHotelCode || ""));
+    return m ? Number(m[1]) : null;
+  };
+
+  // In-house rates book through HotelBookingPage, which reads payload.apiId
+  // (create payload) and selectedRate.hotelId (policies / terms / max
+  // cancellation nights / create). Re-target the search payload at the
+  // in-house block so this works even when the card the operator clicked on
+  // the search page was another supplier's.
+  const inhousePayloadForBlock = (block) => {
+    const payload = roomData?.payload || {};
+    const localId = inhouseLocalHotelId(block);
+    return {
+      ...payload,
+      apiId: apiIdMapping.INHOUSE,
+      hotelCode:
+        block?.supplierHotelCode ||
+        (localId != null ? `IN${localId}` : payload.hotelCode),
+      hotelId: localId ?? undefined,
+    };
+  };
+  // The in-house block as the shared builders read it — the header-style
+  // name (no " (INHOUSE)" supplier suffix) so it never reaches the booking.
+  const inhouseHotelForBooking = (block) => ({
+    ...block,
+    hotelName: stripSupplierSuffix(block?.hotelName),
+  });
 
   // ─────────────────────────── helpers ────────────────────────────────
 
@@ -286,7 +575,8 @@ const ExternalApiRoomList = () => {
     if (atharvaPrebookCache[rate.rateKey]) {
       return atharvaPrebookCache[rate.rateKey];
     }
-    const { payload } = roomData || {};
+    // The rate's own supplier block (hotel code) — mapped hotels hold several.
+    const payload = payloadForRate(rate);
     const req = {
       agentId: payload?.agentId ? String(payload.agentId) : null,
       cityId: payload?.cityId || null,
@@ -307,7 +597,7 @@ const ExternalApiRoomList = () => {
     };
     try {
       const resp = await axiosInstance.post(
-        "/api/hotel-booking/atharva/prebook",
+        "/api/hotel-booking/rate-check/3",
         req,
       );
       const data = resp?.data || {};
@@ -345,7 +635,8 @@ const ExternalApiRoomList = () => {
     if (cached && Date.now() - cached.at < GRN_RECHECK_TTL_MS) {
       return cached.data;
     }
-    const { payload } = roomData || {};
+    // The rate's own supplier block (hotel code) — mapped hotels hold several.
+    const payload = payloadForRate(rate);
     const req = {
       hotelCode: payload?.hotelCode,
       checkInDate: payload?.checkInDate,
@@ -359,7 +650,7 @@ const ExternalApiRoomList = () => {
     };
     try {
       const resp = await axiosInstance.post(
-        "/api/hotel-booking/grn/recheck",
+        "/api/hotel-booking/rate-check/20",
         req,
       );
       const data = resp?.data || {};
@@ -389,8 +680,9 @@ const ExternalApiRoomList = () => {
    *     nonRefundable, roomCategory, mealPlan }
    */
   const fetchDarinaPrebook = async (rate) => {
-    const payload = roomData?.payload || {};
-    const hotel = roomData?.hotels?.[0] || {};
+    // The rate's own supplier block — mapped hotels hold several.
+    const hotel = blockOfRate(rate) || {};
+    const payload = payloadForBlock(blockOfRate(rate));
     const firstRoom = payload?.rooms?.[0] || {};
     const req = {
       agentId: payload?.agentId ? String(payload.agentId) : null,
@@ -410,7 +702,7 @@ const ExternalApiRoomList = () => {
     };
     try {
       const resp = await axiosInstance.post(
-        "/api/hotel-booking/darina/prebook",
+        "/api/hotel-booking/rate-check/16",
         req,
       );
       return resp?.data || { success: false, message: "Empty response" };
@@ -449,7 +741,7 @@ const ExternalApiRoomList = () => {
     };
     try {
       const resp = await axiosInstance.post(
-        "/api/hotel-booking/ratehawk/prebook",
+        "/api/hotel-booking/rate-check/14",
         req,
       );
       return resp?.data || { success: false, message: "Empty response" };
@@ -485,10 +777,12 @@ const ExternalApiRoomList = () => {
       arrivalDate: payload.checkInDate,
       agentId: payload?.agentId != null ? String(payload.agentId) : null,
       currentTotalRate: rate?.totalRate ?? null,
+      // Valuation can move the deadline; the charges stay as the search gave them.
+      refundBands: rate?.refundTerms?.bands ?? null,
     };
     try {
       const resp = await axiosInstance.post(
-        "/api/hotel-booking/goglobal/valuation",
+        "/api/hotel-booking/rate-check/21",
         req,
       );
       return resp?.data || { success: false, message: "Empty response" };
@@ -579,6 +873,7 @@ const ExternalApiRoomList = () => {
             underCancellation: recheck.underCancellation,
             policyTimezone: recheck.policyTimezone,
             nonRefundable: recheck.nonRefundable,
+            refundTerms: recheck.refundTerms,
           });
           setPoliciesModalData({
             cancellationPolicies: recheck.cancellationPolicies || fallbackCancellation,
@@ -631,15 +926,55 @@ const ExternalApiRoomList = () => {
       // modal. The GoGlobal Remark is already part of cancellation[] (the BE
       // appends it), so it renders in the policy list below the deadline.
       const isGoGlobal = supplierApiId === apiIdMapping.GOGLOBAL;
+      // In-house rate of a mapped hotel: Terms & Conditions are not in the
+      // search response, so lazy-fetch them (cached per local hotel id) from
+      // the same endpoint RoomList / HotelBookingPage use.
+      const inhouseTermsHotelId =
+        supplierApiId === apiIdMapping.INHOUSE && inlineTerms.length === 0
+          ? inhouseLocalHotelId(hotelDetail)
+          : null;
+      const cachedInhouseTerms =
+        inhouseTermsHotelId != null
+          ? inhouseTermsCache[inhouseTermsHotelId]
+          : undefined;
       setPrebookError(null);
       setPoliciesModalData({
         cancellationPolicies: cancellation,
-        termsAndConditions: inlineTerms,
+        termsAndConditions: cachedInhouseTerms || inlineTerms,
         selectedRoomLabel: label,
         nonRefundable: isNonRefundable,
         deadlineDate: isGoGlobal ? rate?.deadlineDate || null : null,
+        // Marks the modal content the T&C fetch below belongs to, so a late
+        // response never lands on a modal since reopened for another rate.
+        inhouseTermsFor:
+          inhouseTermsHotelId != null ? `${inhouseTermsHotelId}|${label}` : null,
       });
       setShowPoliciesModal(true);
+      if (inhouseTermsHotelId != null && cachedInhouseTerms === undefined) {
+        const termsFor = `${inhouseTermsHotelId}|${label}`;
+        try {
+          const res = await axiosInstance.get(
+            `/api/hotels/${inhouseTermsHotelId}/terms-and-conditions`,
+          );
+          const terms = Array.isArray(res?.data) ? res.data : [];
+          setInhouseTermsCache((prev) => ({
+            ...prev,
+            [inhouseTermsHotelId]: terms,
+          }));
+          setPoliciesModalData((prev) =>
+            prev.inhouseTermsFor === termsFor
+              ? { ...prev, termsAndConditions: terms }
+              : prev,
+          );
+        } catch (err) {
+          console.error("T&C fetch failed:", err);
+          // Cache empty so re-opening the modal doesn't retry every time.
+          setInhouseTermsCache((prev) => ({
+            ...prev,
+            [inhouseTermsHotelId]: [],
+          }));
+        }
+      }
       return;
     }
 
@@ -660,6 +995,7 @@ const ExternalApiRoomList = () => {
           cancellationPolicies: prebook.cancellationPolicies || [],
           termsAndConditions: inlineTerms,
           selectedRoomLabel: label,
+          nonRefundable: prebook.nonRefundable,
           // Aggregated Atharva Policies[].Remark from the prebook — shown as
           // a top-of-modal notice (includes "IMPORTANT NOTE …" content).
           remark: prebook.remark || null,
@@ -690,30 +1026,13 @@ const ExternalApiRoomList = () => {
     }
   };
 
-  // `deadlinePassed` is derived by the caller (isDeadlinePassed on the rate's
-  // resolved deadline) and lets the badge downgrade a supplier-flagged
-  // Flexible rate whose free-cancellation window has already closed —
-  // otherwise the card promises green while BookingDetailedView's cancel
-  // gate will refuse. Non-refundable and unknown cases are unchanged.
-  const getRefundStatusBadgeInRoomList = (nonRefundable, deadlinePassed = false) => {
-    const value = String(nonRefundable).toLowerCase();
-    switch (value) {
-      case "false":
-        return deadlinePassed ? (
-          <Badge
-            bg="danger"
-            title="The free-cancellation window has already closed for this rate."
-          >
-            Deadline passed
-          </Badge>
-        ) : (
-          <Badge bg="success">Flexible</Badge>
-        );
-      case "true":
-        return <Badge bg="danger">Non-Refundable</Badge>;
-      default:
-        return <Badge bg="secondary">{String(nonRefundable)}</Badge>;
-    }
+  // A rate as the page should treat it: for Atharva, the prebook's answer
+  // replaces the search's estimate once the operator has opened the policies.
+  const rateWithPrebook = (rate) => {
+    const prebook = atharvaPrebookCache?.[rate?.rateKey];
+    return prebook?.refundTerms
+      ? { ...rate, refundTerms: prebook.refundTerms, nonRefundable: prebook.nonRefundable }
+      : rate;
   };
 
   // ─── GRN recheck → mapped-rate overlay ─────────────────────────────
@@ -732,6 +1051,7 @@ const ExternalApiRoomList = () => {
     if (recheck.totalPrice != null) mapped.rateWithoutMarkup = recheck.totalPrice;
     if (recheck.currency) mapped.currency = recheck.currency;
     if (recheck.nonRefundable != null) mapped.nonRefundable = recheck.nonRefundable;
+    if (recheck.refundTerms) mapped.refundTerms = recheck.refundTerms;
     if (Array.isArray(recheck.cancellationPolicies)) {
       mapped.cancellationPolicy = recheck.cancellationPolicies;
     }
@@ -806,6 +1126,7 @@ const ExternalApiRoomList = () => {
         underCancellation: recheck.underCancellation,
         policyTimezone: recheck.policyTimezone,
         nonRefundable: recheck.nonRefundable,
+        refundTerms: recheck.refundTerms,
       }),
     };
   };
@@ -845,7 +1166,7 @@ const ExternalApiRoomList = () => {
       case "FLEXIBLE":
         return <Badge bg="success">Flexible</Badge>;
       case "NON REFUNDABLE":
-        return <Badge bg="danger">Non-Refundable</Badge>;
+        return <Badge bg="danger">Non Refundable</Badge>;
       default:
         return <Badge bg="secondary">{refundStatus}</Badge>;
     }
@@ -916,13 +1237,12 @@ const ExternalApiRoomList = () => {
 
   // Shared filter state — same hook every other room-list page uses.
   const filters = useRoomFilters();
+  const { setRefundFilter } = filters;
 
   // Rate → normalised shape the shared predicate understands.
   //
-  // Refund: read the same value the card badge shows. For ATHARVA the search
-  // response always says refundable and the truth only arrives with the
-  // prebook (cached per rateKey), so without this the "Non Refundable"
-  // filter never matched an Atharva rate the badge already marked as such.
+  // Refund: read the same label the card badge shows. For ATHARVA the search
+  // can only estimate it and the prebook (cached per rateKey) has the answer.
   //
   // Room Type: the checkboxes are the inhouse master names ("Room with
   // BreakFast", …) while suppliers send "Bed and Breakfast", "BB",
@@ -930,12 +1250,8 @@ const ExternalApiRoomList = () => {
   // so ticking any Room Type used to hide every API rate. Map the supplier
   // meal plan onto the master name of the same board category first.
   const rateMatches = (rate) => {
-    const nonRefundable =
-      atharvaPrebookCache?.[rate?.rateKey]?.nonRefundable ?? rate?.nonRefundable;
     return filters.rateMatches({
-      isNonRefundable:
-        nonRefundable === true ||
-        ["true", "y", "yes"].includes(String(nonRefundable).toLowerCase()),
+      label: labelOfRate(rateWithPrebook(rate)),
       mealPlan: roomTypeNameForRate(rate, filters.roomTypeOptions),
     });
   };
@@ -984,10 +1300,12 @@ const ExternalApiRoomList = () => {
       try {
         setLoading(true);
         setError(null);
+        setSupplierProgress(null);
 
         let payload = location.state?.payload;
         let meta = location.state?.meta;
         let currencyInfo = location.state?.currency;
+        let refundPolicy = location.state?.refundPolicy;
 
         if (!payload) {
           try {
@@ -997,6 +1315,7 @@ const ExternalApiRoomList = () => {
               payload = parsed.payload;
               meta = parsed.meta;
               currencyInfo = parsed.currency || currencyInfo;
+              refundPolicy = parsed.refundPolicy;
               setHotelStaticData(meta);
               setSearchPayload(payload);
             }
@@ -1004,6 +1323,12 @@ const ExternalApiRoomList = () => {
             console.error("Error parsing sessionStorage:", e);
           }
         }
+
+        // Open with the Refund Policy box ticked on the search page (or
+        // handed on by RoomList for a mapped hotel), before the rates
+        // arrive. Nothing ticked there leaves the filter as it is.
+        const passedRefundFilter = refundFilterOfPolicy(refundPolicy);
+        if (passedRefundFilter) setRefundFilter(passedRefundFilter);
 
         if (currencyInfo) {
           setDisplayCurrency({
@@ -1019,36 +1344,170 @@ const ExternalApiRoomList = () => {
           return;
         }
 
-        // For GRN multi-room searches, ask the backend to include
-        // non-bundled + partial-bundled rates alongside bundled ones in the
-        // response. The rates come back tagged with a `bundleType` field so
-        // the UI can toggle between "Book as one package" (bundled) and
-        // "Pick per room" (non-bundled) without a second network trip.
-        // Single-room and non-GRN searches are unaffected — the flag is
-        // GRN-scoped on the backend and other suppliers ignore it.
-        const isGrnMultiRoom =
-          Number(payload?.apiId) === 20 && (payload?.rooms || []).length > 1;
-        // GoGlobal (apiId 21) multi-room opt-in. When more than one room is
-        // requested, ask the backend to fan out to K parallel single-room
-        // HOTEL_SEARCH_REQUEST calls (spec §6) so each returned offer has
-        // its own HotelSearchCode covering exactly one physical room. The
-        // FE then filters offers per slot by roomSlotIndex and fires K
-        // valuations (§7) + K bookings (§8) under one BasketNumber.
-        // Single-room GoGlobal searches skip the flag → existing bundle
-        // path runs unchanged; other suppliers ignore the flag.
-        const isGoGlobalMultiRoomSearch =
-          Number(payload?.apiId) === 21 && (payload?.rooms || []).length > 1;
-        let searchBody = payload;
-        if (isGrnMultiRoom) {
-          searchBody = { ...searchBody, includeNonBundled: true };
+        // Hand-off from RoomList.jsx: the in-house room search of a hotel
+        // mapped across several suppliers already returned every supplier's
+        // block, so reuse that response — once, and only for this exact
+        // search — instead of running the search again. The key is removed
+        // either way so a stale hand-off can never be picked up later.
+        let searchData = null;
+        try {
+          const prefetchRaw = sessionStorage.getItem(ROOM_LIST_PREFETCH_KEY);
+          if (prefetchRaw) {
+            sessionStorage.removeItem(ROOM_LIST_PREFETCH_KEY);
+            const prefetch = JSON.parse(prefetchRaw);
+            if (
+              prefetch?.response &&
+              prefetch.payloadKey === JSON.stringify(payload)
+            ) {
+              searchData = prefetch.response;
+            }
+          }
+        } catch (e) {
+          console.error("Error reading roomListPrefetch:", e);
         }
+
+        // Last-minute supplier flow (LastMinuteBookingPage → here): in-house
+        // last-minute deals have their own room list and booking flow, so a
+        // mapped hotel's in-house block is not offered on this page. Same for
+        // the Long Stay supplier flow: in-house long-stay contracts have their
+        // own room list too, and this block would carry normal contract rates.
+        // Same again for the Day Stay supplier flow (day-stay contracts have
+        // their own room list).
+        const keepBlock = (h) =>
+          !(
+            (payload?.lastMinuteBooking === true ||
+              payload?.longStayBooking === true ||
+              payload?.dayStayBooking === true) &&
+            isInhouseResponseBlock(h)
+          );
+        // Rates sorted cheapest first; for a mapped hotel each rate is tagged
+        // with the index of the block it came from so it is re-checked and
+        // booked through its own supplier.
+        const enrichBlock = (h, blockIndex, tagRates) => ({
+          ...h,
+          roomCategories: (h.roomCategories || []).map((c) => {
+            const sortedRates = (c.availableRates || [])
+              .slice()
+              .sort((a, b) => (a.totalRate || 0) - (b.totalRate || 0));
+            return {
+              ...c,
+              availableRates: tagRates
+                ? sortedRates.map((r) => ({ ...r, _blockIndex: blockIndex }))
+                : sortedRates,
+            };
+          }),
+        });
+
+        if (!searchData) {
+          // For GRN multi-room searches, ask the backend to include
+          // non-bundled + partial-bundled rates alongside bundled ones in the
+          // response. The rates come back tagged with a `bundleType` field so
+          // the UI can toggle between "Book as one package" (bundled) and
+          // "Pick per room" (non-bundled) without a second network trip.
+          // Single-room searches are unaffected — the flag is GRN-scoped on
+          // the backend and other suppliers ignore it.
+          //
+          // A mapped hotel asks every one of its suppliers at once, so both
+          // this flag and the GoGlobal one below go on EVERY multi-room
+          // search, not only when the clicked card was GRN / GoGlobal —
+          // otherwise a mapped GRN or GoGlobal hotel answers with rates its
+          // multi-room booking can't use.
+          const isMultiRoomSearch = (payload?.rooms || []).length > 1;
+          const isGrnMultiRoom = isMultiRoomSearch;
+          // GoGlobal (apiId 21) multi-room opt-in. When more than one room is
+          // requested, ask the backend to fan out to K parallel single-room
+          // HOTEL_SEARCH_REQUEST calls (spec §6) so each returned offer has
+          // its own HotelSearchCode covering exactly one physical room. The
+          // FE then filters offers per slot by roomSlotIndex and fires K
+          // valuations (§7) + K bookings (§8) under one BasketNumber.
+          // Single-room GoGlobal searches skip the flag → existing bundle
+          // path runs unchanged; other suppliers ignore the flag.
+          const isGoGlobalMultiRoomSearch = isMultiRoomSearch;
+          let searchBody = payload;
+          if (isGrnMultiRoom) {
+            searchBody = { ...searchBody, includeNonBundled: true };
+          }
         if (isGoGlobalMultiRoomSearch) {
           searchBody = { ...searchBody, goglobalPerRoomMode: true };
-        }
-        const res = await axiosInstance.post("/api/hotel-rooms/search", searchBody);
+          }
 
-        if (!res.data || res.data.success === false) {
-          const message = res.data?.message || "Search failed. Please try again.";
+          // Streamed search: every supplier of a mapped hotel is asked at once
+          // and its room types show the moment it answers — the page no longer
+          // waits for the slowest supplier. Earlier blocks are never rebuilt,
+          // so a rate the operator already picked stays the same object.
+          const streamed = [];
+          let shown = false;
+          try {
+            const done = await streamRoomSearch(searchBody, {
+              onStart: (ev) =>
+                setSupplierProgress({
+                  expected: (ev.suppliers || []).length,
+                  answered: 0,
+                  statuses: [],
+                  done: false,
+                  masterHotelName: ev.masterHotelName,
+                  roomMappingEnabled: ev.roomMappingEnabled === true,
+                }),
+              onSupplier: (ev) => {
+                (ev.hotels || []).filter(keepBlock).forEach((h) => {
+                  streamed.push(enrichBlock(h, streamed.length, true));
+                });
+                setSupplierProgress((p) =>
+                  p
+                    ? { ...p, answered: p.answered + 1, statuses: [...p.statuses, ev.status] }
+                    : p,
+                );
+                if (streamed.length > 0) {
+                  setRoomData({
+                    success: true,
+                    hotels: [...streamed],
+                    meta: meta || {},
+                    payload,
+                  });
+                  if (!shown) {
+                    shown = true;
+                    setLoading(false);
+                  }
+                }
+              },
+            });
+            setSupplierProgress((p) => ({
+              ...(p || {}),
+              done: true,
+              statuses: done.supplierStatus || p?.statuses || [],
+            }));
+            if (streamed.length > 0) {
+              setRoomData({
+                ...done,
+                success: true,
+                hotels: [...streamed],
+                meta: meta || {},
+                payload,
+              });
+              return;
+            }
+            searchData = { ...done, hotels: [] };
+          } catch (streamErr) {
+            if (!streamErr?.beforeData) {
+              console.error("Room search stream broke off:", streamErr);
+              setSupplierProgress((p) => ({ ...(p || {}), done: true, interrupted: true }));
+              if (shown) return;
+            }
+            // Nothing arrived (expired login, older backend, network): the
+            // plain search, which also runs the silent token refresh.
+            setSupplierProgress(null);
+          }
+
+          if (!searchData) {
+            const res = await axiosInstance.post("/api/hotel-rooms/search", searchBody, {
+              timeout: SUPPLIER_SEARCH_TIMEOUT_MS,
+            });
+            searchData = res.data;
+          }
+        }
+
+        if (!searchData || searchData.success === false) {
+          const message = searchData?.message || "Search failed. Please try again.";
           if (message.toLowerCase().includes("no availability found")) {
             setShowUnavailableModal(true);
           } else {
@@ -1058,17 +1517,16 @@ const ExternalApiRoomList = () => {
           return;
         }
 
+        const searchBlocks = (searchData.hotels || []).filter(keepBlock);
+        // Mapped hotel (one block per supplier): tag every rate with its
+        // block. A single block stays untagged.
+        const tagRatesWithBlock = searchBlocks.length > 1;
+
         const enriched = {
-          ...res.data,
-          hotels: (res.data.hotels || []).map((h) => ({
-            ...h,
-            roomCategories: (h.roomCategories || []).map((c) => ({
-              ...c,
-              availableRates: (c.availableRates || [])
-                .slice()
-                .sort((a, b) => (a.totalRate || 0) - (b.totalRate || 0)),
-            })),
-          })),
+          ...searchData,
+          hotels: searchBlocks.map((h, blockIndex) =>
+            enrichBlock(h, blockIndex, tagRatesWithBlock),
+          ),
           meta: meta || {},
           payload,
         };
@@ -1083,7 +1541,9 @@ const ExternalApiRoomList = () => {
     };
 
     fetchRooms();
-  }, [location.state]);
+    // setRefundFilter is the hook's state setter and never changes, so this
+    // still runs once per search.
+  }, [location.state, setRefundFilter]);
 
   // Agent credit balance — same endpoint / same fallback keys as Inhouse.
   useEffect(() => {
@@ -1125,6 +1585,44 @@ const ExternalApiRoomList = () => {
     };
   }, [roomData]);
 
+  // Mapped hotel with an in-house block: the in-house free-cancellation
+  // deadline is checkInDate − the hotel's max cancellation nights (same
+  // fetch + rule as RoomList / HotelBookingPage), not a per-rate field.
+  // Skipped (null) for every hotel without an in-house block.
+  useEffect(() => {
+    const inhouseBlock = (roomData?.hotels || []).find(
+      (h) => resolveApiId(h) === apiIdMapping.INHOUSE,
+    );
+    const localId = inhouseBlock ? inhouseLocalHotelId(inhouseBlock) : null;
+    if (localId == null) {
+      setInhouseMaxCancellationNights(null);
+      return undefined;
+    }
+    let cancelled = false;
+    axiosInstance
+      .get(`/api/hotels/${localId}/max-cancellation-nights`, {
+        params: { checkIn: roomData?.payload?.checkInDate },
+      })
+      .then((res) => {
+        if (cancelled) return;
+        const n = Number(res?.data);
+        setInhouseMaxCancellationNights(Number.isFinite(n) ? n : 0);
+      })
+      .catch(() => {
+        // No policy configured / call failed — leave null so the pill falls
+        // back to the rate's own policy rows rather than inventing a date.
+        if (!cancelled) setInhouseMaxCancellationNights(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomData]);
+
+  const inhouseDeadline = resolveInhouseDeadline(
+    roomData?.payload?.checkInDate,
+    inhouseMaxCancellationNights,
+  );
   // Initialise one selection slot per requested room the first time (or
   // whenever the slot count changes). Preserves picks across filter /
   // view-mode toggles.
@@ -1141,6 +1639,38 @@ const ExternalApiRoomList = () => {
         ? rate?.totalRate || 0
         : rate?.roomRateBasedOnRoomCount || rate?.totalRate || 0,
     ) || 0;
+
+  /**
+   * Room Mapping on: what a combined room shows for one room slot, out of the
+   * rates already allowed there. That is its cheapest rate, plus a rate already
+   * picked for this slot if a cheaper one has since appeared, so the pick can
+   * still be seen and removed. In a multi-room search "cheapest" means cheapest
+   * among the rates this slot can still take (one booking = one supplier, and
+   * Atharva needs one rate group); otherwise, once Room 1 is picked, Room 2
+   * could show only another supplier's rate that can't be chosen.
+   */
+  const cheapestRatesForSlot = (rates, roomSlotIndex) => {
+    const canBePicked = (rate) => {
+      if (!isMultiRoom) return true;
+      if (crossSupplierLockSlot(roomSlotIndex, rate) !== -1) return false;
+      if (String(selectionApiIdOfRate(rate) || "") !== "3" || !rate?.hKey) return true;
+      const otherPick = selectedRooms.find(
+        (r, i) => i !== roomSlotIndex && r?.selectedRate,
+      );
+      const otherHKey = otherPick?.selectedRate?.hKey;
+      return !otherHKey || otherHKey === rate.hKey;
+    };
+    const pool = rates.filter(canBePicked);
+    // A rate with no price must not win and hide the real ones.
+    const priceToCompare = (rate) => displayTotalOf(rate) || Infinity;
+    const cheapest = (pool.length > 0 ? pool : rates).reduce((best, rate) =>
+      priceToCompare(rate) < priceToCompare(best) ? rate : best,
+    );
+    const picked = isMultiRoom ? selectedRooms[roomSlotIndex]?.selectedRate : null;
+    return picked && picked !== cheapest && rates.includes(picked)
+      ? [cheapest, picked]
+      : [cheapest];
+  };
 
   // Nights across the searched stay — derived once at the render scope so
   // both the rate-card breakdown ("N nights × M rooms") and the Booking
@@ -1185,8 +1715,12 @@ const ExternalApiRoomList = () => {
   // toggle, per-room picker, and group_code guard are all no-ops otherwise.
   // Derived once so all downstream render code (filter chain, click handler,
   // empty-state message) reads a single truthy value.
+  // Mapped hotel: on when one of its supplier blocks is GRN; the bundle
+  // filters below then apply to that block's rates only.
   const isGrnMultiRoomFlow =
-    Number(roomData?.payload?.apiId) === 20 && isMultiRoom;
+    (isMergedResponse
+      ? responseBlocks.some((b) => resolveApiId(b) === apiIdMapping.GRN)
+      : Number(roomData?.payload?.apiId) === 20) && isMultiRoom;
   const isNonBundledMode = isGrnMultiRoomFlow && bundleMode === "non-bundled";
 
   // For the empty-state banner: does the search response actually contain
@@ -1231,19 +1765,8 @@ const ExternalApiRoomList = () => {
     return required > available;
   };
 
-  // Resolve the effective supplier apiId for the current search. External
-  // responses come back with `apiType` on the hotel — map it back to the
-  // numeric id that /api/hotel-booking/create and the accurate-rate
-  // endpoints expect. Falls back to whatever the search payload carried.
-  const resolveApiId = (hotelObj) => {
-    const payloadApiId = roomData?.payload?.apiId;
-    const apiType =
-      hotelObj?.apiType ||
-      (typeof hotelObj?.hotelName === "string"
-        ? hotelObj.hotelName.split("(").pop().replace(")", "")
-        : "");
-    return apiIdMapping[String(apiType || "").toUpperCase()] || payloadApiId;
-  };
+  // `resolveApiId` (supplier apiId of a response block) lives with the
+  // per-supplier block helpers near the top of the component.
 
   // Map a single rate onto the shape ApiBookingPageForHotels expects
   // (selectedRate is an ARRAY of these — .map / .flatMap on the far side).
@@ -1277,7 +1800,9 @@ const ExternalApiRoomList = () => {
       roomCategory: rate?.roomCategory,
       mealPlan: rate?.mealPlan,
       contractLabel: rate?.contractLabel,
-      nonRefundable: rate?.nonRefundable,
+      // ATHARVA: the prebook's answer, when the operator has opened the policies.
+      nonRefundable: rateWithPrebook(rate)?.nonRefundable,
+      refundTerms: rateWithPrebook(rate)?.refundTerms,
       rate: rate?.totalRate,
       rateWithoutMarkup: rate?.totalRateWithoutMarkup,
       roomRateBasedOnRoomCount: rate?.roomRateBasedOnRoomCount,
@@ -1393,6 +1918,17 @@ const ExternalApiRoomList = () => {
   };
 
   const handleRateSelect = (roomIndex, rate, hotelId, hotelName) => {
+    // Mapped hotel: one booking = one supplier. Once any room holds a rate,
+    // the other rooms can only take rates of that same supplier block (the
+    // cards of other suppliers are disabled with a hint; this is the guard).
+    const crossSupplierSlot = crossSupplierLockSlot(roomIndex, rate);
+    if (crossSupplierSlot !== -1) {
+      toast.error(
+        `This rate can't be combined with the rate chosen for Room ${crossSupplierSlot + 1}.`,
+      );
+      return;
+    }
+
     // ATHARVA (apiId=3) multi-room constraint: every rateKey sent to
     // HPreBooking must belong to the same VendorList (same HKey). The
     // search response splits identical-looking rates across multiple
@@ -1401,7 +1937,7 @@ const ExternalApiRoomList = () => {
     // "1005: Invalid RateKey" on prebook. Reject cross-vendor picks up
     // front with a clear message so the operator reselects instead of
     // discovering the mismatch on the booking page.
-    const currentApiId = String(roomData?.payload?.apiId || "");
+    const currentApiId = String(selectionApiIdOfRate(rate) || "");
     if (currentApiId === "3" && rate?.hKey) {
       const otherSelected = selectedRooms.find(
         (r, i) => i !== roomIndex && r?.selectedRate,
@@ -1409,7 +1945,9 @@ const ExternalApiRoomList = () => {
       const otherHKey = otherSelected?.selectedRate?.hKey;
       if (otherHKey && otherHKey !== rate.hKey) {
         toast.error(
+          withoutSupplierName(
           "Atharva multi-room bookings require every room to be selected from the SAME rate group. Please clear the other room's selection first, or pick a rate from the same vendor group.",
+          ),
         );
         return;
       }
@@ -1563,9 +2101,44 @@ const ExternalApiRoomList = () => {
    * re-fetch flow.
    */
   const handleBooking = (rate, skipCreditCheck = false) => {
-    const { payload, hotels } = roomData;
-    const hotel = hotels?.[0];
+    // The rate's OWN supplier block + the search payload re-targeted at it
+    // (apiId / hotel code). Single-supplier hotels: hotels[0] and the
+    // search payload, exactly as before.
+    const hotel = blockOfRate(rate);
     if (!hotel) return;
+    const payload = payloadForBlock(hotel);
+    const currentApiId = resolveApiId(hotel);
+
+    // ─── INHOUSE rate of a mapped hotel → in-house booking flow. ────────
+    // Same bookingData shape, credit gate and booking page as RoomList's
+    // handleBooking (shared builder in utils/inhouseBookingData). The gate
+    // only applies to NON-REFUNDABLE in-house rates, as on /room-list.
+    if (currentApiId === apiIdMapping.INHOUSE) {
+      if (
+        !skipCreditCheck &&
+        isNonRefundableRate(rate.nonRefundable) &&
+        isInsufficientBalance(rate.roomRateBasedOnRoomCount)
+      ) {
+        setPendingBookingFn(() => () => handleBooking(rate, true));
+        setShowInsufficientCreditModal(true);
+        return;
+      }
+      try {
+        const bookingData = buildInhouseSingleBookingData({
+          rate,
+          hotel: inhouseHotelForBooking(hotel),
+          meta: roomData.meta,
+          payload: inhousePayloadForBlock(hotel),
+          currency: displayCurrency,
+        });
+        sessionStorage.setItem("bookingData", JSON.stringify(bookingData));
+        window.open(INHOUSE_BOOKING_PAGE_ROUTE, "_blank");
+      } catch (err) {
+        console.error("Error preparing in-house booking data:", err);
+        alert("Unable to proceed with booking. Please try again.");
+      }
+      return;
+    }
 
     if (
       !skipCreditCheck &&
@@ -1576,7 +2149,8 @@ const ExternalApiRoomList = () => {
       return;
     }
 
-    const currentApiId = resolveApiId(hotel);
+    // The Room Details modal's Continue books with this rate's supplier.
+    setModalBlockIndex(blockIndexOfRate(rate));
 
     // ─── DARINA (apiId=16) live-rate re-check per v5.1 docs. ────────────
     // Cached search response → LIVE re-check (CheckAvailabilityWithCancellation
@@ -1616,6 +2190,7 @@ const ExternalApiRoomList = () => {
                 live.nonRefundable != null
                   ? live.nonRefundable
                   : rate.nonRefundable,
+              refundTerms: live.refundTerms ?? rate.refundTerms,
               rate: live.rate ?? rate.totalRate,
               rateWithoutMarkup:
                 live.rateWithoutMarkup ?? rate.totalRateWithoutMarkup,
@@ -1686,6 +2261,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
             live.nonRefundable != null
               ? live.nonRefundable
               : rate.nonRefundable,
+          refundTerms: live.refundTerms ?? rate.refundTerms,
           rate: live.rate ?? rate.totalRate,
           rateWithoutMarkup:
             live.rateWithoutMarkup ?? rate.totalRateWithoutMarkup,
@@ -1769,7 +2345,13 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
               mealPlan: rate.mealPlan,
               contractLabel: rate.contractLabel || "Valuated rate (GoGlobal)",
               // Confirm modal renders the refund badge on === "Y".
-              nonRefundable: rate.nonRefundable ? "Y" : "N",
+              nonRefundable:
+                rate.nonRefundable || live.refundTerms?.label === "NON_REFUNDABLE"
+                  ? "Y"
+                  : "N",
+              refundTerms: rate.nonRefundable
+                ? rate.refundTerms
+                : (live.refundTerms ?? rate.refundTerms),
               rate: valuatedTotal,
               rateWithoutMarkup: valuatedNoMarkup,
               roomRateBasedOnRoomCount: valuatedTotal,
@@ -1943,11 +2525,11 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
 
           const endpoint =
             currentApiId === 12
-              ? "/api/iwtx/hotel/availability"
-              : "/api/x3/hotel/availability";
+              ? "/api/hotel-rates/12/availability"
+              : "/api/hotel-rates/15/availability";
 
           const response = await axiosInstance.post(endpoint, priceCheckReq);
-          const respHotel = response.data.hotels.hotel[0];
+          const respHotel = repricedHotelOrThrow(response);
           const rooms = respHotel.roomTypeDetails.rooms.room;
           const accurateRates = rooms
             .filter((room) => room != null)
@@ -1961,6 +2543,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
               mealPlan: room.mealPlan,
               contractLabel: room.contractLabel,
               nonRefundable: room.nonRefundable,
+              refundTerms: repricedTerms(room.nonRefundable, rate.refundTerms),
               // IWTX Rate = total for stay (matches the room-list card).
               // rateDetails.rate is per-night, which was previously used
               // here and silently under-priced the booking. Both fields
@@ -2032,12 +2615,28 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
    */
   const handleProceedBooking = (skipCreditCheck = false) => {
     if (!allRoomsSelected || !roomData) return;
-    const { payload, hotels } = roomData;
-    const hotel = hotels?.[0];
+    // One booking = one supplier: every slot's rate comes from the same
+    // supplier block (handleRateSelect enforces it), so the first slot's
+    // block decides the flow. Single-supplier hotels: hotels[0] and the
+    // search payload, exactly as before.
+    const hotel = blockOfRate(selectedRooms[0]?.selectedRate);
     if (!hotel) {
       alert("Hotel context missing. Please refresh and try again.");
       return;
     }
+    const bookingBlockIndex = blockIndexOfRate(selectedRooms[0]?.selectedRate);
+    if (
+      selectedRooms.some(
+        (r) => blockIndexOfRate(r.selectedRate) !== bookingBlockIndex,
+      )
+    ) {
+      alert(
+        "The selected rooms can't be booked together. Please choose all rooms from rates that can be combined.",
+      );
+      return;
+    }
+    const payload = payloadForBlock(hotel);
+    const currentApiId = resolveApiId(hotel);
 
     // NOTE: GRN partial-bundled pick-count guard used to live here as a
     // blocking modal. handleRateSelect now auto-links partial-bundled
@@ -2045,11 +2644,40 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
     // is unreachable through the UI. Backend still enforces the same
     // invariant as a safety net.
 
-    const sum = (key) =>
-      selectedRooms.reduce(
-        (acc, r) => acc + (Number(r.selectedRate?.[key]) || 0),
-        0,
+    const sum = (key) => sumSelectedRooms(selectedRooms, key);
+
+    // ─── INHOUSE rates of a mapped hotel → in-house booking flow. ───────
+    // Same combined bookingData, credit gate (only when ANY room is
+    // non-refundable) and booking page as RoomList's handleProceedBooking.
+    if (currentApiId === apiIdMapping.INHOUSE) {
+      const anyRoomNonRefundable = selectedRooms.some((r) =>
+        isNonRefundableRate(r.selectedRate?.nonRefundable),
       );
+      if (
+        !skipCreditCheck &&
+        anyRoomNonRefundable &&
+        isInsufficientBalance(sum("totalRate"))
+      ) {
+        setPendingBookingFn(() => () => handleProceedBooking(true));
+        setShowInsufficientCreditModal(true);
+        return;
+      }
+      try {
+        const bookingData = buildInhouseMultiBookingData({
+          selectedRooms,
+          hotel: inhouseHotelForBooking(hotel),
+          meta: roomData.meta,
+          payload: inhousePayloadForBlock(hotel),
+          currency: displayCurrency,
+        });
+        sessionStorage.setItem("bookingData", JSON.stringify(bookingData));
+        window.open(INHOUSE_BOOKING_PAGE_ROUTE, "_blank");
+      } catch (err) {
+        console.error("Error preparing in-house multi-room bookingData:", err);
+        alert("Unable to proceed with booking. Please try again.");
+      }
+      return;
+    }
 
     if (!skipCreditCheck && isInsufficientBalance(sum("totalRate"))) {
       setPendingBookingFn(() => () => handleProceedBooking(true));
@@ -2057,7 +2685,8 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
       return;
     }
 
-    const currentApiId = resolveApiId(hotel);
+    // The Room Details modal's Continue books with this supplier.
+    setModalBlockIndex(bookingBlockIndex);
 
     // ─── GRN "Continue with Booking" recheck. Mirrors what IWTX / X3 /
     //    DARINA do on this same click: fire the supplier-mandated
@@ -2200,6 +2829,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                 live.nonRefundable != null
                   ? live.nonRefundable
                   : r.nonRefundable,
+              refundTerms: live.refundTerms ?? r.refundTerms,
               rate: live.rate ?? r.totalRate,
               rateWithoutMarkup:
                 live.rateWithoutMarkup ?? r.totalRateWithoutMarkup,
@@ -2267,6 +2897,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                 live.nonRefundable != null
                   ? live.nonRefundable
                   : r.nonRefundable,
+              refundTerms: live.refundTerms ?? r.refundTerms,
               rate: live.rate ?? r.totalRate,
               rateWithoutMarkup:
                 live.rateWithoutMarkup ?? r.totalRateWithoutMarkup,
@@ -2350,7 +2981,13 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
               roomCategory: r.roomCategory,
               mealPlan: r.mealPlan,
               contractLabel: r.contractLabel || "Valuated rate (GoGlobal)",
-              nonRefundable: r.nonRefundable ? "Y" : "N",
+              nonRefundable:
+                r.nonRefundable || live.refundTerms?.label === "NON_REFUNDABLE"
+                  ? "Y"
+                  : "N",
+              refundTerms: r.nonRefundable
+                ? r.refundTerms
+                : (live.refundTerms ?? r.refundTerms),
               rate: stayTotal,
               rateWithoutMarkup: stayTotalNoMarkup,
               roomRateBasedOnRoomCount: stayTotal,
@@ -2455,7 +3092,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
 
             const responses = await Promise.all(
               perRoomRequests.map((req) =>
-                axiosInstance.post("/api/x3/hotel/availability", req),
+                axiosInstance.post("/api/hotel-rates/15/availability", req),
               ),
             );
 
@@ -2474,7 +3111,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
             });
 
             accurateRates = responses.map((resp, i) => {
-              const respHotel = resp.data.hotels.hotel[0];
+              const respHotel = repricedHotelOrThrow(resp);
               const room = respHotel.roomTypeDetails.rooms.room.find(
                 (rr) => rr != null,
               );
@@ -2492,6 +3129,10 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                 mealPlan: room.mealPlan,
                 contractLabel: room.contractLabel,
                 nonRefundable: room.nonRefundable,
+                refundTerms: repricedTerms(
+                  room.nonRefundable,
+                  selectedRooms[i]?.selectedRate?.refundTerms,
+                ),
                 rate: room.rate,
                 rateWithoutMarkup: room.rateWithoutMarkup,
                 currency: room.currCode,
@@ -2528,11 +3169,11 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
 
             const endpoint =
               currentApiId === 12
-                ? "/api/iwtx/hotel/availability"
-                : "/api/x3/hotel/availability";
+                ? "/api/hotel-rates/12/availability"
+                : "/api/hotel-rates/15/availability";
 
             const response = await axiosInstance.post(endpoint, priceCheckReq);
-            const respHotel = response.data.hotels.hotel[0];
+            const respHotel = repricedHotelOrThrow(response);
             const rooms = respHotel.roomTypeDetails.rooms.room;
             accurateRates = rooms
               .filter((room) => room != null)
@@ -2546,6 +3187,10 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                 mealPlan: room.mealPlan,
                 contractLabel: room.contractLabel,
                 nonRefundable: room.nonRefundable,
+                refundTerms: repricedTerms(
+                  room.nonRefundable,
+                  selectedRooms[i]?.selectedRate?.refundTerms,
+                ),
                 // IWTX Rate = total for stay (matches the room-list card).
                 // rateDetails.rate is per-night, which was previously used
                 // here and silently under-priced the booking. Both fields
@@ -2693,15 +3338,51 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
     );
   }
 
-  const hotel = roomData.hotels[0];
+  // Hotel header + the room list the page renders. A hotel mapped across
+  // several suppliers is ONE hotel: the header shows the group's name
+  // (masterHotelName). Its rooms follow the Room Mapping setting: on, same-named
+  // rooms are combined; off, every supplier's room types are listed one by one.
+  // Either way the list is cheapest first and each rate still knows its own block
+  // (`_blockIndex`). Single-supplier hotels render hotels[0] exactly as before.
+  const hotel = isMergedResponse || combineRooms
+    ? {
+        ...roomData.hotels[0],
+        roomCategories: combineRooms
+          ? combineSameRooms(mergeRoomCategories(roomData.hotels))
+          : mergeRoomCategories(roomData.hotels),
+      }
+    : roomData.hotels[0];
   const payload = roomData.payload || {};
+
+  // Admin / staff see which supplier each rate of a mapped hotel comes from;
+  // agents never see supplier names.
+  // Admins always see each rate's supplier; staff only on a mapped hotel.
+  const showSupplierBadge =
+    isAdminLogin() || ((isMergedResponse || combineRooms) && !isAgentLogin());
+  // A mapped hotel, even while only one of its suppliers has answered.
+  const isMappedRoomList =
+    isMergedResponse ||
+    combineRooms ||
+    roomData?.masterHotelId != null ||
+    (supplierProgress?.expected || 0) > 1;
+  // The room row carries it too on a mapped hotel, where the list mixes
+  // suppliers. A single-supplier hotel already has it in the page header.
+  const showRoomRowSupplier = showSupplierBadge && isMappedRoomList;
+
+  // Supplier block (and its apiId / payload) of the rate(s) currently shown
+  // in the Room Details modal — what that modal's Continue books with.
+  const modalBlock = roomData.hotels[modalBlockIndex] || roomData.hotels[0];
+  const modalPayload = payloadForBlock(modalBlock);
+  const modalIsGrnSupplier = isMergedResponse
+    ? resolveApiId(modalBlock) === apiIdMapping.GRN
+    : Number(roomData?.payload?.apiId) === apiIdMapping.GRN;
 
   // GRN: the room-list response carries the hotel's own description from
   // GRN's /availability/{sid}?hcode= refetch (hotelDescription, HTML). The
   // header shows it instead of the generic "Please note" text. Other
   // suppliers (and GRN hotels with no description) keep the static text.
   const isGrnHotel =
-    String(hotel?.apiType || "").toUpperCase() === "GRN" ||
+    resolveApiId(hotel) === apiIdMapping.GRN ||
     Number(payload?.apiId) === apiIdMapping.GRN;
   const grnHotelDescription = (() => {
     if (!isGrnHotel) return null;
@@ -2709,11 +3390,11 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
       ? hotel.hotelDescription.trim()
       : "";
     if (!raw) return null;
-    // Supplier HTML — drop script blocks and inline event handlers before
-    // rendering; GRN's descriptions are plain <p>/<b>/<br /> markup.
-    const safe = raw
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+    // Supplier HTML — reduced by DOMPurify to plain formatting tags (no
+    // attributes, scripts or event handlers) before the section is cut out,
+    // and the cut-out piece is cleaned again. GRN's descriptions are plain
+    // <p>/<b>/<br /> markup, so they look the same as before.
+    const safe = sanitizeSupplierHtml(raw);
     // Show only the "Property Location" section. GRN's full description
     // (Attractions, Amenities, Business Amenities, Rooms, Dining …) runs to
     // dozens of lines and pushed the room list below the fold. The section
@@ -2721,10 +3402,10 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
     const location = safe.match(
       /<b>\s*Property Location\s*<\/b>[\s\S]*?(?=<\/p>|<p\b|<b>|$)/i,
     );
-    if (location) return `<p>${location[0]}</p>`;
+    if (location) return sanitizeSupplierHtml(`<p>${location[0]}</p>`);
     // No headed sections — fall back to the first paragraph, else as-is.
     const firstParagraph = safe.match(/<p\b[^>]*>[\s\S]*?<\/p>/i);
-    return firstParagraph ? firstParagraph[0] : safe;
+    return firstParagraph ? sanitizeSupplierHtml(firstParagraph[0]) : safe;
   })();
 
   return (
@@ -2889,7 +3570,18 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                         <FaHotel size={40} className="text-primary" />
                       </div>
                       <div className="hotel-info">
-                        <h2 className="hotel-name mb-2">{hotel.hotelName}</h2>
+                        {/* The header is the hotel, not one supplier's
+                            block — shown without the " (SUPPLIER)" suffix
+                            mapped hotels carry, for every login. */}
+                        <h2 className="hotel-name mb-2">
+                          {roomData.masterHotelName ||
+                            supplierProgress?.masterHotelName ||
+                            stripSupplierSuffix(hotel.hotelName)}
+                        </h2>
+                        <AdminSupplierStrip
+                          supplier={supplierCodeForBlock(responseBlocks[0], roomData?.payload?.apiId)}
+                          hotelCode={responseBlocks[0]?.supplierHotelCode || roomData?.payload?.hotelCode}
+                        />
                         <div className="d-flex align-items-center gap-3 mb-2">
                           <div className="star-rating">
                             {renderStars(hotel.starRating)}
@@ -3157,6 +3849,11 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                 </div>
               </div>
 
+              <SupplierProgressNote
+                progress={supplierProgress}
+                showNames={!isAgentLogin()}
+              />
+
               <Row className="g-3">
                 <Col lg={3} md={4}>
                   <RoomFilters filters={filters} />
@@ -3178,8 +3875,15 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                       // individual rate cards the same way, so the
                       // operator always sees the most affordable option
                       // first. Same helper as the inhouse /room-list.
+                      // Mapped hotel (several suppliers' rates in one list):
+                      // sort by the price the card actually prints —
+                      // `rate.rate` means different things per supplier
+                      // (per night / pre-markup), so it can't be compared
+                      // across suppliers.
                       const priceOf = (r) => {
-                        const v = Number(r?.rate);
+                        const v = isMergedResponse || combineRooms
+                          ? displayTotalOf(r)
+                          : Number(r?.rate);
                         return Number.isFinite(v)
                           ? v
                           : Number.POSITIVE_INFINITY;
@@ -3208,7 +3912,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                           onSelect={(key) => setSlotActiveKey(key)}
                         >
                           {sortedRoomCategories.map((category, index) => {
-                            const eventKey = index.toString();
+                            const eventKey = category._catKey || index.toString();
                             const isActive = slotActiveKey === eventKey;
                             const filteredRates = (
                               category.availableRates || []
@@ -3224,6 +3928,8 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                               // non-GRN suppliers and single-room searches.
                               .filter((rate) => {
                                 if (!isGrnMultiRoomFlow) return true;
+                                // Mapped hotel: only the GRN block's rates.
+                                if (isMergedResponse && apiIdOfRate(rate) !== apiIdMapping.GRN) return true;
                                 const bt = rate?.bundleType;
                                 if (bundleMode === "bundled") {
                                   return bt == null || bt === "bundled";
@@ -3241,6 +3947,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                               // they invest attention in picking it.
                               .filter((rate) => {
                                 if (!isNonBundledMode) return true;
+                                if (isMergedResponse && apiIdOfRate(rate) !== apiIdMapping.GRN) return true;
                                 const anchor = selectedRooms.find(
                                   (r, i) => i !== roomSlotIndex && r?.selectedRate,
                                 );
@@ -3260,6 +3967,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                               // other suppliers) the filter passes through.
                               .filter((rate) => {
                                 if (!isNonBundledMode) return true;
+                                if (isMergedResponse && apiIdOfRate(rate) !== apiIdMapping.GRN) return true;
                                 if (rate?.paxAdults == null) return true;
                                 const searchRoom = roomData?.payload?.rooms?.[roomSlotIndex];
                                 if (!searchRoom) return true;
@@ -3278,7 +3986,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                               // RateKey on prebook.
                               .filter((rate) => {
                                 if (
-                                  String(roomData?.payload?.apiId || "") !== "3" ||
+                                  String(selectionApiIdOfRate(rate) || "") !== "3" ||
                                   !isMultiRoom ||
                                   rate?.roomSrNo == null
                                 ) {
@@ -3299,11 +4007,11 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                               // For Atharva multi-room with FixedOption=true,
                               // once an EARLIER slot has picked a rate, this
                               // slot must be restricted to rates whose
-                              // atharvaIndex forms a valid pair with the
+                              // comboIndex forms a valid pair with the
                               // earlier picks per the vendor's Options[]
                               // combinations. Options entries look like
                               // "1,28" — one index per room slot in order.
-                              // atharvaFixedOption / atharvaOptions are
+                              // comboFixed / comboOptions are
                               // per-VENDOR (Atharva returns multiple vendors
                               // per hotel, each with its own FixedOption +
                               // Options[]), so they're carried on the RATE
@@ -3312,12 +4020,12 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                               // another vendor's rate.
                               .filter((rate) => {
                                 if (
-                                  String(roomData?.payload?.apiId || "") !== "3" ||
+                                  String(selectionApiIdOfRate(rate) || "") !== "3" ||
                                   !isMultiRoom ||
-                                  rate?.atharvaFixedOption !== true ||
-                                  !Array.isArray(rate?.atharvaOptions) ||
-                                  rate.atharvaOptions.length === 0 ||
-                                  rate?.atharvaIndex == null
+                                  rate?.comboFixed !== true ||
+                                  !Array.isArray(rate?.comboOptions) ||
+                                  rate.comboOptions.length === 0 ||
+                                  rate?.comboIndex == null
                                 ) {
                                   return true;
                                 }
@@ -3325,7 +4033,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                 // earlier slot with a selection; positions
                                 // without a selection become wildcards.
                                 const requiredIndices = selectedRooms.map(
-                                  (r) => r?.selectedRate?.atharvaIndex ?? null,
+                                  (r) => r?.selectedRate?.comboIndex ?? null,
                                 );
                                 const earlierPickHKey = selectedRooms
                                   .slice(0, roomSlotIndex)
@@ -3350,12 +4058,12 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                 ) {
                                   return false;
                                 }
-                                return rate.atharvaOptions.some((opt) => {
+                                return rate.comboOptions.some((opt) => {
                                   const parts = String(opt)
                                     .split(",")
                                     .map((p) => Number(p.trim()));
                                   if (parts.length <= roomSlotIndex) return false;
-                                  if (parts[roomSlotIndex] !== rate.atharvaIndex)
+                                  if (parts[roomSlotIndex] !== rate.comboIndex)
                                     return false;
                                   return requiredIndices.every((idx, i) => {
                                     if (i === roomSlotIndex) return true;
@@ -3365,8 +4073,19 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                 });
                               });
                             if (filteredRates.length === 0) return null;
-                            if (!matchesRoomSearch(category.roomCategory))
-                              return null;
+                            // A mapped hotel's rows show the supplier's full
+                            // room name: the shortened one repeats, so one
+                            // supplier could list "Studio" eight times.
+                            const roomRowName = isMappedRoomList
+                              ? cleanRoomName(fullRoomName(category)) ||
+                                category.roomCategory
+                              : category.roomCategory;
+                            if (!matchesRoomSearch(roomRowName)) return null;
+                            // Picked last, so the cheapest rate is one that
+                            // passes the filters and suits this room slot.
+                            const shownRates = combineRooms
+                              ? cheapestRatesForSlot(filteredRates, roomSlotIndex)
+                              : filteredRates;
 
                             return (
                               <Accordion.Item
@@ -3381,8 +4100,30 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                   <div className="d-flex justify-content-between align-items-center w-100">
                                     <div className="room-category-info">
                                       <h5 className="mb-1">
-                                        {category.roomCategory}
+                                        {roomRowName}
                                       </h5>
+                                      {showRoomRowSupplier && (
+                                        <div className="d-flex flex-wrap gap-1">
+                                          {[
+                                            ...new Set(
+                                              shownRates.map((r) =>
+                                                supplierDisplayName(
+                                                  supplierCodeForBlock(blockOfRate(r), apiIdOfRate(r)),
+                                                ),
+                                              ),
+                                            ),
+                                          ].map((name) => (
+                                            <Badge
+                                              key={name}
+                                              bg="light"
+                                              text="dark"
+                                              className="border"
+                                            >
+                                              {name}
+                                            </Badge>
+                                          ))}
+                                        </div>
+                                      )}
                                     </div>
 
                                     <div className="d-flex align-items-center gap-3">
@@ -3397,13 +4138,13 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                               so their headers under-quoted. */}
                                           {formatPrice(
                                             Math.min(
-                                              ...filteredRates.map(displayTotalOf),
+                                              ...shownRates.map(displayTotalOf),
                                             ),
                                           )}
                                         </div>
                                         <div className="rates-count small text-muted">
-                                          {filteredRates.length} rate
-                                          {filteredRates.length !== 1
+                                          {shownRates.length} rate
+                                          {shownRates.length !== 1
                                             ? "s"
                                             : ""}{" "}
                                           available
@@ -3425,17 +4166,39 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                   style={isMultiRoom ? { padding: "0.5rem" } : undefined}
                                 >
                                   <Row className={isMultiRoom ? "g-2" : ""}>
-                                    {filteredRates.map((rate, rateIndex) => {
+                                    {shownRates.map((rate, rateIndex) => {
+                                      // The rate's own supplier block (mapped
+                                      // hotels hold several; otherwise this
+                                      // is hotels[0], i.e. `hotel`).
+                                      const rateBlock = blockOfRate(rate);
+                                      const rateApiId = resolveApiId(rateBlock);
+                                      const isInhouseRate =
+                                        rateApiId === apiIdMapping.INHOUSE;
                                       const isSelectedForThisSlot =
                                         isMultiRoom &&
                                         selectedRooms[roomSlotIndex]
                                           ?.selectedRate === rate;
+                                      // Multi-room, mapped hotel: another
+                                      // room already holds a rate of a
+                                      // different supplier → this one can't
+                                      // join that booking (disabled + hint).
+                                      const crossSupplierSlot = isMultiRoom
+                                        ? crossSupplierLockSlot(roomSlotIndex, rate)
+                                        : -1;
+                                      const isCrossSupplierLocked =
+                                        crossSupplierSlot !== -1;
+                                      const crossSupplierHint = isCrossSupplierLocked
+                                        ? `Can't be combined with the rate chosen for Room ${crossSupplierSlot + 1}`
+                                        : null;
                                       // Auto-link visibility: does this rate
                                       // cover >1 slot (partial-bundled), and
                                       // if it's picked here, which OTHER
                                       // slots is it currently linked to?
+                                      // (Mapped hotel: GRN rates only.)
                                       const rateCovers =
-                                        Number(rate?.numberOfRooms) || 1;
+                                        isMergedResponse && rateApiId !== apiIdMapping.GRN
+                                          ? 1
+                                          : Number(rate?.numberOfRooms) || 1;
                                       const linkedSlotNumbers =
                                         isNonBundledMode && rateCovers > 1
                                           ? selectedRooms
@@ -3469,6 +4232,8 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                     backgroundColor: "#e8f5ec",
                                                     position: "relative",
                                                   }
+                                                : isCrossSupplierLocked
+                                                  ? { opacity: 0.6 }
                                                 : undefined
                                             }
                                           >
@@ -3515,35 +4280,31 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                         rate.roomStatus,
                                                       )}
                                                     </div>
+                                                    {/* Mapped hotel: supplier of this
+                                                        rate — admin / staff only. */}
+                                                    {showSupplierBadge && (
+                                                        <div className="mt-1">
+                                                          <Badge
+                                                            bg="light"
+                                                            text="dark"
+                                                            className="border"
+                                                          >
+                                                            {supplierDisplayName(supplierCodeForBlock(rateBlock, rateApiId))}
+                                                          </Badge>
+                                                        </div>
+                                                      )}
                                                   </div>
-                                                  {resolveApiId(hotel) ===
+                                                  {rateApiId ===
                                                   apiIdMapping.GRN
                                                     ? renderGrnRefundBadge(rate)
-                                                    : getRefundStatusBadgeInRoomList(
-                                                        // Prefer the prebook-time
-                                                        // signal (derived from the
-                                                        // supplier's Remark text)
-                                                        // when a prebook has been
-                                                        // fetched for this rate;
-                                                        // fall back to the search-
-                                                        // time flag before that so
-                                                        // the badge still shows on
-                                                        // first render.
-                                                        atharvaPrebookCache?.[
-                                                          rate.rateKey
-                                                        ]?.nonRefundable ??
-                                                          rate.nonRefundable,
-                                                        isDeadlinePassed(
-                                                          resolveDeadlineDate(rate),
-                                                        ),
-                                                      )}
+                                                    : <RefundBadge rate={rateWithPrebook(rate)} />}
                                                 </div>
 
                                                 <div className="rate-pricing text-center py-2">
                                                   <div className="current-price">
                                                     {formatPrice(
                                                       isMultiRoom
-                                                        ? rate.totalRate || 0
+                                                        ? slotRateValue(rate, roomSlotIndex, "totalRate") || 0
                                                         : rate.roomRateBasedOnRoomCount ||
                                                             rate.totalRate ||
                                                             0,
@@ -3562,7 +4323,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                         shown under Room 1 and Room 2 reads as
                                                         two separate prices. */}
                                                     {isGrnMultiRoomFlow &&
-                                                    Number(rate?.numberOfRooms) > 1
+                                                    rateCovers > 1
                                                       ? `for ${rate.numberOfRooms} rooms · ${
                                                           stayNights > 1
                                                             ? `${stayNights} nights`
@@ -3605,7 +4366,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                     )}
                                                   <div className="feature-item">
                                                     <FaInfoCircle className="me-2 text-muted" />
-                                                    {rate.contractLabel}
+                                                    {withoutSupplierName(rate.contractLabel)}
                                                   </div>
 
                                                   {/* Free-cancellation cut-off, shown for every
@@ -3613,15 +4374,23 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                       IST-based pill; everything else goes through
                                                       the shared red one, which falls back to the
                                                       earliest cancellation-policy fromDate for the
-                                                      suppliers that send no deadline field. */}
-                                                  {resolveApiId(hotel) === apiIdMapping.GRN ? (
+                                                      suppliers that send no deadline field.
+                                                      In-house rates of a mapped hotel use
+                                                      the hotel-policy deadline, as on
+                                                      /room-list. */}
+                                                  {rateApiId === apiIdMapping.GRN ? (
                                                     <div className="feature-item">
                                                       <GrnDeadlinePill rate={rate} />
                                                     </div>
                                                   ) : (
                                                     <div className="feature-item">
                                                       <RateDeadlinePill
-                                                        rate={rate}
+                                                        rate={rateWithPrebook(rate)}
+                                                        deadline={
+                                                          isInhouseRate
+                                                            ? inhouseDeadline
+                                                            : undefined
+                                                        }
                                                       />
                                                     </div>
                                                   )}
@@ -3635,7 +4404,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                         e.stopPropagation();
                                                         openPoliciesModal(
                                                           rate,
-                                                          hotel,
+                                                          rateBlock,
                                                         );
                                                       }}
                                                     >
@@ -3668,12 +4437,13 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                           roomSlotIndex
                                                         ]?.selectedRate === rate
                                                       }
+                                                      disabled={isCrossSupplierLocked}
                                                       onChange={() =>
                                                         handleRateSelect(
                                                           roomSlotIndex,
                                                           rate,
-                                                          hotel.hotelId,
-                                                          hotel.hotelName,
+                                                          rateBlock?.hotelId,
+                                                          rateBlock?.hotelName,
                                                         )
                                                       }
                                                       onClick={() => {
@@ -3686,12 +4456,23 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                           handleRateSelect(
                                                             roomSlotIndex,
                                                             rate,
-                                                            hotel.hotelId,
-                                                            hotel.hotelName,
+                                                            rateBlock?.hotelId,
+                                                            rateBlock?.hotelName,
                                                           );
                                                         }
                                                       }}
                                                     />
+                                                    {crossSupplierHint && (
+                                                      <div
+                                                        className="small text-muted"
+                                                        style={{
+                                                          marginTop: "-4px",
+                                                          paddingLeft: "1.5rem",
+                                                        }}
+                                                      >
+                                                        {crossSupplierHint}
+                                                      </div>
+                                                    )}
                                                     {isSelectedForThisSlot &&
                                                       linkedSlotNumbers.length >
                                                         0 && (
@@ -3746,29 +4527,10 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                       </span>
                                                     </div>
                                                     <div className="d-flex align-items-center gap-2 flex-shrink-0">
-                                                      {resolveApiId(hotel) ===
+                                                      {rateApiId ===
                                                       apiIdMapping.GRN
                                                         ? renderGrnRefundBadge(rate)
-                                                        : getRefundStatusBadgeInRoomList(
-                                                            // Same override the grid
-                                                            // view uses: prefer the
-                                                            // prebook-time signal
-                                                            // (derived from Atharva's
-                                                            // Policies[].Remark
-                                                            // "Rates are
-                                                            // Non-refundable" match)
-                                                            // when a prebook has been
-                                                            // fetched for this rate,
-                                                            // else fall back to the
-                                                            // search-time flag.
-                                                            atharvaPrebookCache?.[
-                                                              rate.rateKey
-                                                            ]?.nonRefundable ??
-                                                              rate.nonRefundable,
-                                                            isDeadlinePassed(
-                                                              resolveDeadlineDate(rate),
-                                                            ),
-                                                          )}
+                                                        : <RefundBadge rate={rateWithPrebook(rate)} />}
                                                       {rate.roomStatus ===
                                                       "On Request" ? (
                                                         <Badge
@@ -3783,6 +4545,17 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                           Available
                                                         </Badge>
                                                       )}
+                                                      {/* Mapped hotel: supplier of this
+                                                          rate — admin / staff only. */}
+                                                      {showSupplierBadge && (
+                                                          <Badge
+                                                            bg="light"
+                                                            text="dark"
+                                                            className="border"
+                                                          >
+                                                            {supplierDisplayName(supplierCodeForBlock(rateBlock, rateApiId))}
+                                                          </Badge>
+                                                        )}
                                                     </div>
                                                   </div>
                                                   <div
@@ -3793,13 +4566,15 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                       <div className={`feature-item d-flex align-items-center text-truncate ${isMultiRoom ? "w-100" : ""}`}>
                                                         <FaInfoCircle className="me-2 flex-shrink-0" />
                                                         <span className="text-truncate">
-                                                          {rate.contractLabel}
+                                                          {withoutSupplierName(rate.contractLabel)}
                                                         </span>
                                                       </div>
                                                     )}
                                                     {/* Free-cancellation cut-off for every supplier;
-                                                        GRN keeps its own colour-coded IST pill. */}
-                                                    {resolveApiId(hotel) === apiIdMapping.GRN ? (
+                                                        GRN keeps its own colour-coded IST pill;
+                                                        in-house rates of a mapped hotel use the
+                                                        hotel-policy deadline, as on /room-list. */}
+                                                    {rateApiId === apiIdMapping.GRN ? (
                                                       <div className="feature-item">
                                                         <GrnDeadlinePill rate={rate} />
                                                       </div>
@@ -3807,7 +4582,12 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                       <div className="feature-item d-flex align-items-center">
                                                         <FaInfoCircle className="me-2 flex-shrink-0" />
                                                         <RateDeadlinePill
-                                                          rate={rate}
+                                                          rate={rateWithPrebook(rate)}
+                                                          deadline={
+                                                            isInhouseRate
+                                                              ? inhouseDeadline
+                                                              : undefined
+                                                          }
                                                         />
                                                       </div>
                                                     )}
@@ -3821,7 +4601,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                           e.stopPropagation();
                                                           openPoliciesModal(
                                                             rate,
-                                                            hotel,
+                                                            rateBlock,
                                                           );
                                                         }}
                                                       >
@@ -3841,7 +4621,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                   <div className="fs-5 fw-bold text-primary">
                                                     {formatPrice(
                                                       isMultiRoom
-                                                        ? rate.totalRate || 0
+                                                        ? slotRateValue(rate, roomSlotIndex, "totalRate") || 0
                                                         : rate.roomRateBasedOnRoomCount ||
                                                             rate.totalRate ||
                                                             0,
@@ -3852,7 +4632,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                       breakdown, show only "for N nights". */}
                                                   <div className="small text-muted">
                                                     {isGrnMultiRoomFlow &&
-                                                    Number(rate?.numberOfRooms) > 1
+                                                    rateCovers > 1
                                                       ? `for ${rate.numberOfRooms} rooms · ${
                                                           stayNights > 1
                                                             ? `${stayNights} nights`
@@ -3916,12 +4696,13 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                             roomSlotIndex
                                                           ]?.selectedRate === rate
                                                         }
+                                                        disabled={isCrossSupplierLocked}
                                                         onChange={() =>
                                                           handleRateSelect(
                                                             roomSlotIndex,
                                                             rate,
-                                                            hotel.hotelId,
-                                                            hotel.hotelName,
+                                                            rateBlock?.hotelId,
+                                                            rateBlock?.hotelName,
                                                           )
                                                         }
                                                         onClick={() => {
@@ -3935,8 +4716,8 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                             handleRateSelect(
                                                               roomSlotIndex,
                                                               rate,
-                                                              hotel.hotelId,
-                                                              hotel.hotelName,
+                                                              rateBlock?.hotelId,
+                                                              rateBlock?.hotelName,
                                                             );
                                                           }
                                                         }}
@@ -3944,6 +4725,18 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                                           whiteSpace: "nowrap",
                                                         }}
                                                       />
+                                                      {crossSupplierHint && (
+                                                        <div
+                                                          className="small text-muted"
+                                                          style={{
+                                                            marginTop: "2px",
+                                                            paddingLeft: "1.5rem",
+                                                            whiteSpace: "normal",
+                                                          }}
+                                                        >
+                                                          {crossSupplierHint}
+                                                        </div>
+                                                      )}
                                                       {isSelectedForThisSlot &&
                                                         linkedSlotNumbers.length >
                                                           0 && (
@@ -3994,7 +4787,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                 .length === 0,
                           ) && (
                             <Alert variant="info" className="mb-0">
-                              No rates match the selected filters.
+                              No rates match the selected filters, please check other filters.
                             </Alert>
                           )}
                         </Accordion>
@@ -4052,8 +4845,11 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                                       {slotSelection.selectedRate.roomCategory}
                                       {" — "}
                                       {formatPrice(
-                                        slotSelection.selectedRate.totalRate ||
-                                          0,
+                                        slotRateValue(
+                                          slotSelection.selectedRate,
+                                          roomSlotIndex,
+                                          "totalRate",
+                                        ) || 0,
                                       )}
                                     </Badge>
                                   )
@@ -4207,9 +5003,11 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
             // bundle price, not double. Non-bundled slots have distinct keys
             // and add up. Other suppliers: plain per-slot sum as before.
             // apiIdMapping.GRN is the NUMBER 20 — compare numerically.
+            // Mapped hotel: the supplier of the rate(s) in this modal.
             const isGrnHere =
-              resolveApiId(hotel) === apiIdMapping.GRN ||
-              Number(payload?.apiId) === apiIdMapping.GRN;
+              resolveApiId(modalBlock) === apiIdMapping.GRN ||
+              (!isMergedResponse &&
+                Number(payload?.apiId) === apiIdMapping.GRN);
             const slotsPerKey = new Map();
             if (isGrnHere) {
               (selectedRate || []).forEach((r, i) => {
@@ -4245,7 +5043,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                     <div className="fw-semibold mb-1">
                       {selectedRate[0].goglobalPriceChanged
                         ? "Rate re-valuated — the price has changed since search. Please review before booking."
-                        : "Rate confirmed by GoGlobal — no price change since search."}
+                        : withoutSupplierName("Rate confirmed by GoGlobal — no price change since search.")}
                     </div>
                     {selectedRate[0].deadlineDate && (
                       <div className="small">
@@ -4320,16 +5118,10 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                           <div className="d-flex justify-content-between mb-2">
                             <span>Refund Status:</span>
                             <span>
-                              {Number(roomData?.payload?.apiId) === apiIdMapping.GRN ? (
+                              {modalIsGrnSupplier ? (
                                 <GrnRefundBadge rate={rate} />
                               ) : (
-                                getRefundStatusBadge(
-                                  rate.nonRefundable === "Y" ||
-                                    rate.nonRefundable === true ||
-                                    rate.nonRefundable === "true"
-                                    ? "NON REFUNDABLE"
-                                    : "FLEXIBLE",
-                                )
+                                <RefundBadge rate={rate} />
                               )}
                             </span>
                           </div>
@@ -4337,13 +5129,13 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                               (rechecked just now). Non-bundled → each room
                               shows its own; bundled → identical on every
                               room. */}
-                          {Number(roomData?.payload?.apiId) === apiIdMapping.GRN && (
+                          {modalIsGrnSupplier && (
                             <GrnPolicyBlock
                               rate={rate}
                               compact
                               note={
                                 rate.grnPriceChanged || rate.grnPolicyChanged
-                                  ? "Updated by GRN since your search — accepted."
+                                  ? withoutSupplierName("Updated by GRN since your search — accepted.")
                                   : "Verified."
                               }
                             />
@@ -4351,7 +5143,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
                           {/* <div className="d-flex justify-content-between">
                             <span>Contract:</span>
                             <span className="small text-muted">
-                              {rate.contractLabel}
+                              {withoutSupplierName(rate.contractLabel)}
                             </span>
                           </div> */}
                         </div>
@@ -4391,13 +5183,15 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
             size="sm"
             onClick={() => {
               try {
-                const currentApiId = resolveApiId(hotel);
+                // Supplier of the rate(s) in this modal — for a mapped hotel
+                // its own apiId + hotel code, not the clicked card's.
+                const currentApiId = resolveApiId(modalBlock);
                 sessionStorage.setItem(
                   "bookingData",
                   JSON.stringify({
                     selectedRate,
                     hotelStaticData: roomData.meta,
-                    payload: { ...payload, apiId: currentApiId },
+                    payload: { ...modalPayload, apiId: currentApiId },
                     // Carry the operator's display-currency preference (code
                     // + factor) picked at search time so the booking page
                     // renders prices the same way this modal does. Without
@@ -4508,7 +5302,7 @@ if (currentApiId === apiIdMapping.RATEHAWK) {
           )}
           {prebookError && (
             <div className="alert alert-warning py-2 mb-3" role="alert">
-              {prebookError}
+              {withoutSupplierName(prebookError)}
             </div>
           )}
 

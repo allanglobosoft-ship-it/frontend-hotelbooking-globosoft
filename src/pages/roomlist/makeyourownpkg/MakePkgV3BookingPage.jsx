@@ -24,6 +24,7 @@ import Swal from "sweetalert2";
 import Sidebar from "../../../components/Sidebar";
 import TopBar from "../../../components/TopBar";
 import axiosInstance from "../../../components/AxiosInstance";
+import { escapeHtml } from "../../../utils/safeHtml";
 
 /**
  * v3 Booking confirmation page. The hotel / transfer / activity lines
@@ -216,7 +217,7 @@ const MakePkgV3BookingPage = () => {
         await Swal.fire({
           icon: "success",
           title: "Booking Confirmed!",
-          html: `<div>Your booking id is <strong>${res.data.id}</strong></div>`,
+          html: `<div>Your booking id is <strong>${escapeHtml(res.data.id)}</strong></div>`,
           confirmButtonText: "View Bookings",
         });
         navigate("/booking-details/make-your-own-package-v2-list");

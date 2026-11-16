@@ -49,6 +49,11 @@ import { toast } from "react-hot-toast";
 import axiosInstance from "../../components/AxiosInstance";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
+import {
+  hidesTransporter,
+  supplierText,
+  withoutSupplierName,
+} from "../../utils/supplierDisplay";
 
 // Red action button used by the action row + modals (matches the Hotel
 // Booking detail view's BUTTON_STYLE).
@@ -326,10 +331,10 @@ export default function CabBookingDetailView() {
   // mapIwayStatus treats null the same as 0, so a never-checked i'way row
   // still renders a real status ("On Request"), never a placeholder.
   const [iwayTripStatus, setIwayTripStatus] = useState(
-    booking?.iwayTripStatus ?? null,
+    booking?.tripStatus ?? null,
   );
   const [iwayStatusRefreshedAt, setIwayStatusRefreshedAt] = useState(
-    booking?.iwayStatusRefreshedAt ?? null,
+    booking?.statusRefreshedAt ?? null,
   );
   const [iwayRefreshing, setIwayRefreshing] = useState(false);
 
@@ -486,7 +491,7 @@ export default function CabBookingDetailView() {
   // the Reconfirm button (shown at iway_trip_status = 1) — there's no
   // standalone Refresh icon/button any more, its functionality now lives
   // entirely inside this single click handler per the i'way trip-status
-  // workflow. Fires PATCH /api/cab/{bookingId}/iway-refresh-status which
+  // workflow. Fires PATCH /api/cab/{bookingId}/refresh-status which
   // calls GET https://sandbox.iway.io/transnextgen/v4/orders/{orderId}
   // under the hood, updates the local snapshot, and returns the fresh
   // values — the Status badge re-renders from the new iwayTripStatus with
@@ -498,23 +503,29 @@ export default function CabBookingDetailView() {
     try {
       setIwayRefreshing(true);
       const res = await axiosInstance.patch(
-        `/api/cab/${bookingId}/iway-refresh-status`,
+        `/api/cab/${bookingId}/refresh-status`,
       );
       const data = res?.data;
       if (data && typeof data === "object" && data.tripStatus != null) {
         setIwayTripStatus(data.tripStatus);
         setIwayStatusRefreshedAt(data.refreshedAt || new Date().toISOString());
-        toast.success(`iWay status: ${data.tripStatusLabel || data.tripStatus}`);
+        const label = data.tripStatusLabel || data.tripStatus;
+        toast.success(supplierText(`iWay status: ${label}`, `Trip status: ${label}`));
       } else {
-        toast.error("Empty response from iWay status check");
+        toast.error(
+          supplierText(
+            "Empty response from iWay status check",
+            "Empty response from the trip status check",
+          ),
+        );
       }
     } catch (err) {
       const msg =
         err?.response?.data?.error ||
         err?.response?.data?.message ||
         err?.message ||
-        "Failed to update iWay status";
-      toast.error(msg);
+        supplierText("Failed to update iWay status", "Failed to update the trip status");
+      toast.error(withoutSupplierName(msg));
     } finally {
       setIwayRefreshing(false);
     }
@@ -855,7 +866,6 @@ export default function CabBookingDetailView() {
     try {
       setSavingNote(true);
       const createdBy =
-        localStorage.getItem("UserName") ||
         sessionStorage.getItem("UserName") ||
         "unknown";
       await axiosInstance.post(`/api/cab/${bookingId}/notes`, {
@@ -1109,7 +1119,7 @@ export default function CabBookingDetailView() {
   // displayStatus only for non-iWay bookings, which are unaffected by this
   // workflow.
   const iwayMappedStatus =
-    booking.apiType === "IWAY" ? mapIwayStatus(iwayTripStatus) : null;
+    booking.external ? mapIwayStatus(iwayTripStatus) : null;
   const effectiveStatus = isCancelled
     ? displayStatus
     : (iwayMappedStatus ? iwayMappedStatus.label : displayStatus);
@@ -1117,7 +1127,7 @@ export default function CabBookingDetailView() {
   // Numeric i'way status driving the Confirm/Reconfirm button below —
   // null/never-refreshed treated as 0, same rule as mapIwayStatus.
   const effectiveIwayTripStatus =
-    booking.apiType === "IWAY" ? (iwayTripStatus ?? 0) : null;
+    booking.external ? (iwayTripStatus ?? 0) : null;
 
   // Booking lifecycle events for the History modal — built from the row stub
   // already loaded (no extra API call), mirroring the Package / Hotel booking
@@ -1275,7 +1285,9 @@ export default function CabBookingDetailView() {
                       value={formatDate(booking.bookingDate)}
                     />
                     <InfoRow label="Cab" value={booking.cabName} />
+                    {!hidesTransporter(booking) && (
                     <InfoRow label="Transporter" value={booking.transporter} />
+                    )}
                     <InfoRow
                       label="Pickup Date"
                       value={formatDate(booking.pickupDate)}
@@ -1356,11 +1368,11 @@ export default function CabBookingDetailView() {
                       value={
                         <span className="d-inline-flex align-items-center gap-2">
                           <StatusBadge status={effectiveStatus} />
-                          {booking.apiType === "IWAY" && iwayStatusRefreshedAt && (
+                          {booking.external && iwayStatusRefreshedAt && (
                             <span
                               className="text-muted"
                               style={{ fontSize: "0.72rem" }}
-                              title="Last i'way status check"
+                              title={supplierText("Last i'way status check", "Last status check")}
                             >
                               (as of {formatIwayRefreshedAt(iwayStatusRefreshedAt)})
                             </span>
@@ -1717,22 +1729,28 @@ export default function CabBookingDetailView() {
                   from i'way) and the badge above re-renders from the result.
                   Hidden once status reaches 2 (Reconfirmed) — the i'way
                   trip-status workflow's terminal state — or once cancelled. */}
-              {!isCancelled && booking.apiType === "IWAY" && effectiveIwayTripStatus === 0 && (
+              {!isCancelled && booking.external && effectiveIwayTripStatus === 0 && (
                 <button
                   style={BTN_CONFIRM}
                   onClick={handleIwayStatusAction}
                   disabled={iwayRefreshing || !bookingId}
-                  title="Check i'way for the latest trip status"
+                  title={supplierText(
+                    "Check i'way for the latest trip status",
+                    "Check the latest trip status",
+                  )}
                 >
                   {iwayRefreshing ? "CHECKING..." : "CONFIRM"}
                 </button>
               )}
-              {!isCancelled && booking.apiType === "IWAY" && effectiveIwayTripStatus === 1 && (
+              {!isCancelled && booking.external && effectiveIwayTripStatus === 1 && (
                 <button
                   style={BTN_TEAL}
                   onClick={handleIwayStatusAction}
                   disabled={iwayRefreshing || !bookingId}
-                  title="Check i'way for the latest trip status"
+                  title={supplierText(
+                    "Check i'way for the latest trip status",
+                    "Check the latest trip status",
+                  )}
                 >
                   {iwayRefreshing ? "CHECKING..." : "RECONFIRM"}
                 </button>
@@ -2231,7 +2249,7 @@ export default function CabBookingDetailView() {
                   <>
                     <div className="fw-semibold mb-1">Cancellation blocked</div>
                     <div className="small">
-                      {cancelPreview.message ||
+                      {withoutSupplierName(cancelPreview.message) ||
                         "This booking can no longer be cancelled."}
                     </div>
                   </>
@@ -2241,8 +2259,10 @@ export default function CabBookingDetailView() {
                       Penalty window — 100% charge applies
                     </div>
                     <div className="small mb-2">
-                      The free-cancellation window has closed. i'way will
-                      charge the full trip cost as a penalty.
+                      {supplierText(
+                        "The free-cancellation window has closed. i'way will charge the full trip cost as a penalty.",
+                        "The free-cancellation window has closed. The full trip cost is charged as a penalty.",
+                      )}
                     </div>
                     <div className="small">
                       <div>

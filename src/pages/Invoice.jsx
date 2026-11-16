@@ -107,10 +107,10 @@ export default function Invoice() {
   const tableAreaRef = useRef(null);
   const measuredRowsRef = useRef(0);
 
-  const activeRole = (localStorage.getItem("currentActiveRole") || "")
+  const activeRole = (sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
     : storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN");
@@ -405,18 +405,46 @@ export default function Invoice() {
   // Shows the booking amount in the currency it was confirmed in: when the
   // row carries a non-AED display currency + converted amount, render that;
   // otherwise fall back to the AED total.
-  const formatBookingAmount = (invoice) => {
+  //
+  // billed = true shows what is still invoiced: the backend's invoiceAmount
+  // (invoiceDisplayAmount in the display currency) is 0 — or only the
+  // non-refundable rooms' share — for a booking cancelled on or before its
+  // deadline, in-house or supplier. Rows without it (other booking types,
+  // older API) show the booking total.
+  const formatBookingAmount = (invoice, billed = true) => {
     if (!invoice) return "-";
+    const hasInvoiceAmount =
+      billed &&
+      invoice.invoiceAmount !== null &&
+      invoice.invoiceAmount !== undefined;
     const code = invoice.displayCurrencyCode;
     const amt = Number(invoice.displayAmount);
     if (code && code !== "AED" && Number.isFinite(amt) && amt > 0) {
-      return `${code} ${amt.toLocaleString("en-US", {
+      const shown =
+        hasInvoiceAmount &&
+        invoice.invoiceDisplayAmount !== null &&
+        invoice.invoiceDisplayAmount !== undefined
+          ? Number(invoice.invoiceDisplayAmount)
+          : amt;
+      return `${code} ${shown.toLocaleString("en-US", {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
       })}`;
     }
-    return formatCurrency(invoice.totalRate); // existing AED formatter
+    // existing AED formatter
+    return formatCurrency(
+      hasInvoiceAmount ? invoice.invoiceAmount : invoice.totalRate,
+    );
   };
+
+  // Tooltip on the amount cell, so a 0.00 (or reduced) amount explains itself.
+  const amountTitle = (invoice) =>
+    invoice?.cancelledBeforeDeadline
+      ? `Cancelled before the deadline. Booking value: ${formatBookingAmount(
+          invoice,
+          false,
+        )}`
+      : formatBookingAmount(invoice);
 
   const handlePrint = () => {
     window.print();
@@ -904,6 +932,7 @@ export default function Invoice() {
                                       ...baseCellStyle,
                                       textAlign: "right",
                                     }}
+                                    title={amountTitle(invoice)}
                                   >
                                     <span className="fw-bold text-dark">
                                       {formatBookingAmount(invoice)}

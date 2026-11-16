@@ -9,6 +9,12 @@ import { Row, Col, Form, Modal, Button, Table } from "react-bootstrap";
 import axiosInstance from "../../../../components/AxiosInstance";
 import { toast } from "react-hot-toast";
 import { useNavigate, useLocation } from "react-router-dom";
+import { supplierPayloadFields } from "../supplierHotels";
+import {
+  BOOKING_STILL_PROCESSING_MESSAGE,
+  isRequestTimeout,
+} from "../bookingTimeout";
+import { useFeatureFlag } from "../../../../config/FeatureFlagsContext";
 // HotelBookingPage's stylesheet is the source of truth for the .pg-option /
 // .pg-option-selected / .pg-option-radio / .pg-option-logo classes used by
 // the "Select Payment Gateway" modal below — importing here keeps the modal
@@ -121,7 +127,6 @@ const PaxInformation = forwardRef(({
   searchParams,
   bookingData,
   updateData,
-  onPrev,
   onFinish,
   packageData,
   totalPrice,
@@ -165,6 +170,9 @@ const PaxInformation = forwardRef(({
   const [selectedGateway, setSelectedGateway] = useState("");
   const [insufficientAmount, setInsufficientAmount] = useState(0);
   const [agentCardPaymentEnabled, setAgentCardPaymentEnabled] = useState(false);
+  // Backend switch package.payment.card-via-gateway: "Card" always pays
+  // through the gateway. Off by default (Card then behaves as before).
+  const cardViaGateway = !!useFeatureFlag("packageCardViaGateway");
   // Live snapshot of the agent's available credit — powers the Order
   // Summary modal's derived Payment Mode label so it can honestly show
   // "Online Payment (CC Avenue)" the moment credit is short, instead of
@@ -642,9 +650,25 @@ const PaxInformation = forwardRef(({
             hotelName: h.hotelName,
             selectedRate: h.totalRateWithMarkup,
             currency: h.currencyCode || "AED",
+            ...supplierPayloadFields(h),
           })),
           cab: null,
           activity: null,
+          // Meal plan picked under the hotel. Its price is already inside
+          // totalPrice; this tells the backend which plan it was (stored on
+          // the booking and used by the server-side price check).
+          mealPlan: bookingData.selections.selectedMealPlan?.mealPlan
+            ? {
+                mealPlanCode: bookingData.selections.selectedMealPlan.mealPlan,
+                mealPlanName:
+                  bookingData.selections.selectedMealPlan.label ||
+                  bookingData.selections.selectedMealPlan.mealPlan,
+                selectedRate: Number(
+                  bookingData.selections.selectedMealPlan.totalRateWithMarkup || 0,
+                ),
+                currency: "AED",
+              }
+            : null,
         },
         // Programme fields captured on the Hotels tab.
         checkInDate: bookingData.programme?.checkInDate || null,
@@ -682,6 +706,42 @@ const PaxInformation = forwardRef(({
       // Fails OPEN: any credit-check request error just proceeds to /book,
       // which still has its own IllegalArgumentException backstop, so the
       // operator is never trapped.
+      // "Card" + pay now, with the card-via-gateway switch on: go straight to
+      // the payment gateway (same picker as the insufficient-credit path),
+      // never the credit limit. Switch off: skipped, Card behaves as before.
+      const isCardMode = ["CARD", "CARD_PAYMENT"].includes(
+        String(payload.modeOfPayment || "").trim().toUpperCase(),
+      );
+      if (
+        cardViaGateway &&
+        isCardMode &&
+        !editingBookingId &&
+        payload.agentId &&
+        bookingData?.programme?.bookingConfirmation !== "Book Now & Voucher later"
+      ) {
+        const cardTotal =
+          Number(payload.totalPrice || 0) + Number(payload.tourismDirham || 0);
+        if (cardTotal > 0) {
+          const agentResp = await axiosInstance
+            .get(`/api/agent/${payload.agentId}`)
+            .catch(() => ({ data: { cardPaymentEnabled: false } }));
+          setShowSummary(false);
+          setIsSubmitting(false);
+          if (!agentResp?.data?.cardPaymentEnabled) {
+            toast.error(
+              "Card payment is not enabled for this agent. Please choose Credit Limit.",
+            );
+            return;
+          }
+          setPendingPayload(payload);
+          setInsufficientAmount(cardTotal);
+          setAgentCardPaymentEnabled(true);
+          setSelectedGateway("");
+          setShowGatewayModal(true);
+          return;
+        }
+      }
+
       if (!editingBookingId && payload.agentId) {
         const payableTotal =
           Number(payload.totalPrice || 0) + Number(payload.tourismDirham || 0);
@@ -792,6 +852,15 @@ const PaxInformation = forwardRef(({
       }
     } catch (error) {
       console.error("Booking submission error:", error);
+      // Request timed out (no reply from the server): the server may still be
+      // finishing the booking, so "Failed" would be wrong and invites a second,
+      // duplicate booking. Point the operator at the booking list instead.
+      // Any reply the server did send (low credit, refused price check, …) is
+      // shown exactly as before.
+      if (isRequestTimeout(error)) {
+        toast.error(BOOKING_STILL_PROCESSING_MESSAGE, { duration: 10000 });
+        return;
+      }
       toast.error(
         error.response?.data?.message ||
           "Failed to confirm booking. Please try again.",
@@ -1210,15 +1279,10 @@ const PaxInformation = forwardRef(({
           Package Search page, exactly like HotelBookingPage's Guest Details
           grid follows the room occupancy. */}
 
-      <div className="sticky-nav-row d-flex justify-content-between">
-        <button className="btn-nav-prev" onClick={onPrev}>
-          ← Previous
-        </button>
-        {/* Confirm booking → button removed from here; PackageCheckout now
-            renders it in the right sidebar directly below the "Are you sure
-            you want to continue with the booking?" card. It triggers the
-            same triggerConfirmClick() flow via the ref exposed below. */}
-      </div>
+      {/* Page navigation lives on PackageCheckout: its Back button at the top
+          left, and Confirm booking in the right sidebar directly below the
+          "Are you sure you want to continue with the booking?" card. Confirm
+          triggers triggerConfirmClick() via the ref exposed below. */}
 
       {/* Terms & Conditions popup — gates the order-summary modal. */}
       <Modal
@@ -1358,7 +1422,7 @@ const PaxInformation = forwardRef(({
             // Local helpers — kept inline so this modal has no external
             // dependency other than the props/state PaxInformation already
             // computes above.
-            const activeUserRole = localStorage.getItem("currentActiveRole");
+            const activeUserRole = sessionStorage.getItem("currentActiveRole");
             const formatPrice = (v) =>
               `AED ${Number(v || 0).toLocaleString("en-US", {
                 minimumFractionDigits: 2,
@@ -1756,19 +1820,34 @@ const PaxInformation = forwardRef(({
                   {/* Itemised components of the selling price. The
                       accommodation row is the selected hotel's pax-scaled rate
                       (or, if no hotel was picked, the package's own rate) —
-                      never both, they are the same PackageRates money. Meal
-                      plan / cab / activity are genuine extras and only appear
-                      when they carry a charge. */}
+                      never both, they are the same PackageRates money. A live
+                      supplier hotel is the exception: it is charged on top of
+                      the package rate, so both are listed. Meal plan / cab /
+                      activity are genuine extras and only appear when they
+                      carry a charge. */}
                   {priceBreakdown && (
                     <>
+                      {priceBreakdown.supplierHotelSelected ? (
+                        <>
                       <div className="d-flex justify-content-between text-muted small">
+                            <span>Package rate</span>
+                            <span>{formatPrice(priceBreakdown.packageRate)}</span>
+                      </div>
+                          <div className="d-flex justify-content-between text-muted small">
+                            <span>Hotel</span>
+                            <span>{formatPrice(priceBreakdown.supplierHotel)}</span>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="d-flex justify-content-between text-muted small">
                         <span>
                           {priceBreakdown.hotelSelected
                             ? "Accommodation"
                             : "Package rate"}
                         </span>
                         <span>{formatPrice(priceBreakdown.accommodation)}</span>
-                      </div>
+                        </div>
+                      )}
                       {priceBreakdown.mealPlan > 0 && (
                         <div className="d-flex justify-content-between text-muted small">
                           <span>

@@ -18,11 +18,20 @@ import {
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
+import { DEADLINE_TIME_EOD, isDeadlinePassed } from "../../utils/rateDeadline";
+import {
+  REFUND_FLEXIBLE,
+  REFUND_NON_REFUNDABLE,
+  REFUND_PARTIAL,
+  refundLabelText,
+  statusText,
+} from "../../utils/refundLabel";
 import toast from "react-hot-toast";
 // Reuses the "Select Payment Gateway" card-style radio styles (.pg-option*)
 // defined for HotelBookingPage.jsx's CC Avenue picker, so this page's
 // reconfirm-flow picker matches it exactly.
 import "../../styles/HotelBookingPage.css";
+import { orderIdPathSegment } from "../../utils/urlSafety";
 
 // Reverse-geocode browser coordinates to a readable address for the
 // Booking History audit trail. Tries OpenStreetMap Nominatim first
@@ -153,14 +162,24 @@ const voucherIndicatesDeferredCredit = (vg) => {
  * show the shared status if they agree, and say "Mixed" if they do not, so the
  * per-room cards below are read rather than the summary.
  */
+const roomRefundWords = (room) => {
+  const category = String(room?.refundCategory || "");
+  if (category === "FULLY_REFUNDABLE") return refundLabelText(REFUND_FLEXIBLE);
+  if (category === "PARTIALLY_REFUNDABLE") return refundLabelText(REFUND_PARTIAL);
+  if (category === "NON_REFUNDABLE") return refundLabelText(REFUND_NON_REFUNDABLE);
+  return statusText(room?.refundStatus);
+};
+
 const getRefundStatusLabel = (booking) => {
   const rooms = Array.isArray(booking?.rooms) ? booking.rooms : [];
   const perRoom = rooms
-    .map((r) => r?.refundStatus || r?.refundCategory)
+    .map(roomRefundWords)
     .filter((v) => v != null && String(v).trim() !== "");
-  if (perRoom.length === 0) return booking?.refundStatus || "-";
+  // The backend's answer for today, from the saved bands when there are any.
+  const whole = booking?.refundLabelText || statusText(booking?.refundStatus) || "-";
+  if (perRoom.length === 0) return whole;
   const distinct = [...new Set(perRoom.map((v) => String(v).trim()))];
-  if (distinct.length === 1) return distinct[0];
+  if (distinct.length === 1) return whole;
   return `Mixed — ${distinct.join(" / ")} (see per-room policy)`;
 };
 
@@ -306,7 +325,7 @@ export default function BookingDetailedView() {
 
   // Role gate for admin-only actions (currently: "Send Email" on the
   // PDF preview modal). Matches the convention used on HotelBookingPage.
-  const activeUserRole = localStorage.getItem("currentActiveRole");
+  const activeUserRole = sessionStorage.getItem("currentActiveRole");
   const isAdmin = String(activeUserRole || "").toUpperCase() === "ADMIN";
   const isSuperAdmin =
     String(activeUserRole || "").toUpperCase() === "SUPER_ADMIN";
@@ -325,7 +344,7 @@ export default function BookingDetailedView() {
   // changes visibility only; no API/flow/permission behaviour is affected.
   const activeRole = String(activeUserRole || "").trim().toUpperCase();
   const storedRoles = String(
-    localStorage.getItem("userRole") || "",
+    sessionStorage.getItem("userRole") || "",
   ).toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
@@ -701,22 +720,37 @@ export default function BookingDetailedView() {
   };
 
   /**
-   * True when this booking is past its free-cancellation deadline — the case
-   * the backend used to refuse outright. Mirrors the backend's own test
-   * (BookingCancellationServiceImpl): API bookings only, and never for a
-   * non-refundable rate, whose deadline is stamped in the past at create time
-   * and so is meaningless.
+   * True when this booking is past its free-cancellation deadline. Credit is
+   * refunded only when a booking is cancelled BEFORE its deadline, so past it
+   * the operator must accept that nothing will be refunded. Mirrors the
+   * backend's own test (BookingCancellationServiceImpl): in-house and API
+   * bookings alike, but never for a non-refundable rate, whose deadline is
+   * stamped in the past at create time and which forfeits the full amount
+   * anyway.
    */
   const isPastCancellationDeadline = (() => {
     if (!booking?.deadlineDate) return false;
-    if (booking.apiBooking === false) return false;
     if (String(booking.refundStatus || "").toLowerCase() === "non-refundable") {
       return false;
     }
-    const deadline = new Date(booking.deadlineDate);
-    if (Number.isNaN(deadline.getTime())) return false;
-    return new Date() > deadline;
+    // The deadline date is free until 11:59 PM UAE, the same day the refund
+    // check on the server uses.
+    return isDeadlinePassed(booking.deadlineDate);
   })();
+
+  /**
+   * Client rule: cancelling a non-refundable booking (any supplier or
+   * in-house) never puts money back on the agent's credit. Any refund is made
+   * by hand by the Finance team, not online. The cancel dialog says so and the
+   * operator has to accept it before the button unlocks. A "Mixed" booking
+   * (some rooms refundable, GRN only today) still gets the refundable rooms'
+   * share back, so its wording differs.
+   */
+  const isNonRefundableBooking =
+    String(booking?.refundStatus || "").toLowerCase() === "non-refundable";
+  const isMixedRefundBooking =
+    isNonRefundableBooking &&
+    String(getRefundStatusLabel(booking)).startsWith("Mixed");
 
   const cancelBooking = async () => {
     // Cancellation reason is now mandatory — the modal marks the field
@@ -997,7 +1031,7 @@ export default function BookingDetailedView() {
         // Re-verify server-side before finalizing — never trust the
         // redirect's own query string alone.
         const statusResponse = await axiosInstance.get(
-          `/api/payment/ccavenue/status/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/status/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         if (statusResponse.data?.status !== "SUCCESS") {
           toast.error(
@@ -1007,7 +1041,7 @@ export default function BookingDetailedView() {
           return;
         }
         const response = await axiosInstance.post(
-          `/api/payment/ccavenue/finalize-reconfirm/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/finalize-reconfirm/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         await handleReconfirmResponse(response.data);
       } catch (err) {
@@ -1194,7 +1228,6 @@ export default function BookingDetailedView() {
       // Same endpoint + payload shape the standalone /notes page uses; nothing
       // about how notes are stored/retrieved is changed.
       const createdBy =
-        localStorage.getItem("UserName") ||
         sessionStorage.getItem("UserName") ||
         "unknown";
       const res = await axiosInstance.post(
@@ -1739,20 +1772,58 @@ export default function BookingDetailedView() {
                       </Col>
                       <Col md={6}>
                         <InfoRow label="Agent" value={booking.agentName} />
-                        {/* Supplier — which external API fulfilled this
-                            booking (INHOUSE / IWTX / GRN / X3 / GOGLOBAL /
-                            RATEHAWK / ATHARVA / DARINA / JUMEIRAH / JUNIPER).
-                            ADMIN-only so agents never see it — mirrors the
-                            "agent must never know the supplier" whitelabel
-                            invariant applied on the All Bookings list. Non-
-                            hotel-supplier rows fall back to "Inhouse" so the
-                            cell never renders blank. */}
+                        {/* Supplier Name — which external API fulfilled
+                            this booking (INHOUSE / IWTX / GRN / X3 /
+                            GOGLOBAL / RATEHAWK / ATHARVA / DARINA /
+                            JUMEIRAH / JUNIPER). ADMIN-only so agents never
+                            see it — mirrors the "agent must never know the
+                            supplier" whitelabel invariant applied on the
+                            All Bookings list. Non-hotel-supplier rows fall
+                            back to "Inhouse" so the cell never renders
+                            blank. */}
                         {(isAdmin || isSuperAdmin) && (
                           <InfoRow
-                            label="Supplier"
+                            label="Supplier Name"
                             value={booking.apiId || "Inhouse"}
                           />
                         )}
+                        {/* Payable to Supplier — what our company owes
+                            the supplier for this booking. Admin/super-admin
+                            only: mirrors the same whitelabel rule as the
+                            Supplier Name row above. Prefers the supplier's
+                            native amount+currency when available (e.g. X3
+                            confirms in USD while we sell in AED); falls
+                            back to the booking total in the display
+                            currency when the supplier didn't return a
+                            distinct native amount. Hidden entirely when no
+                            amount is known so we never render a "-" that
+                            could imply zero cost. */}
+                        {(isAdmin || isSuperAdmin) &&
+                          (() => {
+                            const nativeCurr = booking.supplierNativeCurrency;
+                            const nativeAmt = Number(
+                              booking.supplierNativeAmount,
+                            );
+                            const hasNative =
+                              !!nativeCurr &&
+                              Number.isFinite(nativeAmt) &&
+                              nativeAmt > 0;
+                            const fallbackAmt = Number(booking.totalRate);
+                            const hasFallback =
+                              Number.isFinite(fallbackAmt) && fallbackAmt > 0;
+                            if (!hasNative && !hasFallback) return null;
+                            const value = hasNative
+                              ? `${nativeCurr} ${nativeAmt.toFixed(2)}`
+                              : `${currencyCode} ${toDisplayAmount(
+                                  fallbackAmt,
+                                ).toFixed(2)}`;
+                            return (
+                              <InfoRow
+                                label="Payable to Supplier"
+                                value={value}
+                              />
+                            );
+                          })()}
                         {/* Contact — "Booking done for" value entered on the
                             booking page, shown as "<value>/<agentName>". Only
                             rendered when a value was entered. */}
@@ -1788,8 +1859,22 @@ export default function BookingDetailedView() {
                           label="Agent Reference"
                           value={booking.customer?.agentLpo}
                         />
+                        {/* Confirmation number row. For admin / super-admin
+                            this is the "Hotel Confirmation Number" — the
+                            actual reference the hotel/supplier returned, so
+                            it's relabeled to make that scope explicit.
+                            Agents keep the neutral "Confirmation No." label
+                            they've always seen: it's the same field they
+                            use as their customer-facing reference and does
+                            not by itself name the supplier, so no
+                            supplier-identifying information is exposed by
+                            the label change. */}
                         <InfoRow
-                          label="Confirmation No."
+                          label={
+                            isAdmin || isSuperAdmin
+                              ? "Hotel Confirmation Number"
+                              : "Confirmation No."
+                          }
                           value={
                             booking.confirmationNumber ||
                             booking.customer?.confirmationNumber
@@ -1800,7 +1885,7 @@ export default function BookingDetailedView() {
                           value={
                             booking.deadlineDate ? (
                               <span style={{ color: "#dc2626", fontWeight: 600 }}>
-                                {`${booking.deadlineDate.slice(0, 10)} 02:00 PM (UAE)`}
+                                {`${booking.deadlineDate.slice(0, 10)} ${DEADLINE_TIME_EOD}`}
                               </span>
                             ) : (
                               "-"
@@ -1976,7 +2061,7 @@ export default function BookingDetailedView() {
                           }}
                         >
                           <div style={{ fontWeight: 600, marginBottom: 2 }}>
-                            Cancellation policy: {room.refundStatus || "—"}
+                            Cancellation policy: {roomRefundWords(room) || "—"}
                             {room.freeCancellationUntil
                               ? ` · Free cancellation until ${room.freeCancellationUntil}`
                               : ""}
@@ -2019,7 +2104,13 @@ export default function BookingDetailedView() {
                               <tr>
                                 <th>Room Category</th>
                                 <th>Meal Type</th>
+                                {/* Supplier Ref. — same admin-only rule
+                                    as the Supplier Name row above. Hiding
+                                    both the header and cell keeps the
+                                    table shape consistent for each role. */}
+                                {(isAdmin || isSuperAdmin) && (
                                 <th>Supplier Ref.</th>
+                                )}
                                 <th>Adults</th>
                                 <th>Children</th>
                                 <th>Rate</th>
@@ -2030,7 +2121,21 @@ export default function BookingDetailedView() {
                               <tr>
                                 <td>{room.roomCategory || "-"}</td>
                                 <td>{room.mealPlan || "-"}</td>
-                                <td>{booking.supplierReference || "-"}</td>
+                                {/* The unique booking reference the 3rd-party
+                                    supplier returned (IWTX/X3 BookingNumber,
+                                    GRN bref, GoGlobal GoBookingCode, Juniper
+                                    LocatorID, …). In-house bookings persist the
+                                    "0" placeholder — no supplier exists — so
+                                    that renders as "-" instead of a bare 0. */}
+                                {(isAdmin || isSuperAdmin) && (
+                                  <td>
+                                    {booking.supplierReference &&
+                                    String(booking.supplierReference).trim() !==
+                                      "0"
+                                      ? booking.supplierReference
+                                      : "-"}
+                                  </td>
+                                )}
                                 <td>{room.adults ?? "-"}</td>
                                 <td>{room.children ?? "0"}</td>
                                 <td>
@@ -2132,7 +2237,11 @@ export default function BookingDetailedView() {
                       // stays the visual anchor.
                       const nativeCurr = booking.supplierNativeCurrency;
                       const nativeAmt = Number(booking.supplierNativeAmount);
+                      // Admin/super-admin only: the label prefixes the
+                      // amount with "supplier:" which by itself hints at
+                      // the supplier chain, so agents must not see it.
                       const showNative =
+                        (isAdmin || isSuperAdmin) &&
                         !!nativeCurr &&
                         nativeCurr !== currencyCode &&
                         Number.isFinite(nativeAmt) &&
@@ -3369,9 +3478,9 @@ export default function BookingDetailedView() {
                           );
                         })()}
                       {/* Past the free-cancellation deadline the booking can
-                          still be cancelled — the supplier may charge only a
-                          partial penalty — but the operator has to accept that
-                          charges may apply before the button unlocks. */}
+                          still be cancelled, but the agent's credit is not
+                          refunded — the operator has to accept that before the
+                          button unlocks. */}
                       {isPastCancellationDeadline && (
                         <div
                           className="mb-3 text-start"
@@ -3389,9 +3498,9 @@ export default function BookingDetailedView() {
                             The free-cancellation deadline has passed
                           </div>
                           <div className="mb-2">
-                            You can still cancel this booking, but the supplier may
-                            apply cancellation charges. Any charge is settled
-                            separately from the amount shown above.
+                            {booking?.cancellationChargeNow != null
+                              ? `You can still cancel this booking. ${booking.cancellationChargeNow} will be kept as the cancellation charge and the rest refunded to the agent's credit.`
+                              : "You can still cancel this booking, but the booking amount will not be refunded to the agent's credit."}
                           </div>
                           <Form.Check
                             type="checkbox"
@@ -3403,7 +3512,39 @@ export default function BookingDetailedView() {
                             }
                             label={
                               <span className="fw-semibold">
-                                I understand that cancellation charges may apply.
+                                I understand that the booking amount will not be refunded.
+                              </span>
+                            }
+                          />
+                        </div>
+                      )}
+                      {/* Non-refundable: nothing goes back to the agent's
+                          credit online — only Finance can refund it. */}
+                      {isNonRefundableBooking && (
+                        <div className="mb-3 text-start small border border-danger-subtle bg-danger-subtle text-danger-emphasis rounded px-3 py-2">
+                          <div className="fw-semibold mb-1">
+                            <FaExclamationCircle className="me-2" />
+                            Non-refundable booking
+                          </div>
+                          <div className="mb-2">
+                            {isMixedRefundBooking
+                              ? "The non-refundable room(s) will not be refunded to the agent's credit. Only the refundable rooms' share goes back."
+                              : "The booking amount will not be refunded to the agent's credit."}{" "}
+                            A refund of a non-refundable amount can only be made
+                            by the Finance team. It cannot be done online.
+                          </div>
+                          <Form.Check
+                            type="checkbox"
+                            id="acceptNonRefundableCancellation"
+                            checked={acceptCancellationCharges}
+                            disabled={cancellingBooking}
+                            onChange={(e) =>
+                              setAcceptCancellationCharges(e.target.checked)
+                            }
+                            label={
+                              <span className="fw-semibold">
+                                I understand that the non-refundable amount will
+                                not be refunded online.
                               </span>
                             }
                           />
@@ -3456,7 +3597,8 @@ export default function BookingDetailedView() {
                       disabled={
                         cancellingBooking ||
                         !cancellationReason.trim() ||
-                        (isPastCancellationDeadline && !acceptCancellationCharges)
+                        ((isPastCancellationDeadline || isNonRefundableBooking) &&
+                          !acceptCancellationCharges)
                       }
                     >
                       {cancellingBooking ? (

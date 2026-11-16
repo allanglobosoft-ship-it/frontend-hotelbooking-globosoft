@@ -1,0 +1,27 @@
+/* ============================================================
+   /new-booking/cab search form — page-specific field tweaks.
+   Classes are `cab-` prefixed; selectors are anchored on the
+   .hs-page .search-card-modern chrome from HotelSearch.css so they
+   out-rank its `!important` field padding.
+   ============================================================ */
+
+/* Time fields: clock icon inside the TimeApplyPicker input, and the input
+   pinned to the 46px every other field on the form uses (its default
+   padding otherwise makes it a few px taller, knocking labels out of line). */
+.cab-time-field {
+  position: relative;
+}
+.cab-time-field .cab-time-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #9ca3af;
+  pointer-events: none;
+  z-index: 1;
+}
+.hs-page .search-card-modern .cab-time-field .form-control {
+  height: 46px !important;
+  padding-left: 2.4rem !important;
+  cursor: pointer;
+}

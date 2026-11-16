@@ -53,12 +53,44 @@ import { toast } from "react-hot-toast";
 import axiosInstance from "../../components/AxiosInstance";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
+import {
+  canSeeSupplierNames,
+  savedPackageRate,
+  savedSupplierHotelRate,
+  supplierLabel,
+  supplierStatusLabel,
+} from "../booking/packagebooking/supplierHotels";
+import { useFeatureFlag } from "../../config/FeatureFlagsContext";
+import {
+  FulfilmentStatusBadge,
+  SupplierFulfilmentCell,
+  SupplierFulfilmentModal,
+  fetchFulfilment,
+  isTracked,
+} from "./PackageSupplierFulfilment";
+import { ServiceFulfilmentSections } from "./PackageServiceFulfilment";
 // HotelBookingPage's stylesheet is the source of truth for the .pg-option /
 // .pg-option-selected / .pg-option-radio / .pg-option-logo classes used by
 // the "Select Payment Gateway" modal below. Importing here keeps the modal
 // visually identical to the Hotel / Package-Create / LastMinute / LongStay
 // flows without a copy.
 import "../../styles/HotelBookingPage.css";
+import { orderIdPathSegment } from "../../utils/urlSafety";
+
+// Line under a supplier hotel's name. Admins see the supplier and whether it
+// still has to be booked by hand; everyone else only sees it's a live-rate hotel.
+const SupplierHotelNote = ({ hotel }) => {
+  if (!canSeeSupplierNames()) {
+    return <div className="small text-muted">Live rate hotel</div>;
+  }
+  return (
+    <div className="small text-muted">
+      {supplierLabel(hotel.supplier)} · {supplierStatusLabel(hotel.supplierBookingStatus)}
+      {hotel.supplierReference && ` · Ref: ${hotel.supplierReference}`}
+      {hotel.hotelBookingCode && ` · Hotel booking: ${hotel.hotelBookingCode}`}
+    </div>
+  );
+};
 
 // CC Avenue is the only real gateway wired today (see
 // project_ccavenue_payment_integration memory). Kept as a list so adding
@@ -254,8 +286,8 @@ const formatDate = (dateString) => {
   }
 };
 
-// Deadline Date carries the package's Policy Details validityTo (the latest
-// validity window). Every package-booking detail view shows BOTH the date AND
+// Deadline Date is the end of the last free-cancellation day, worked out by the
+// backend from the travel date. Every package-booking detail view shows BOTH the date AND
 // the time. Values may be a full datetime ("yyyy-MM-ddTHH:mm:ss") or a legacy
 // date-only ("yyyy-MM-dd"); a date-only value is normalised to local midnight
 // so it renders as "12:00 AM" rather than a timezone-shifted time — new Date()
@@ -378,6 +410,25 @@ export default function PackageBookingDetailView() {
     useState(0);
   const [isFinalizingReconfirmPayment, setIsFinalizingReconfirmPayment] =
     useState(false);
+  // Backend switch package.payment.card-via-gateway: a "Card" booking is
+  // reconfirmed through the payment gateway, never the credit limit. Off by
+  // default (Reconfirm then behaves as before).
+  const cardViaGateway = !!useFeatureFlag("packageCardViaGateway");
+  // Backend switch package.admin-confirmation.enabled: a paid booking waits
+  // for an admin, who books the hotel with a supplier from Selected Services.
+  // Off by default (nothing below is fetched or rendered then).
+  const adminConfirmation = !!useFeatureFlag("packageAdminConfirmation");
+  // Backend switch package.service-fulfilment.enabled (on top of the one
+  // above): separate Book Hotel / Book Transfer / Book Activities cards below
+  // Selected Services, each service confirmed on its own
+  // (PackageServiceFulfilment.jsx). Off by default: none of it renders.
+  const serviceFulfilmentFlag = !!useFeatureFlag("packageServiceFulfilment");
+  const serviceFulfilment = adminConfirmation && serviceFulfilmentFlag;
+  // The Selected Preferred Hotels heading's slot for the booking's status and
+  // Reject booking (filled by ServiceFulfilmentSections' three-column layout).
+  const [servicesHeaderEl, setServicesHeaderEl] = useState(null);
+  const [fulfilment, setFulfilment] = useState(null);
+  const [showFulfilmentModal, setShowFulfilmentModal] = useState(false);
 
   // ── Add New Item (amendment) picker — same flow as hotel detail view.
   // Opens a modal listing every sub-booking type; the chosen type's create
@@ -429,6 +480,32 @@ export default function PackageBookingDetailView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookingId]);
 
+  // Admin confirmation status — refreshed whenever the booking's payment /
+  // cancellation state changes (reconfirm, cancel). Off: never fetched.
+  const loadFulfilment = async () => {
+    if (!adminConfirmation || !bookingId) return;
+    try {
+      setFulfilment(await fetchFulfilment(bookingId));
+    } catch (error) {
+      console.warn("Could not load the booking's confirmation status:", error);
+      setFulfilment(null);
+    }
+  };
+  useEffect(() => {
+    loadFulfilment();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    adminConfirmation,
+    bookingId,
+    bookingDetails?.bookingStatus,
+    bookingDetails?.isCancelled,
+  ]);
+  // With per-service confirmation on, hotels are booked from the separate
+  // "Book Hotel" card instead, so the old single-hotel Supplier column is not
+  // shown (flag off: exactly as before).
+  const showSupplierColumn =
+    adminConfirmation && !serviceFulfilment && canSeeSupplierNames() && isTracked(fulfilment);
+
   // CC Avenue post-payment resume — mirrors BookingDetailedView.jsx (hotel
   // reconfirm) and PackageCheckout.jsx (package create). CC Avenue's
   // redirect is a real cross-domain browser navigation, so React Router
@@ -456,7 +533,7 @@ export default function PackageBookingDetailView() {
       try {
         setIsFinalizingReconfirmPayment(true);
         const statusResponse = await axiosInstance.get(
-          `/api/payment/ccavenue/status/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/status/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         if (statusResponse.data?.status !== "SUCCESS") {
           toast.error(
@@ -466,7 +543,7 @@ export default function PackageBookingDetailView() {
           return;
         }
         const res = await axiosInstance.post(
-          `/api/payment/ccavenue/finalize-package-reconfirm/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/finalize-package-reconfirm/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         const body = res?.data || {};
         if (body.status === "success") {
@@ -699,6 +776,26 @@ export default function PackageBookingDetailView() {
   // the History modal picks up the freshly-captured reconfirm location + IP.
   const confirmReconfirmBooking = async () => {
     if (!bookingId) return;
+    // "Card" booking with the card-via-gateway switch on: pay through the
+    // gateway (same picker as the insufficient-credit path) instead of the
+    // credit limit. Switch off: skipped, Reconfirm behaves as before.
+    const isCardBooking = ["CARD", "CARD_PAYMENT"].includes(
+      String(bookingDetails?.modeOfPayment || "").trim().toUpperCase(),
+    );
+    if (cardViaGateway && isCardBooking && bookingDetails?.agentId) {
+      const agentResp = await axiosInstance
+        .get(`/api/agent/${bookingDetails.agentId}`)
+        .catch(() => ({ data: { cardPaymentEnabled: false } }));
+      setReconfirmInsufficientAmount(Number(bookingDetails?.totalPrice) || 0);
+      setShowReconfirmModal(false);
+      if (!agentResp?.data?.cardPaymentEnabled) {
+        toast.error("Card payment is not enabled for this agent.");
+        return;
+      }
+      setReconfirmSelectedGateway("");
+      setShowReconfirmGatewayModal(true);
+      return;
+    }
     try {
       setIsReconfirming(true);
       const response = await axiosInstance.put(
@@ -1139,7 +1236,7 @@ export default function PackageBookingDetailView() {
     try {
       setSavingNote(true);
       const createdBy =
-        localStorage.getItem("UserName") ||
+        sessionStorage.getItem("UserName") ||
         localStorage.getItem("username") ||
         sessionStorage.getItem("UserName") ||
         "unknown";
@@ -1265,6 +1362,20 @@ export default function PackageBookingDetailView() {
   const termsAndConditions = Array.isArray(packageView?.termsAndConditions)
     ? packageView.termsAndConditions
     : [];
+  // A saved inclusion / exclusion / term can hold several lines (a custom
+  // entry typed as a list in Package Registration). Each line is shown as its
+  // own bullet, in full, instead of the lines running together in one bullet.
+  const toBulletLines = (list, prefix) =>
+    list.flatMap((item, i) =>
+      String(item?.description ?? "")
+        .split(/\r?\n/)
+        .map((line) => line.replace(/^\s*[•·*-]\s*/, "").trim())
+        .filter(Boolean)
+        .map((text, k) => ({ key: `${prefix}-${item?.otherId ?? "custom"}-${i}-${k}`, text })),
+    );
+  const inclusionLines = toBulletLines(inclusions, "inc");
+  const exclusionLines = toBulletLines(exclusions, "exc");
+  const termsLines = toBulletLines(termsAndConditions, "tnc");
   const nights = packageView?.noOfNights ?? "";
   const nightsInt = parseInt(nights, 10);
   const daysInt = Number.isFinite(nightsInt) ? nightsInt + 1 : null;
@@ -1689,7 +1800,21 @@ export default function PackageBookingDetailView() {
 
                 {/* ── Selected Services ──────────────────────────── */}
                 <div style={CARD_STYLE}>
-                  <div style={SECTION_HEADER}>Selected Services</div>
+                  <div style={SECTION_HEADER}>
+                    {/* Renamed only with per-service confirmation on (off: as before). */}
+                    {serviceFulfilment ? "Selected Preferred Hotels" : "Selected Services"}
+                    {/* With per-service confirmation on, the booking's status is on the Book Hotel card instead. */}
+                    {adminConfirmation && !serviceFulfilment && (
+                      <FulfilmentStatusBadge fulfilment={fulfilment} />
+                    )}
+                    {serviceFulfilment && (
+                      <span
+                        ref={setServicesHeaderEl}
+                        className="ms-auto d-flex align-items-center gap-2"
+                        style={{ fontWeight: 400 }}
+                      />
+                    )}
+                  </div>
                   <div style={{ padding: "10px 16px 12px" }}>
                     {bookingDetails.selections?.hotels &&
                     bookingDetails.selections.hotels.length > 0 ? (
@@ -1708,14 +1833,28 @@ export default function PackageBookingDetailView() {
                             >
                               Per Pax Rate
                             </th>
+                            {showSupplierColumn && (
+                              <th style={{ width: 280, paddingLeft: 28 }}>Supplier</th>
+                            )}
                           </tr>
                         </thead>
                         <tbody>
                           {bookingDetails.selections.hotels.map(
                             (hotel, hIdx) => (
                               <tr key={hotel.hotelId || hIdx}>
-                                <td>{hotel.hotelName}</td>
-                                <td>{hotel.hotelId}</td>
+                                <td>
+                                  {hotel.hotelName}
+                                  {hotel.supplier && (
+                                    <SupplierHotelNote hotel={hotel} />
+                                  )}
+                                </td>
+                                <td>
+                                  {hotel.supplier
+                                    ? canSeeSupplierNames()
+                                      ? hotel.supplierHotelCode
+                                      : "—"
+                                    : hotel.hotelId}
+                                </td>
                                 <td className="text-end">
                                   {hotel.currency || "AED"}{" "}
                                   {parseFloat(
@@ -1723,7 +1862,24 @@ export default function PackageBookingDetailView() {
                                   ).toLocaleString("en-US", {
                                     minimumFractionDigits: 2,
                                   })}
+                                  {hotel.supplier && (
+                                    <div className="small text-muted">
+                                      Whole stay
+                                    </div>
+                                  )}
                                 </td>
+                                {showSupplierColumn && (
+                                  <td style={{ paddingLeft: 28 }}>
+                                    {hIdx === 0 ? (
+                                      <SupplierFulfilmentCell
+                                        fulfilment={fulfilment}
+                                        onOpen={() => setShowFulfilmentModal(true)}
+                                      />
+                                    ) : (
+                                      <span className="text-muted">—</span>
+                                    )}
+                                  </td>
+                                )}
                               </tr>
                             ),
                           )}
@@ -1753,13 +1909,69 @@ export default function PackageBookingDetailView() {
                         value={`${bookingDetails.selections.activity.activityName} — AED ${parseFloat(bookingDetails.selections.activity.selectedRate || 0).toLocaleString("en-US", { minimumFractionDigits: 2 })}`}
                       />
                     )}
+
+                    {/* ── Book Hotel / Book Transfer / Book Activities ── */}
+                    {/* Per-service confirmation only (flag off: not rendered): three
+                        columns inside this card, each opened below them. */}
+                    {serviceFulfilment && (
+                      <ServiceFulfilmentSections
+                        layout="columns"
+                        headerTarget={servicesHeaderEl}
+                        bookingId={bookingId}
+                        cardStyle={CARD_STYLE}
+                        headerStyle={SECTION_HEADER}
+                        canSeeSuppliers={canSeeSupplierNames()}
+                        refreshKey={`${bookingDetails?.bookingStatus}|${bookingDetails?.isCancelled}`}
+                        onChanged={async () => {
+                          await fetchDetails();
+                          await loadFulfilment();
+                        }}
+                      />
+                    )}
                   </div>
                 </div>
+
+                {showSupplierColumn && (
+                  <SupplierFulfilmentModal
+                    show={showFulfilmentModal}
+                    onHide={() => setShowFulfilmentModal(false)}
+                    bookingId={bookingId}
+                    fulfilment={fulfilment}
+                    onDone={async () => {
+                      await fetchDetails();
+                      await loadFulfilment();
+                    }}
+                  />
+                )}
 
                 {/* ── Pricing ────────────────────────────────────── */}
                 <div style={CARD_STYLE}>
                   <div style={SECTION_HEADER}>Pricing</div>
                   <div style={{ padding: "12px 16px" }}>
+                    {savedPackageRate(bookingDetails) > 0 && (
+                      <>
+                        <InfoRow
+                          label="Package Rate"
+                          value={`AED ${savedPackageRate(bookingDetails).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                        />
+                        <InfoRow
+                          label="Hotel"
+                          value={`AED ${savedSupplierHotelRate(bookingDetails).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                        />
+                      </>
+                    )}
+                    {/* Meal plan picked on the Hotels tab — only recorded for
+                        bookings made since the backend stores it. */}
+                    {bookingDetails.selections?.mealPlan?.mealPlanCode && (
+                      <InfoRow
+                        label="Meal Plan"
+                        value={`${bookingDetails.selections.mealPlan.mealPlanName || bookingDetails.selections.mealPlan.mealPlanCode}${
+                          bookingDetails.selections.mealPlan.selectedRate != null
+                            ? ` — AED ${parseFloat(bookingDetails.selections.mealPlan.selectedRate || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                            : ""
+                        }`}
+                      />
+                    )}
                     {bookingDetails.tourismDirham != null &&
                       bookingDetails.tourismDirham !== 0 && (
                         <InfoRow
@@ -1823,10 +2035,10 @@ export default function PackageBookingDetailView() {
                       color: "#222",
                     }}
                   >
-                    {inclusions.length > 0 ? (
+                    {inclusionLines.length > 0 ? (
                       <ul style={{ marginBottom: 0, paddingLeft: "18px" }}>
-                        {inclusions.map((i) => (
-                          <li key={`inc-${i.otherId}`}>{i.description}</li>
+                        {inclusionLines.map((l) => (
+                          <li key={l.key}>{l.text}</li>
                         ))}
                       </ul>
                     ) : (
@@ -1847,10 +2059,10 @@ export default function PackageBookingDetailView() {
                       color: "#222",
                     }}
                   >
-                    {exclusions.length > 0 ? (
+                    {exclusionLines.length > 0 ? (
                       <ul style={{ marginBottom: 0, paddingLeft: "18px" }}>
-                        {exclusions.map((i) => (
-                          <li key={`exc-${i.otherId}`}>{i.description}</li>
+                        {exclusionLines.map((l) => (
+                          <li key={l.key}>{l.text}</li>
                         ))}
                       </ul>
                     ) : (
@@ -1883,7 +2095,7 @@ export default function PackageBookingDetailView() {
                 </div>
 
                 {/* ── Terms & Conditions ─────────────────────── */}
-                {termsAndConditions.length > 0 && (
+                {termsLines.length > 0 && (
                   <div style={CARD_STYLE}>
                     <div style={SECTION_HEADER}>Terms & Conditions</div>
                     <div
@@ -1894,8 +2106,8 @@ export default function PackageBookingDetailView() {
                       }}
                     >
                       <ul style={{ marginBottom: 0, paddingLeft: "18px" }}>
-                        {termsAndConditions.map((t) => (
-                          <li key={`tnc-${t.otherId}`}>{t.description}</li>
+                        {termsLines.map((l) => (
+                          <li key={l.key}>{l.text}</li>
                         ))}
                       </ul>
                     </div>

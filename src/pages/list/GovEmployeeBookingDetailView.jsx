@@ -25,6 +25,7 @@ import { useParams, useNavigate, useLocation } from "react-router-dom";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
+import { labelOfRate, refundLabelText, statusText } from "../../utils/refundLabel";
 import toast from "react-hot-toast";
 import {
   FaHistory, FaMapMarkerAlt, FaNetworkWired, FaCalendarAlt, FaClock,
@@ -35,6 +36,7 @@ import {
 // gov-employee detail picker renders identically to the hotel detail
 // picker.
 import "../../styles/HotelBookingPage.css";
+import { orderIdPathSegment } from "../../utils/urlSafety";
 
 // Reverse-geocode browser coordinates to a readable address for the
 // Booking History audit trail. Tries OpenStreetMap Nominatim first
@@ -215,7 +217,7 @@ export default function GovEmployeeBookingDetailView() {
   // Role gate for admin-only actions — currently gates the "Send Email"
   // affordance inside the PDF preview modal. Matches HotelBookingPage's
   // convention.
-  const activeUserRole = localStorage.getItem("currentActiveRole");
+  const activeUserRole = sessionStorage.getItem("currentActiveRole");
   const isAdmin = String(activeUserRole || "").toUpperCase() === "ADMIN";
   const isSuperAdmin =
     String(activeUserRole || "").toUpperCase() === "SUPER_ADMIN";
@@ -232,11 +234,11 @@ export default function GovEmployeeBookingDetailView() {
   // currentActiveRole isn't set for single-role logins, so fall back to
   // userRole (same convention as HotelSearch.jsx). Visibility only — no
   // API/flow/permission change.
-  const activeRole = String(localStorage.getItem("currentActiveRole") || "")
+  const activeRole = String(sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
   const storedRoles = String(
-    localStorage.getItem("userRole") || "",
+    sessionStorage.getItem("userRole") || "",
   ).toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
@@ -408,6 +410,9 @@ export default function GovEmployeeBookingDetailView() {
     .replace(/\s+/g, "")
     .toUpperCase();
   const isCancelled = !!booking?.cancelled;
+  // Today's label for an open booking. A cancelled one keeps its stored status.
+  const refundWordsNow =
+    (!isCancelled && booking?.refundLabelText) || statusText(booking?.refundStatus);
   const isConfirmedOrLater =
     normalizedStatus === "CONFIRMED" ||
     normalizedStatus === "RECONFIRMED" ||
@@ -786,7 +791,7 @@ export default function GovEmployeeBookingDetailView() {
         // Re-verify server-side before finalizing — never trust the
         // redirect's own query string alone.
         const statusResponse = await axiosInstance.get(
-          `/api/payment/ccavenue/status/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/status/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         if (statusResponse.data?.status !== "SUCCESS") {
           toast.error(
@@ -796,7 +801,7 @@ export default function GovEmployeeBookingDetailView() {
           return;
         }
         const response = await axiosInstance.post(
-          `/api/payment/ccavenue/finalize-govemployee-reconfirm/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/finalize-govemployee-reconfirm/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         if (response.data?.success) {
           toast.success(
@@ -925,7 +930,6 @@ export default function GovEmployeeBookingDetailView() {
     try {
       setSavingNote(true);
       const createdBy =
-        localStorage.getItem("UserName") ||
         sessionStorage.getItem("UserName") ||
         "unknown";
       const res = await axiosInstance.post(
@@ -995,6 +999,35 @@ export default function GovEmployeeBookingDetailView() {
       );
     } finally {
       setGeneratingDocType(null);
+    }
+  };
+
+  // Uploaded government ID. The preview endpoint needs the Bearer token,
+  // which a plain <a href> navigation never sends, so fetch it through
+  // axiosInstance and open the file as a blob URL in a new tab. It is asked
+  // for through the booking (not by file path), so the server checks that
+  // this login may open that booking.
+  const handleViewGovtId = async () => {
+    // Opened before the request so popup blockers treat it as a click.
+    const previewTab = window.open("", "_blank");
+    try {
+      const res = await axiosInstance.get(`/api/gov-employee-id-upload/booking/${id}`, {
+        responseType: "blob",
+      });
+      const blobUrl = URL.createObjectURL(res.data);
+      if (previewTab) {
+        previewTab.location.href = blobUrl;
+      } else {
+        window.open(blobUrl, "_blank");
+      }
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+    } catch (e) {
+      if (previewTab) previewTab.close();
+      toast.error(
+        e.response?.status === 403
+          ? "You are not allowed to view this document."
+          : "Failed to open the uploaded ID",
+      );
     }
   };
 
@@ -1293,7 +1326,7 @@ export default function GovEmployeeBookingDetailView() {
                           value={
                             booking.deadlineDate ? (
                               <span style={{ color: "#dc3545", fontWeight: 600 }}>
-                                {`${booking.deadlineDate.slice(0, 10)} 02:00 PM (UAE)`}
+                                {`${booking.deadlineDate.slice(0, 10)} 11:59 PM (UAE)`}
                               </span>
                             ) : (
                               "-"
@@ -1308,7 +1341,7 @@ export default function GovEmployeeBookingDetailView() {
                         {booking.confirmationNumber && (
                           <InfoRow label="Confirmation No." value={booking.confirmationNumber} />
                         )}
-                        <InfoRow label="Refund Status" value={booking.refundStatus} />
+                        <InfoRow label="Refund Status" value={refundWordsNow || null} />
                         <InfoRow
                           label="Payment Mode"
                           value={
@@ -1373,15 +1406,14 @@ export default function GovEmployeeBookingDetailView() {
                             label="Document"
                             value={
                               booking.govtIdFilePath ? (
-                                <a
-                                  href={`${axiosInstance.defaults.baseURL || ""}/api/gov-employee-id-upload/preview?path=${encodeURIComponent(
-                                    booking.govtIdFilePath,
-                                  )}`}
-                                  target="_blank"
-                                  rel="noreferrer"
+                                <Button
+                                  variant="link"
+                                  className="p-0 border-0 align-baseline"
+                                  style={{ fontSize: "inherit" }}
+                                  onClick={() => handleViewGovtId()}
                                 >
                                   {booking.govtIdFileName || "View uploaded ID"}
-                                </a>
+                                </Button>
                               ) : (
                                 "-"
                               )
@@ -1422,7 +1454,7 @@ export default function GovEmployeeBookingDetailView() {
                             <td>{r.mealPlan || "-"}</td>
                             <td>{r.adults || 0}</td>
                             <td>{r.children || 0}</td>
-                            <td>{r.nonRefundable ? "Non-Refundable" : "Flexible"}</td>
+                            <td>{refundLabelText(labelOfRate(r))}</td>
                             <td className="text-end">{money(r.rate)}</td>
                           </tr>
                         ))}
@@ -1490,8 +1522,10 @@ export default function GovEmployeeBookingDetailView() {
                 <div style={card}>
                   <div style={SECTION_HEADER}>Cancellation Policy</div>
                   <div style={{ padding: "12px 16px", fontSize: "0.82rem", color: "#333" }}>
-                    {String(booking.refundStatus || "").toLowerCase().includes("non")
-                      ? "Non-Refundable — this booking cannot be cancelled for a refund once confirmed."
+                    {refundWordsNow === "Non Refundable"
+                      ? "Non Refundable — this booking cannot be cancelled for a refund once confirmed."
+                      : refundWordsNow === "Flexible - Partial"
+                        ? "Flexible - Partial — cancelling now keeps part of the booking under the hotel's refund terms."
                       : "Flexible — cancellation is allowed per the hotel's refund terms."}
                     {isCancelled && booking.cancellationReason && (
                       <div className="text-danger mt-2">Cancelled — {booking.cancellationReason}</div>
@@ -1812,8 +1846,11 @@ export default function GovEmployeeBookingDetailView() {
         </Modal.Header>
         <Modal.Body>
           <p className="text-muted small">
-            Are you sure you want to cancel this booking? Refundable bookings will have their agent
-            credit restored.
+            Are you sure you want to cancel this booking?{" "}
+            {booking?.refundAmountNow != null &&
+            Number(booking.refundAmountNow) < Number(booking.totalRate)
+              ? `Cancelling now keeps ${money(Number(booking.totalRate) - Number(booking.refundAmountNow))} as the cancellation charge.`
+              : "Refundable bookings will have their agent credit restored."}
           </p>
           {/* Informational only — booking value warning. Reuses the same
               money() helper used elsewhere on the page so the currency and

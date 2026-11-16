@@ -29,6 +29,7 @@ import {
   FaTrashAlt,
 } from "react-icons/fa";
 import { formatDateTimeDisplay } from "../../utils/dateUtils";
+import { escapeHtml } from "../../utils/safeHtml";
 
 /**
  * Read-only details page for a single agent. Opened from the Agent list
@@ -446,7 +447,12 @@ const AgentView = () => {
       return;
     }
     Swal.fire({
-      title: `Set ${agent?.companyName || "this agent"} to ${nextLabel}?`,
+      titleText: `Set ${agent?.companyName || "this agent"} to ${nextLabel}?`,
+      // The backend also switches the logins of this agent's sub agents and
+      // sub users (SubAccountLoginStatusService). Bookings are kept.
+      text: goingInactive
+        ? "The agent and all of its sub agents and sub users will be signed out and will not be able to log in or make bookings. Existing bookings are not affected."
+        : "The agent can log in again. Its sub agents and sub users that are Active can log in again too.",
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: goingInactive ? "#d33" : "#198754",
@@ -493,11 +499,11 @@ const AgentView = () => {
   // Everything else on this page is untouched.
   // ===================================================================
   const activeRoleRaw = (
-    localStorage.getItem("currentActiveRole") ||
+    sessionStorage.getItem("currentActiveRole") ||
     ""
   ).trim().toUpperCase();
   const storedRolesRaw = (
-    localStorage.getItem("userRole") || ""
+    sessionStorage.getItem("userRole") || ""
   ).toUpperCase();
   const isSuperAdmin = activeRoleRaw
     ? activeRoleRaw === "SUPER_ADMIN"
@@ -509,7 +515,7 @@ const AgentView = () => {
     if (!isSuperAdmin) return; // belt-and-braces guard for the render check
     const name = agent?.companyName || `Agent #${id}`;
     Swal.fire({
-      title: `Delete ${name}?`,
+      titleText: `Delete ${name}?`,
       html:
         `<div style="text-align:left">` +
         `<p style="margin:0 0 8px 0">This permanently removes the agent record.</p>` +
@@ -1100,7 +1106,7 @@ const AgentView = () => {
   const handleDeleteTempCredit = (row) => {
     Swal.fire({
       title: "Delete this temporary credit limit?",
-      html: `Amount: <b>${row.amount}</b><br/>This removes it immediately — it will no longer count toward the agent's available credit.`,
+      html: `Amount: <b>${escapeHtml(row.amount)}</b><br/>This removes it immediately — it will no longer count toward the agent's available credit.`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

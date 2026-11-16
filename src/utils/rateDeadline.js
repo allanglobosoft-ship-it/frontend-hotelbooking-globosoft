@@ -1,4 +1,11 @@
 import React from "react";
+import {
+  REFUND_NON_REFUNDABLE,
+  REFUND_PARTIAL,
+  chargeNowText,
+  labelOfRate,
+  uaeToday,
+} from "./refundLabel";
 
 /**
  * Free-cancellation deadline shown on every room-list rate card.
@@ -152,6 +159,16 @@ const applySupplierBuffer = (date) => {
 export const resolveDeadlineInfo = (rate, fallbackPolicies) => {
   if (!rate) return null;
 
+  // 0. The backend's own answer (RefundRule.java), already with its safety day.
+  //    A rate the rule has judged has no other date to look for: no cutoff means
+  //    no free window.
+  if (rate.refundTerms?.label) {
+    const cutoff = parseSupplierDate(rate.refundTerms.cutoff);
+    return cutoff
+      ? { date: cutoff, source: "refund terms", raw: rate.refundTerms.cutoff }
+      : null;
+  }
+
   // 1. GRN states the end of the free window outright — the most direct
   //    answer any supplier gives, so it wins.
   //
@@ -241,12 +258,10 @@ export const resolveDeadlineDate = (rate, fallbackPolicies) =>
 /**
  * True when the given free-cancellation cut-off is a day in the past.
  *
- * Compared at DAY granularity in the browser's local timezone: today at 00:00
- * against the deadline's 00:00. So a deadline whose day IS today is still
- * considered valid — the label ("11:59 PM (UAE)" / "11:59 PM IST") promises
- * the whole of that day. Only from the next calendar day does this return
- * true, which is what flips the room-list card, the booking-page banner and
- * the confirm modal from "flexible" to "deadline passed".
+ * Compared at DAY granularity in UAE time: today in the UAE against the
+ * deadline's date. So a deadline whose day IS today is still valid — the label
+ * ("11:59 PM (UAE)") promises the whole of that day, and the refund check on the
+ * server uses the same day. Only from the next UAE day does this return true.
  *
  * Accepts anything parseSupplierDate does (Date, ISO string, "dd-MMM-yyyy",
  * "dd/MMM/yyyy", "dd-MM-yyyy", GRN's "dd MMM yyyy, hh:mm AM/PM IST"), so the
@@ -257,22 +272,18 @@ export const resolveDeadlineDate = (rate, fallbackPolicies) =>
 export const isDeadlinePassed = (value) => {
   const d = value instanceof Date ? value : parseSupplierDate(value);
   if (!d || Number.isNaN(d.getTime())) return false;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
   const dead = new Date(d);
   dead.setHours(0, 0, 0, 0);
-  return today > dead;
+  return uaeToday() > dead;
 };
 
 /**
  * Static cut-off times. Suppliers send a date with no time, so the hour is
  * stamped on rather than derived.
  *
- * 02:00 PM is the house convention — every booking page and booking-detail
- * view already prints it, so anything that has to agree with a booking page
- * must use it too. 11:59 PM is the room-list convention for API suppliers.
+ * The deadline day stays free until 11:59 PM UAE on every hotel screen, and
+ * the refund check follows the same day.
  */
-export const DEADLINE_TIME_2PM = "02:00 PM (UAE)";
 export const DEADLINE_TIME_EOD = "11:59 PM (UAE)";
 
 /**
@@ -335,9 +346,8 @@ export const resolveInhouseDeadline = (checkInDate, maxCancellationNights) => {
  * because its deadline comes from the hotel's policy rather than the rate);
  * otherwise it is resolved from the rate as described above.
  *
- * Renders "Non-refundable — no free cancellation" when the rate is
- * non-refundable OR carries no usable date — an empty slot would otherwise
- * read as "we don't know".
+ * Says what the label means today: the last free date, what cancelling now
+ * costs, or that the rate can't be cancelled free.
  */
 export const RateDeadlinePill = ({
   rate,
@@ -345,22 +355,51 @@ export const RateDeadlinePill = ({
   deadline: deadlineOverride,
   timeLabel = DEADLINE_TIME_EOD,
 }) => {
-  const info = isNonRefundable(rate?.nonRefundable)
+  const label = labelOfRate(rate);
+  const judged = Boolean(rate?.refundTerms?.label);
+
+  // Costs part of the booking today.
+  if (judged && label === REFUND_PARTIAL) {
+    return (
+      <span className="fw-semibold" style={{ color: "#997404" }}>
+        {chargeNowText(rate) || "Cancellation charges apply"}
+      </span>
+    );
+  }
+
+  // The rule found no charge at all, so there is no date to reach.
+  if (judged && label !== REFUND_NON_REFUNDABLE && !rate?.refundTerms?.cutoff) {
+    return (
+      <span className="fw-semibold" style={{ color: "#146c43" }}>
+        Free cancellation
+      </span>
+    );
+  }
+
+  // A rate that had a free window and lost it says when it closed.
+  const passedCutoff =
+    judged && label === REFUND_NON_REFUNDABLE
+      ? parseSupplierDate(rate?.refundTerms?.cutoff)
+      : null;
+
+  const info = passedCutoff
+    ? { date: passedCutoff, source: "refund terms", raw: rate.refundTerms.cutoff }
+    : label === REFUND_NON_REFUNDABLE
     ? null
-    : deadlineOverride
+      : deadlineOverride && !judged
       ? { date: deadlineOverride, source: "hotel policy", raw: "" }
       : resolveDeadlineInfo(rate, fallbackPolicies);
 
   if (!info?.date) {
     return (
       <span className="text-danger fw-semibold" title="This rate cannot be cancelled free of charge">
-        Non-refundable — no free cancellation
+        Non Refundable — no free cancellation
       </span>
     );
   }
 
   const { date, source, raw } = info;
-  const label = `${date.getDate()} ${MONTHS[date.getMonth()]} ${date.getFullYear()}`;
+  const dateText = `${date.getDate()} ${MONTHS[date.getMonth()]} ${date.getFullYear()}`;
 
   // Deadline day is already in the past: what the supplier called "flexible"
   // no longer buys the operator a free cancellation. Show the same red styling
@@ -371,9 +410,9 @@ export const RateDeadlinePill = ({
     return (
       <span
         className="text-danger fw-semibold"
-        title={`Free-cancellation window closed on ${label}, ${timeLabel} — read from ${source}${raw ? `: ${raw}` : ""}`}
+        title={`Free-cancellation window closed on ${dateText}, ${timeLabel} — read from ${source}${raw ? `: ${raw}` : ""}`}
       >
-        Free-cancellation window has passed ({label})
+        Free-cancellation window has passed ({dateText})
       </span>
     );
   }
@@ -383,7 +422,7 @@ export const RateDeadlinePill = ({
       className="text-danger fw-semibold"
       title={`Cancel before this date/time to avoid charges — read from ${source}${raw ? `: ${raw}` : ""}`}
     >
-      Deadline Date: {label}, {timeLabel}
+      Deadline Date: {dateText}, {timeLabel}
     </span>
   );
 };

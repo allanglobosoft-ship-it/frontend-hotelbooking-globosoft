@@ -229,7 +229,7 @@ export default function Province() {
 
   const handleDelete = (item) => {
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.stateName}`,
+      titleText: `Are you sure? You want to delete ${item.stateName}`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

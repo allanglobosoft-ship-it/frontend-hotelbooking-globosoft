@@ -220,7 +220,7 @@ export default function OccupancyType() {
   const handleDelete = (item) => {
     console.log("delete item :::" , item);
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.occupancy} Occupancy Type`,
+      titleText: `Are you sure? You want to delete ${item.occupancy} Occupancy Type`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

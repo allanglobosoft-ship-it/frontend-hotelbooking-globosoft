@@ -83,7 +83,7 @@ export default function CredentialGroupDetail() {
 
   const doReveal = (row) => {
     Swal.fire({
-      title: `Reveal ${row.entryKey}?`,
+      titleText: `Reveal ${row.entryKey}?`,
       html: "The decrypted plaintext will be shown in a modal. This action is <b>logged</b> under your username. Continue?",
       icon: "warning",
       showCancelButton: true,
@@ -112,7 +112,7 @@ export default function CredentialGroupDetail() {
 
   const confirmDelete = (row) => {
     Swal.fire({
-      title: `Delete ${row.entryKey}?`,
+      titleText: `Delete ${row.entryKey}?`,
       text: "The encrypted value will be removed permanently.",
       icon: "warning",
       showCancelButton: true,

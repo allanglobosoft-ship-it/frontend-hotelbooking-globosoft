@@ -1,6 +1,7 @@
 import React, { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import axiosInstance from "../../components/AxiosInstance";
+import { clearAuthSession } from "../../utils/authSession";
 
 const Logout = () => {
   const navigate = useNavigate();
@@ -12,15 +13,8 @@ const Logout = () => {
       } catch {
         // Proceed with client-side cleanup even if the server call fails
       } finally {
-        localStorage.removeItem("authToken");
-        localStorage.removeItem("userRole");
-        localStorage.removeItem("UserName");
-        localStorage.removeItem("currentActiveRole");
-        localStorage.removeItem("makeYourOwnPackageAgentId");
-        // RegionalClock country cache (components/RegionalClock.jsx). Without
-        // this the next login inherits the previous user's timezone until the
-        // browser storage is cleared by hand.
-        localStorage.removeItem("regionalClockProfile");
+        // Clears this tab's session only — see utils/authSession.js.
+        clearAuthSession();
         navigate("/login", { replace: true });
       }
     };

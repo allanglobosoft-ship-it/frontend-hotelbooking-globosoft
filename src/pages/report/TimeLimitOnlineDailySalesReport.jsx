@@ -9,6 +9,9 @@ import Supplier from "../../components/filters/Supplier";
 import DestinationCity from "../../components/filters/DestinationCity";
 import { toast } from "react-hot-toast";
 import BackButton from "../../components/BackButton";
+import { escapeHtml } from "../../utils/safeHtml";
+import { csvCell } from "../../utils/csvSafe";
+import { isAgentLogin } from "../../utils/supplierDisplay";
 
 export default function TimeLimitOnlineDailySalesReport() {
 
@@ -53,9 +56,12 @@ export default function TimeLimitOnlineDailySalesReport() {
   const updateFilter = (field, value) =>
     setTempFilters((prev) => ({ ...prev, [field]: value }));
 
-  const activeRole = (localStorage.getItem("currentActiveRole") || "").trim().toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const activeRole = (sessionStorage.getItem("currentActiveRole") || "").trim().toUpperCase();
+  const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
   const isAgentRole = activeRole ? activeRole === "AGENT" : (storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN"));
+  // Supplier names are never shown to agents (owner rule); isAgentLogin()
+  // also covers sub-agents and sub-users.
+  const showSupplier = !isAgentLogin();
 
   const fetchSales = async (filters = {}) => {
     try {
@@ -145,7 +151,7 @@ export default function TimeLimitOnlineDailySalesReport() {
             <tr>
             <th>SI:No</th>
             <th>Agent</th>
-            <th>Supplier</th>
+            ${showSupplier ? '<th>Supplier</th>' : ''}
             <th>Customer</th>
             <th>Booking Code</th>
             <th>Reference</th>
@@ -159,15 +165,15 @@ export default function TimeLimitOnlineDailySalesReport() {
             ${currentreports.map((r, index) =>
               `<tr>
               <td>${index + 1}</td>
-               <td>${r.agentName || ''}</td>
-               <td>${r.supplierName || ''}</td>
-               <td>${r.customerName || ''}</td>
-               <td>${r.bookingCode || ''}</td>
-               <td>${r.referenceCode || ''}</td>
-               <td>${r.bookingDoneBy || ''}</td>
-               <td>${r.bookingDate ? r.bookingDate.split('T')[0] : '_'}</td>
-               <td class="details">${formatDetails(r)}</td>
-               <td>${r.deadlineDate ? r.deadlineDate.split('T')[0] : '_'}</td>
+               <td>${escapeHtml(r.agentName || '')}</td>
+               ${showSupplier ? `<td>${escapeHtml(r.supplierName || '')}</td>` : ''}
+               <td>${escapeHtml(r.customerName || '')}</td>
+               <td>${escapeHtml(r.bookingCode || '')}</td>
+               <td>${escapeHtml(r.referenceCode || '')}</td>
+               <td>${escapeHtml(r.bookingDoneBy || '')}</td>
+               <td>${escapeHtml(r.bookingDate ? r.bookingDate.split('T')[0] : '_')}</td>
+               <td class="details">${escapeHtml(formatDetails(r))}</td>
+               <td>${escapeHtml(r.deadlineDate ? r.deadlineDate.split('T')[0] : '_')}</td>
               </tr>
               `
             ).join('')}
@@ -182,25 +188,19 @@ export default function TimeLimitOnlineDailySalesReport() {
 
   const handleExcel = () => {
     const headers = [
-      'SI.No', 'Agent', 'Supplier', 'Customer', 'Booking Code',
+      'SI.No', 'Agent', ...(showSupplier ? ['Supplier'] : []), 'Customer', 'Booking Code',
       'Reference', 'BookingBy', 'BookDate', 'Details', 'Deadline Date'
     ];
 
-    const escapeCSV = (value) => {
-      if (value === null || value === undefined) return '';
-      const stringValue = String(value);
-      if (stringValue.includes(',') || stringValue.includes('\n') || stringValue.includes('"')) {
-        return `"${stringValue.replace(/"/g, '""')}"`;
-      }
-      return stringValue;
-    };
+    // csvCell neutralises text a spreadsheet would run as a formula.
+    const escapeCSV = (value) => csvCell(value);
 
     const csvContent = [
       headers.map(escapeCSV).join(','),
       ...currentreports.map((r, index) => [
         index + 1,
         r.agentName || '',
-        r.supplierName || '',
+        ...(showSupplier ? [r.supplierName || ''] : []),
         r.customerName || '',
         r.bookingCode || '',
         r.referenceCode || '',
@@ -229,7 +229,7 @@ export default function TimeLimitOnlineDailySalesReport() {
       const search = searchQuery.trim().toLowerCase();
       return (
         String(a.agentName || '').toLowerCase().includes(search) ||
-        String(a.supplierName || '').toLowerCase().includes(search) ||
+        (showSupplier && String(a.supplierName || '').toLowerCase().includes(search)) ||
         String(a.customerName || '').toLowerCase().includes(search) ||
         String(a.bookingCode || '').toLowerCase().includes(search) ||
         String(a.referenceCode || '').toLowerCase().includes(search) ||
@@ -485,7 +485,7 @@ export default function TimeLimitOnlineDailySalesReport() {
                   <tr>
                     <th style={{ width: 100 }}>S/N</th>
                     <th>Agent Name</th>
-                    <th>Supplier Name</th>
+                    {showSupplier && <th>Supplier Name</th>}
                     <th>Customer Name</th>
                     <th>Booking Code</th>
                     <th>Reference Code</th>
@@ -501,7 +501,7 @@ export default function TimeLimitOnlineDailySalesReport() {
                       <tr key={index}>
                         <td>{startIndex + index + 1}</td>
                         <td>{r.agentName}</td>
-                        <td>{r.supplierName}</td>
+                        {showSupplier && <td>{r.supplierName}</td>}
                         <td>{r.customerName}</td>
                         <td>{r.bookingCode}</td>
                         <td>{r.referenceCode}</td>

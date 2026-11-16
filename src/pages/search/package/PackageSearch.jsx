@@ -235,10 +235,10 @@ const PackageSearch = () => {
   // and the agent-required validation is skipped. Mirrors the same rule on
   // /new-booking/hotel (HotelSearch.jsx) — currentActiveRole isn't set for
   // single-role logins, so fall back to userRole.
-  const activeRole = (localStorage.getItem("currentActiveRole") || "")
+  const activeRole = (sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
     : storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN");
@@ -247,7 +247,6 @@ const PackageSearch = () => {
   // agent themselves, so the "Booking Done By Employee" picker is hidden and
   // this name is shown instead. Empty for admin/staff.
   const loggedInAgentName =
-    localStorage.getItem("UserName") ||
     sessionStorage.getItem("UserName") ||
     "";
 
@@ -702,13 +701,13 @@ const PackageSearch = () => {
   // agent (and therefore their markup) even though the picker is hidden.
   useEffect(() => {
     if (!isAgentRole) return undefined;
-    const cached = localStorage.getItem("userId");
+    const cached = sessionStorage.getItem("userId");
     if (cached) {
       setSelfAgentId(cached);
       return undefined;
     }
     const userName =
-      localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+      sessionStorage.getItem("UserName");
     if (!userName) return undefined;
     let cancelled = false;
     axiosInstance
@@ -717,7 +716,7 @@ const PackageSearch = () => {
         if (cancelled) return;
         if (res?.data?.id != null) {
           const idv = String(res.data.id);
-          localStorage.setItem("userId", idv);
+          sessionStorage.setItem("userId", idv);
           setSelfAgentId(idv);
         }
       })
@@ -859,9 +858,9 @@ const PackageSearch = () => {
     // nationality, rate…) is handed off via a one-shot localStorage draft
     // keyed by packageId; PackageBooking reads it via useParams() and
     // clears it on mount. Same pattern CabSearch already uses for
-    // cabBookingDraft. localStorage (not sessionStorage) because window.open
-    // with noopener spawns a tab that does NOT inherit the opener's
-    // sessionStorage but DOES share localStorage on the same origin.
+    // cabBookingDraft. localStorage (not sessionStorage) so the draft reaches
+    // the new tab however it is opened — localStorage is shared by every tab
+    // on the same origin.
     const totalAdults = rooms.reduce((a, r) => a + (r.adults || 0), 0);
     const totalChildren = rooms.reduce((a, r) => a + (r.children || 0), 0);
     const allChildAges = rooms.flatMap((r) => r.childAges || []);
@@ -935,7 +934,9 @@ const PackageSearch = () => {
     }
 
     const url = `/new-booking/package-booking/${pkg.packageId}`;
-    window.open(url, "_blank", "noopener,noreferrer");
+    // No "noopener": the login lives in per-tab sessionStorage
+    // (utils/authSession.js), which a new tab only inherits from its opener.
+    window.open(url, "_blank");
   };
 
   // "Book" on an all-packages listing card. Those rows come from a

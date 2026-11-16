@@ -752,7 +752,7 @@ const ActivityRates = () => {
 
   const handleDelete = (item) => {
     Swal.fire({
-      title: `Delete ${item.activityName}?`, icon:"warning",
+      titleText: `Delete ${item.activityName}?`, icon:"warning",
       showCancelButton:true, confirmButtonColor:"#d33", cancelButtonColor:"#3085d6",
       confirmButtonText:"Yes, delete it!",
     }).then(res => {

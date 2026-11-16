@@ -120,7 +120,7 @@ export default function ApiEndpointCatalog() {
 
   const confirmDeactivate = (row) => {
     Swal.fire({
-      title: `Deactivate ${row.endpointName}?`,
+      titleText: `Deactivate ${row.endpointName}?`,
       text: "Clients will not be able to call this endpoint. Its permission rows are kept for audit.",
       icon: "warning",
       showCancelButton: true,

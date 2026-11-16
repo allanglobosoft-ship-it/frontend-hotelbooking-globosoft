@@ -16,100 +16,44 @@ import AgentSelect from "../components/AgentSelect";
 import AgentCreditBalance from "../components/AgentCreditBalance";
 import axiosInstance from "../components/AxiosInstance";
 import { logAgentSearch } from "../utils/agentSearchLog";
+import {
+  getCurrentActiveRole,
+  getUserId,
+  getUserName,
+  getUserRole,
+  setUserId,
+} from "../utils/authSession";
+import { displayHotelName, isAgentLogin } from "../utils/supplierDisplay";
+import HotelSearchProgressBar from "../components/HotelSearchProgressBar";
+import {
+  incompleteSearchNotice,
+  mapHotelRow,
+  pollUntilFinished,
+  readProgress,
+  roomListApiId,
+  roomListHandoff,
+} from "../utils/hotelSearchResults";
+import { refundPolicyOfFilter } from "../utils/refundLabel";
 import AdvertisementCarousel from "../components/AdvertisementCarousel";
 import TimeApplyPicker from "../components/TimeApplyPicker";
+import PriceRangeSlider from "../components/PriceRangeSlider";
 import DateInput from "../components/DateInput";
 import MapModal from "../components/map/MapModal";
+import { formatHotelPrice } from "../components/map/hotelMapData";
+import {
+  filterHotelResults,
+  idBatches,
+  needsWholeResultSet,
+  resultsQueryParams,
+} from "../utils/hotelResultFilters";
+import useTwentyFourHourEligibility from "../hooks/useTwentyFourHourEligibility";
+import { resultsCounterText } from "../utils/resultsCounter";
 import { ENABLE_MAP_PREVIEW } from "../config/featureFlags";
 import { FaSearch, FaStar, FaInfoCircle } from "react-icons/fa";
 import { useNavigate, useLocation } from "react-router-dom";
 import "../styles/HotelSearch.css";
-
-// ─────────────────────────────────────────────
-// Search Progress Bar
-// ─────────────────────────────────────────────
-// Default supplier list — used when the caller has no company restriction
-// or when the parent hasn't computed a narrower list yet. Kept out of
-// component body so its identity is stable across renders.
-const DEFAULT_PROGRESS_CHANNELS = [
-  "inhouse",
-  "iwtx",
-  "x3",
-  "ratehawk",
-  "darina",
-  "atharva",
-  "jumeirah",
-  "grn",
-];
-
-function SearchProgressBar({ pollStatus, completedChannels, channels, isLoading }) {
-  const effectiveChannels =
-    Array.isArray(channels) && channels.length > 0
-      ? channels
-      : DEFAULT_PROGRESS_CHANNELS;
-  const [progress, setProgress] = useState(0);
-  const [visible, setVisible] = useState(false);
-
-  useEffect(() => {
-    // isLoading covers the tiny window between the user's Search click and
-    // pollStatus flipping to IN_PROGRESS (handleSearchSubmit resets pollStatus
-    // to IDLE first). Without it, a Modify Search briefly hides the bar
-    // because the previous COMPLETED state is wiped before the new poll has
-    // started — the exact "accidentally hides" case the spec warns about.
-    const isActive =
-      pollStatus === "IN_PROGRESS" ||
-      (!!isLoading && pollStatus !== "COMPLETED");
-    if (isActive) {
-      setVisible(true);
-      const done = completedChannels.size;
-      const target =
-        done === 0
-          ? 12
-          : Math.min(90, 12 + (done / effectiveChannels.length) * 78);
-      setProgress(target);
-    } else if (pollStatus === "COMPLETED") {
-      setProgress(100);
-      const timer = setTimeout(() => setVisible(false), 900);
-      return () => clearTimeout(timer);
-    } else {
-      setVisible(false);
-      setProgress(0);
-    }
-  }, [pollStatus, completedChannels, isLoading]);
-
-  if (!visible) return null;
-
-  return (
-    <div className="search-progress-bar-wrap">
-      {/* Label row */}
-      <div className="d-flex justify-content-between align-items-center mb-2">
-        <span className="search-progress-label">Searching hotels...</span>
-        <span className="search-progress-percent">{Math.round(progress)}%</span>
-      </div>
-
-      {/* Bar */}
-      <div className="search-progress-track">
-        <div
-          className="search-progress-fill"
-          style={{ width: `${progress}%` }}
-        />
-      </div>
-
-      {/* Channel pills */}
-      {/* <div className="search-progress-channels">
-        {channels.map((ch) => {
-          const done = completedChannels.has(ch);
-          return (
-            <span key={ch} className={`channel-pill ${done ? "done" : "pending"}`}>
-              {done ? "✓" : <span className="pill-dot" />}
-              {ch}
-            </span>
-          );
-        })}
-      </div> */}
-    </div>
-  );
-}
+import toast from "react-hot-toast";
+import { apiErrorMessage } from "../utils/apiErrorMessage";
 
 // ─────────────────────────────────────────────
 // Counter Button helper
@@ -177,7 +121,9 @@ function RoomGuestSelector({ value, onChange }) {
               children,
               childAges: Array.from(
                 { length: children },
-                (_, j) => r.childAges[j] || 5,
+                // `??` (not `||`) so a chosen age of 0 survives a
+                // children-count change instead of resetting to 5.
+                (_, j) => r.childAges[j] ?? 5,
               ),
             }
           : r,
@@ -284,7 +230,7 @@ function RoomGuestSelector({ value, onChange }) {
                       </label>
                       <Form.Select
                         size="sm"
-                        value={room.childAges[idx] || 5}
+                        value={room.childAges[idx] ?? 5}
                         onChange={(e) =>
                           setChildAge(i, idx, parseInt(e.target.value))
                         }
@@ -491,10 +437,8 @@ export default function HotelSearch({
   // Agent picker is hidden and the agent-required validation is skipped.
   // currentActiveRole isn't set for single-role logins, so fall back to
   // userRole; admin/super-admin/staff keep the picker exactly as before.
-  const activeRole = (localStorage.getItem("currentActiveRole") || "")
-    .trim()
-    .toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const activeRole = getCurrentActiveRole().trim().toUpperCase();
+  const storedRoles = getUserRole().toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
     : storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN");
@@ -503,10 +447,7 @@ export default function HotelSearch({
   // agent themselves, so the "Booking Done By Employee" picker is hidden and
   // this name is shown (and sent) instead. Same source the payload's
   // agentName uses for agent logins. Empty for admin/staff.
-  const loggedInAgentName =
-    localStorage.getItem("UserName") ||
-    sessionStorage.getItem("UserName") ||
-    "";
+  const loggedInAgentName = getUserName();
 
   // When user came here via "Edit -> Book Again" from a booking detail page,
   // parentBookingCode is in the URL (e.g. ?parentBookingCode=GLBIN37). It is
@@ -629,16 +570,12 @@ export default function HotelSearch({
   const [starRating, setStarRating] = useState(null);
   const [hotelType, setHotelType] = useState([]);
   const [channelType, setChannelType] = useState([]);
-  // Per-company supplier allow-list — populated once on mount from
-  // /api/hotel-search/my-allowed-suppliers. When `channelsUnrestricted`
-  // is true (no company assigned or no picks made yet) the sidebar
-  // channel filter keeps every option visible. Otherwise it narrows to
-  // the codes in `allowedChannels` so admins/agents only see the
-  // suppliers the super_admin has actually enabled for their company.
-  //
-  // Purely presentational — the server-side HotelApiCallerContext is
-  // still the authoritative gate on which suppliers are queried.
-  const [allowedChannels, setAllowedChannels] = useState(new Set());
+  // Per-company supplier list — populated once on mount from
+  // /api/hotel-search/my-allowed-suppliers. When `channelsUnrestricted` is
+  // true (no company assigned or no picks made yet) the sidebar channel filter
+  // keeps every option visible. Purely presentational — the server-side
+  // HotelApiCallerContext is still the authoritative gate on which suppliers
+  // are queried.
   const [channelsUnrestricted, setChannelsUnrestricted] = useState(true);
   // Every supplier super_admin has enabled for this company — the same
   // list the /admin/api-access grid renders. Drives which rows appear
@@ -657,6 +594,82 @@ export default function HotelSearch({
   // Available Deals multi-select filter (array of option values).
   // Empty array = no filter. Matching is OR across selected options.
   const [availableDeals, setAvailableDeals] = useState([]);
+  // Refund Policy sidebar filter. Sent to /results as `refundPolicy` so it
+  // narrows the WHOLE result set (all pages), and re-applied client-side in
+  // filteredResults so the list is right even while suppliers are still
+  // polling. At most one box can be ticked (the checkboxes clear each
+  // other); none ticked = no narrowing. Strict: hotels whose
+  // supplier sends no refund info at search time (flag null) are hidden
+  // while either box is ticked.
+  const [refundPolicy, setRefundPolicy] = useState({
+    refundable: false,
+    partial: false,
+    nonRefundable: false,
+  });
+  // View Rooms hands this same value to the room list (roomListHandoff), so
+  // the room list opens with the same box ticked.
+  const refundPolicyParam = refundPolicyOfFilter(refundPolicy);
+  // Budget slider + price chart (sidebar, above Refund Policy). All values
+  // are AED, the unit of hotel.price / baseRate; labels convert to the
+  // display currency.
+  //   priceBounds — { min, max, sliderMax, histogram } for the whole result
+  //                 set, from the backend's priceMin / priceMax /
+  //                 priceSliderMax / priceHistogram (null = none yet).
+  //   priceSlider — [lo, hi] while dragging; an end left at its edge is null
+  //                 ("no limit"), so it keeps tracking the edge as more
+  //                 suppliers report in (null = whole range).
+  //   priceRange  — committed [lo, hi] with the same null-ends, sent to
+  //                 /results as minPrice / maxPrice so it narrows every page.
+  const [priceBounds, setPriceBounds] = useState(null);
+  const [priceSlider, setPriceSlider] = useState(null);
+  const [priceRange, setPriceRange] = useState(null);
+  const minPriceParam = priceRange?.[0] ?? undefined;
+  const maxPriceParam = priceRange?.[1] ?? undefined;
+  // Whole-number slider ends — cheapest to dearest rate, the same ends the
+  // backend's chart bars are laid across. A single price still gets a
+  // 1-wide track.
+  const budgetMin = priceBounds ? Math.floor(priceBounds.min) : 0;
+  const budgetMax = priceBounds
+    ? priceBounds.sliderMax ||
+      Math.max(Math.ceil(priceBounds.max), budgetMin + 1)
+    : 0;
+  // Commit the handles 400 ms after they stop moving, so a drag refetches
+  // once rather than on every step.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const lo = priceSlider?.[0] ?? null;
+      const hi = priceSlider?.[1] ?? null;
+      setPriceRange((prev) =>
+        lo === null && hi === null
+          ? null
+          : prev && prev[0] === lo && prev[1] === hi
+            ? prev
+            : [lo, hi],
+      );
+    }, 400);
+    return () => clearTimeout(t);
+  }, [priceSlider]);
+  // Slider data from a /results response. Only replaces the state when it
+  // changes, so steady polling doesn't re-render the slider each tick.
+  const updatePriceBounds = (data) => {
+    const min = Number(data?.priceMin);
+    const max = Number(data?.priceMax);
+    if (!(min > 0) || !(max > 0)) return;
+    const sliderMax =
+      Number(data?.priceSliderMax) > 0 ? Number(data.priceSliderMax) : null;
+    const histogram = Array.isArray(data?.priceHistogram)
+      ? data.priceHistogram.map(Number)
+      : [];
+    setPriceBounds((prev) =>
+      prev &&
+      prev.min === min &&
+      prev.max === max &&
+      prev.sliderMax === sliderMax &&
+      prev.histogram.join() === histogram.join()
+        ? prev
+        : { min, max, sliderMax, histogram },
+    );
+  };
   const [sortBy, setSortBy] = useState("priceAsc");
   const [hotelSearchTerm, setHotelSearchTerm] = useState("");
   const [errors, setErrors] = useState({});
@@ -690,12 +703,6 @@ export default function HotelSearch({
   // downstream `formatPrice(aed) = code + " " + aed * factor` renders the
   // correct amount with no direction guessing.
   const backendDisplayCurrencyRef = useRef({ code: "AED", factor: 1 });
-  // Live target for the running poll's `displayCurrencyCode` param. The
-  // pollUntilComplete closure re-reads this on every tick, so a picker
-  // change flows into subsequent poll requests without restarting the
-  // search. Setter also mutates the closed-over params object in place.
-  const pollCurrencyCodeRef = useRef(null);
-  const pollParamsRef = useRef(null);
   // Currency-version counter, bumped on every picker change. Any in-flight
   // request captures the version at send-time; if by the time the response
   // arrives the counter has advanced (user picked a new currency in the
@@ -718,8 +725,11 @@ export default function HotelSearch({
   const [is24HourCheckin, setIs24HourCheckin] = useState(force24Hour);
   const [checkInTime24, setCheckInTime24] = useState("14:00");
   const [checkOutTime24, setCheckOutTime24] = useState("14:00"); // +24h default
-  // Map of hotelId → { eligible, percentage } returned by the probe endpoint.
-  const [twentyFourHourMap, setTwentyFourHourMap] = useState({});
+  // The check-in date and time of the last search pressed, which the 24-hour
+  // probe asks about (twentyFourHourMap, below). Editing the form without
+  // searching again leaves it alone, as the hotels on screen are still that
+  // search's.
+  const [searched24Slot, setSearched24Slot] = useState(null);
   const [clickedHotelIds, setClickedHotelIds] = useState([]);
 
   // Map of hotelId → { longStay, twentyFourHourCheckIn, lastMinute, dayStay,
@@ -730,14 +740,6 @@ export default function HotelSearch({
 
   const [allResults, setAllResults] = useState([]);
   const [finalHotelSearchTerm, setFinalHotelSearchTerm] = useState("");
-  // Mirror of finalHotelSearchTerm so the poll callback (a closure captured
-  // at handleSearchSubmit-time) can read the live value and skip its merge
-  // while a name filter is active. Without this the poll keeps repopulating
-  // allResults with unfiltered rows, undoing /filter-by-name mid-poll.
-  const finalHotelSearchTermRef = useRef("");
-  useEffect(() => {
-    finalHotelSearchTermRef.current = finalHotelSearchTerm;
-  }, [finalHotelSearchTerm]);
 
   // Fetch the caller's per-company supplier allow-list once on mount so
   // the Channel sidebar filter can show only the suppliers the caller is
@@ -753,21 +755,16 @@ export default function HotelSearch({
         );
         if (cancelled) return;
         const unrestricted = res?.data?.unrestricted !== false;
-        const codes = Array.isArray(res?.data?.codes) ? res.data.codes : [];
         const registered = Array.isArray(res?.data?.registered)
           ? res.data.registered
           : [];
         setChannelsUnrestricted(unrestricted);
-        setAllowedChannels(
-          new Set(codes.map((c) => String(c || "").toLowerCase())),
-        );
         setRegisteredChannels(
           new Set(registered.map((c) => String(c || "").toLowerCase())),
         );
       } catch (_) {
         if (!cancelled) {
           setChannelsUnrestricted(true);
-          setAllowedChannels(new Set());
           setRegisteredChannels(new Set());
         }
       }
@@ -776,11 +773,9 @@ export default function HotelSearch({
       cancelled = true;
     };
   }, []);
-  // Sequence guard for /filter-by-name — an older response can arrive after
-  // a newer one (500 ms debounce, no XHR cancel) and stomp results for the
-  // wrong term. Only the response whose seq matches the latest issued call
-  // is allowed to write to state.
-  const nameSearchSeqRef = useRef(0);
+  // Latest request wins. Polls and filter / page changes all fetch the list, and
+  // a slower older reply must not overwrite what a newer request brought.
+  const fetchSeqRef = useRef(0);
   const [agents, setAgents] = useState([]);
   const [hasSearched, setHasSearched] = useState(false);
   // When results are on screen the big search form collapses into a sticky
@@ -793,16 +788,10 @@ export default function HotelSearch({
   const [totalPages, setTotalPages] = useState(1);
   const [hasSearchResult, setHasSearchResult] = useState(false);
   const [pollStatus, setPollStatus] = useState("IDLE");
-  const completedChannelsRef = useRef(new Set());
-  const [completedChannels, setCompletedChannels] = useState(new Set());
-  // Set of every supplier the backend has confirmed it fan-out'd to,
-  // built from data.status keys as poll results arrive. Used as the
-  // DENOMINATOR by SearchProgressBar so the "%" reflects the real
-  // dispatched list (which varies by market/agent restrictions) —
-  // previously the bar divided by a hardcoded 8-supplier default and
-  // stalled at ~25% because only a subset ever reported back.
-  const dispatchedChannelsRef = useRef(new Set());
-  const [dispatchedChannels, setDispatchedChannels] = useState(new Set());
+  const pollStatusRef = useRef("IDLE");
+  pollStatusRef.current = pollStatus;
+  // Counts from the latest reply, for the progress state. See readProgress.
+  const [searchProgress, setSearchProgress] = useState(null);
   const [searchId, setSearchId] = useState(null);
   // Bumped at the start of every search. fetchHotels and the currency
   // picker's /resultsOut refetch capture it at send time and drop their
@@ -810,14 +799,17 @@ export default function HotelSearch({
   // belongs to the PREVIOUS search can never write that destination's rows
   // back into allResults after Modify Search → Search cleared them.
   const searchGenRef = useRef(0);
-  // Bumped by every fetchHotels call that REPLACES allResults, so a slower
-  // full-list /resultsOut reply (currency picker) can't overwrite a newer
-  // page or hotel-name result.
-  const replaceGenRef = useRef(0);
   const [isDestinationLoading, setIsDestinationLoading] = useState(false);
   const resultsRef = useRef(null);
   const [isInitialResultsLoaded, setIsInitialResultsLoaded] = useState(false);
   const [isNationalityLoading, setIsNationalityLoading] = useState(false);
+  // Live height of the sticky summary bar (px). The progress bar reads
+  // this into its sticky `top` so it always sits just below the summary
+  // bar, even when the summary chips wrap to a second line at narrower
+  // widths. 0 = summary bar is not on screen and the progress bar sticks
+  // right under the TopBar.
+  const summaryBarRef = useRef(null);
+  const [summaryBarHeight, setSummaryBarHeight] = useState(0);
 
   const starOptions = [
     { value: 5, label: "5 Stars" },
@@ -855,22 +847,6 @@ export default function HotelSearch({
   const visibleChannelTypeOptions = channelsUnrestricted
     ? channelTypeOptions
     : channelTypeOptions.filter((o) => registeredChannels.has(o.value));
-  // SearchProgressBar's denominator — the list of suppliers we KNOW
-  // the backend actually dispatched to. Comes from data.status keys
-  // observed on the live poll (dispatchedChannels), with two fallbacks
-  // so the bar still renders sensibly before the first poll returns:
-  //   1. live dispatched list (arrives after the first successful poll)
-  //   2. explicit allow-list when the caller has one (super_admin ∩
-  //      admin-enabled) — same restriction the pill row used to use
-  //   3. SearchProgressBar's own DEFAULT_PROGRESS_CHANNELS fallback
-  const visibleProgressChannels = dispatchedChannels.size > 0
-    ? Array.from(dispatchedChannels)
-    : channelsUnrestricted
-      ? undefined
-      : channelTypeOptions
-          .filter((o) => allowedChannels.has(o.value))
-          .map((o) => o.value);
-
   // (channelHasResults is defined further down, right after
   // filteredResults, so the LIVE/OFF badge reflects what is actually
   // visible on screen instead of the full unfiltered result set.)
@@ -969,7 +945,7 @@ export default function HotelSearch({
         );
 
         const response = await axiosInstance.get(
-          `/api/province?search=${encodeURIComponent(backendQuery)}`,
+          `/api/province?search=${encodeURIComponent(backendQuery)}&source=hotel-search`,
         );
         const cityApiRes = Array.isArray(response.data) ? response.data : [];
 
@@ -1115,25 +1091,36 @@ export default function HotelSearch({
     return Array.from(ids).sort((a, b) => Number(a) - Number(b)).join(",");
   }, [allResults]);
 
+  // The id list the flags on hand belong to, and whether the hotels on hand
+  // are the whole result set. While a deal box is ticked and either is not
+  // ready yet, the list waits instead of saying "No hotels found".
+  const [featureFlagsCsv, setFeatureFlagsCsv] = useState("");
+  const [wholeSetLoaded, setWholeSetLoaded] = useState(false);
+
   useEffect(() => {
     if (!resultHotelIdsCsv) {
       setFeatureFlagsMap({});
+      setFeatureFlagsCsv("");
       return;
     }
     let cancelled = false;
-    (async () => {
-      try {
-        const res = await axiosInstance.get(
-          `/api/hotel-feature-flags?ids=${resultHotelIdsCsv}`
-        );
-        if (cancelled) return;
-        const hotels = res?.data?.hotels || {};
-        setFeatureFlagsMap(hotels);
-      } catch (err) {
-        console.warn("hotel-feature-flags fetch failed (non-fatal):", err);
-        if (!cancelled) setFeatureFlagsMap({});
-      }
-    })();
+    // A deal filter loads the whole result set (needsWholeResultSet), so the
+    // ids go in batches to keep each URL short.
+    Promise.all(
+      idBatches(resultHotelIdsCsv).map((csv) =>
+        axiosInstance
+          .get(`/api/hotel-feature-flags?ids=${csv}`)
+          .then((res) => res?.data?.hotels || {})
+          .catch((err) => {
+            console.warn("hotel-feature-flags fetch failed (non-fatal):", err);
+            return {};
+          }),
+      ),
+    ).then((parts) => {
+      if (cancelled) return;
+      setFeatureFlagsMap(Object.assign({}, ...parts));
+      setFeatureFlagsCsv(resultHotelIdsCsv);
+    });
     return () => { cancelled = true; };
   }, [resultHotelIdsCsv]);
 
@@ -1160,126 +1147,67 @@ export default function HotelSearch({
     "Honeymoon":               { cls: "deal-honeymoon",   route: "/new-booking/honeymoon"           },
   };
 
-  const filteredResults = useMemo(() => {
-    let results = allResults;
+  // Every filter on the page, in the shape utils/hotelResultFilters.js takes.
+  // The list and the map both filter with it, so they always agree.
+  const resultFilters = useMemo(
+    () => ({
+      nameQuery: hotelSearchTerm,
+      starRating: starRating ? starRating.value : null,
+      hotelTypes: hotelType.map((t) => t.value),
+      channelTypes: channelType.map((c) => c.value),
+      refundPolicy: refundPolicyParam,
+      minPrice: minPriceParam,
+      maxPrice: maxPriceParam,
+      deals: availableDeals.map((d) => d.value),
+      twentyFourHour: !!is24HourCheckin,
+      sortBy,
+    }),
+    [hotelSearchTerm, starRating, hotelType, channelType, refundPolicyParam,
+      minPriceParam, maxPriceParam, availableDeals, is24HourCheckin, sortBy],
+  );
 
-    // Hotel Name filter (client-side): case-insensitive, whitespace-
-    // tokenized substring match — ALL tokens must appear somewhere in
-    // hotel.name. Handles the "smart hyde" → "Smart Hyde Park Inn" case
-    // that the backend's whole-string /filter-by-name endpoint rejects,
-    // and normalizes redundant whitespace between tokens ("smart   hyde").
-    const rawNameQuery = String(hotelSearchTerm || "").trim();
-    if (rawNameQuery) {
-      const tokens = rawNameQuery.toLowerCase().split(/\s+/).filter(Boolean);
-      if (tokens.length > 0) {
-        results = results.filter((hotel) => {
-          const name = String(hotel?.name || "").toLowerCase();
-          return tokens.every((t) => name.includes(t));
-        });
-      }
-    }
+  // 24 Hour Check-In: hotelId → { eligible, percentage } from
+  // /api/24-hour-checkin/probe-bulk, for the hotels that pass every other
+  // filter (the ones the list would show if eligible). Probed again for the
+  // new hotels whenever those change (page, sort, filters, more hotels while
+  // suppliers answer) and merged, so pages already seen keep theirs.
+  const twentyFourHourCandidates = useMemo(
+    () =>
+      is24HourCheckin
+        ? filterHotelResults(
+            allResults,
+            { ...resultFilters, twentyFourHour: false },
+            { featureFlagsMap },
+          )
+        : [],
+    [is24HourCheckin, allResults, resultFilters, featureFlagsMap],
+  );
+  const twentyFourHourMap = useTwentyFourHourEligibility({
+    enabled: is24HourCheckin,
+    searchId,
+    date: searched24Slot?.date,
+    time: searched24Slot?.time,
+    hotels: twentyFourHourCandidates,
+  });
 
-    if (starRating) {
-      results = results.filter(
-        (hotel) => Number(hotel.rating) === Number(starRating.value),
-      );
-    }
-    if (hotelType.length > 0) {
-      const selectedTypes = hotelType.map((t) => t.value);
-      results = results.filter((hotel) =>
-        selectedTypes.includes(hotel.hotelType),
-      );
-    }
-    if (channelType.length > 0) {
-      const selectedChannels = channelType.map((c) => c.value);
-      results = results.filter((hotel) =>
-        selectedChannels.includes(hotel.channelType),
-      );
-    }
+  const filteredResults = useMemo(
+    () =>
+      filterHotelResults(allResults, resultFilters, {
+        featureFlagsMap,
+        twentyFourHourMap,
+      }),
+    [allResults, resultFilters, featureFlagsMap, twentyFourHourMap],
+  );
 
-    // Available Deals — OR-match across the selected option values.
-    if (availableDeals.length > 0) {
-      const selected = new Set(availableDeals.map((d) => d.value));
-      const hasFeatureLabel = (hotel, label) =>
-        getHotelFeatureLabels(hotel).some(
-          (f) => String(f).toLowerCase() === String(label).toLowerCase()
-        );
-      results = results.filter((hotel) => {
-        if (selected.has("flashSale") && getHotelFeatureLabels(hotel).length > 0) return true;
-        if (selected.has("longStay") && hasFeatureLabel(hotel, "Long Stay")) return true;
-        if (selected.has("twentyFourHour") && hasFeatureLabel(hotel, "24 Hour Check-In")) return true;
-        if (selected.has("lastMinute") && hasFeatureLabel(hotel, "Last Minute")) return true;
-        if (selected.has("dayStay") && hasFeatureLabel(hotel, "Day Stay")) return true;
-        if (selected.has("meetingSpace") && hasFeatureLabel(hotel, "Meeting & Space")) return true;
-        if (selected.has("govEmployee") &&
-            (hasFeatureLabel(hotel, "Govt Employee Discount") || hasFeatureLabel(hotel, "Govt Employee"))) return true;
-        if (selected.has("studentDiscount") && hasFeatureLabel(hotel, "Student Discount")) return true;
-        if (selected.has("seniorCitizen") && hasFeatureLabel(hotel, "Senior Citizen")) return true;
-        if (selected.has("destinationSales") && hotel.hasDestinationSales === true) return true;
-        return false;
-      });
-    }
-
-    // ── 24 Hour Check-In transform ──────────────────────────────────
-    // When the toggle is on, keep ONLY hotels the probe marked eligible
-    // and uplift the displayed price by the configured percentage.
-    //
-    // The probe-bulk response is keyed by the numeric hotel_id ("5"), but
-    // hotel.hotelCode is the prefixed string ("IN5"). Strip the non-digit
-    // prefix the same way we did when building the probe payload, so the
-    // map lookup actually hits.
-    if (is24HourCheckin) {
-      const numericId = (code) => {
-        const m = String(code || "").match(/(\d+)$/);
-        return m ? m[1] : null;
-      };
-      results = results
-        .filter((hotel) => {
-          const meta = twentyFourHourMap[numericId(hotel.hotelCode)];
-          return meta && meta.eligible;
-        })
-        .map((hotel) => {
-          const meta = twentyFourHourMap[numericId(hotel.hotelCode)];
-          const pct = Number(meta?.percentage || 0);
-          const base = Number(hotel.price || 0);
-          const uplifted = +(base * (1 + pct / 100)).toFixed(2);
-          // The card renders displayPrice, so convert the uplifted AED price
-          // once with the backend factor (same maths as RoomList).
-          const factor = Number(hotel.displayFactor) > 0 ? Number(hotel.displayFactor) : 1;
-          const displayPrice =
-            pct > 0 ? Math.round(uplifted * factor * 100 + 1e-9) / 100 : hotel.displayPrice;
-          return { ...hotel, price: uplifted, displayPrice, _twentyFourHourPercentage: pct };
-        });
-    }
-
-    // Client-side sort so the visible list always matches the selected
-    // sort pill (Low to High is the default). The backend sorts each page,
-    // but the poll merges pages into `allResults` in insertion order via a
-    // Map — so a late-arriving supplier's cheap hotel would appear at the
-    // bottom of the list even when Low to High is selected. Re-sorting the
-    // current page here fixes that. Only the sort keys the UI can actually
-    // pick are handled; anything else keeps the incoming order.
-    if (sortBy === "priceAsc" || sortBy === "priceDesc") {
-      const dir = sortBy === "priceAsc" ? 1 : -1;
-      // Copy so we don't mutate a memoized array from an earlier stage.
-      results = [...results].sort((a, b) => {
-        const pa = Number(a?.price);
-        const pb = Number(b?.price);
-        // Rows without a numeric price sink to the bottom regardless of
-        // direction, so they never distort the top of the list.
-        const aMissing = !Number.isFinite(pa);
-        const bMissing = !Number.isFinite(pb);
-        if (aMissing && bMissing) return 0;
-        if (aMissing) return 1;
-        if (bMissing) return -1;
-        return (pa - pb) * dir;
-      });
-    }
-
-    return results;
-  }, [allResults, hotelSearchTerm, starRating, hotelType, channelType,
-      availableDeals, featureFlagsMap,
-      is24HourCheckin, twentyFourHourMap, sortBy]);
+  // A deal filter loads the whole result set into one page (see fetchHotels),
+  // and its matches are known only once the deal flags for those hotels are in.
+  const dealsTicked = availableDeals.length > 0;
+  // A failed fetch ends the wait, so the list never spins for good.
+  const dealFlagsPending =
+    dealsTicked &&
+    pollStatus !== "ERROR" &&
+    (!wholeSetLoaded ||
+      (!!resultHotelIdsCsv && featureFlagsCsv !== resultHotelIdsCsv));
 
   // Channels that returned at least one hotel for the CURRENT search —
   // drives the LIVE/OFF badge next to each Channel filter row.
@@ -1321,27 +1249,21 @@ export default function HotelSearch({
       childAges: r.childAges || [],
       adultAges: Array.from({ length: r.adults || 1 }, () => 30),
     }));
-    const apiIdMapping = {
-      jumeirah: 10,
-      iwtx: 12,
-      x3: 15,
-      inhouse: 1,
-      ratehawk: 14,
-      darina: 16,
-      atharva: 3,
-      grn: 20,
-      goglobal: 21,
-    };
-    const apiId = apiIdMapping[hotel.channelType?.toLowerCase()] || 0;
+    // The card's own apiId first (agents' replies carry apiId but no
+    // apiType, so channelType is empty for them), else the supplier code
+    // mapped to the room-list id (utils/hotelSearchResults).
+    const apiId = roomListApiId(hotel);
 
+    // Display labels for values the payload otherwise carries only as
+    // ids/codes. They ride through RoomList into the booking page, which
+    // posts them to /api/search-history/save for the admin "Hotel Booking
+    // History" report.
     const pickedAgentId = String(isAgentRole ? selfAgentId : agent);
     const pickedAgent = (Array.isArray(agents) ? agents : []).find(
       (a) => String(a?.id) === pickedAgentId,
     );
     const agentName = isAgentRole
-      ? localStorage.getItem("UserName") ||
-        sessionStorage.getItem("UserName") ||
-        ""
+      ? getUserName()
       : pickedAgent
         ? pickedAgent.companyName ||
           pickedAgent.name ||
@@ -1360,6 +1282,8 @@ export default function HotelSearch({
       agentName,
       destinationLabel: selectedDestination?.label || "",
       nationalityLabel: selectedNationality?.label || "",
+      // Agent logins: the logged-in agent's own name. Admin/staff: the
+      // selected employee's label.
       employeeName: isAgentRole
         ? agentName || null
         : selectedEmployee?.label || null,
@@ -1367,12 +1291,14 @@ export default function HotelSearch({
       apiId,
       rooms: roomsPayload,
       parentBookingCode: parentBookingCode || null,
+      // Optional "Booking Done By" selection; agent logins never pick one.
       employeeId: isAgentRole ? null : selectedEmployee?.value || null,
       // Booking Done On Behalf Of Agent Staff (sub-user of the picked agent);
       // forwarded RoomList -> HotelBookingPage -> POST /api/hotel-booking/create.
       agentStaffId:
         selectedAgentStaff?.value != null ? String(selectedAgentStaff.value) : null,
       agentStaffName: selectedAgentStaff?.label || null,
+      // 24 Hour Check-In flags — only populated when the user opted in.
       is24HourCheckin: !!is24HourCheckin,
       checkInTime: is24HourCheckin ? checkInTime24 : null,
       checkOutTime: is24HourCheckin ? checkOutTime24 : null,
@@ -1403,11 +1329,22 @@ export default function HotelSearch({
               ? backendCurrency.factor
               : 1,
         };
+    // roomListHandoff adds the search's Refund Policy value (when a box is
+    // ticked) so the room list opens with the same box ticked.
     sessionStorage.setItem(
       "roomListPayload",
-      JSON.stringify({ payload, meta, currency }),
+      JSON.stringify(
+        roomListHandoff({
+          payload,
+          meta,
+          currency,
+          refundPolicy: refundPolicyParam,
+        }),
+      ),
     );
     setTimeout(() => {
+      // religiousMode > force24Hour > apiId — religious is only supported
+      // for the inhouse flow (apiId 1); it never touches /api-room-list.
       const route =
         religiousMode && apiId === 1
           ? "/religious-room-list"
@@ -1447,35 +1384,40 @@ export default function HotelSearch({
     [totalPages],
   );
 
-  // Counter reflects rows that are actually rendered on screen, not the
-  // raw server count. On the 24-hour route (and any flow where a
-  // client-side filter — 24hr eligibility, star rating, deals, etc. —
-  // trims the fetched page), filteredResults.length can be smaller than
-  // the backend's totalElements. Using filteredResults for the range and
-  // capping the "of X" at what's visible keeps the "Showing 1 to N of N"
-  // pill honest without touching pagination controls (which still use
-  // totalPages / totalElements from the server).
-  const shownCount = filteredResults.length;
-  const startEntry = shownCount === 0 ? 0 : pageIndex * pageSize + 1;
-  const endEntry = pageIndex * pageSize + shownCount;
-  const displayTotal =
-    shownCount < allResults.length ? endEntry : Math.max(totalElements, endEntry);
+  // The "Showing … entries" line. When the page's own filters (24-hour
+  // eligibility, name, hotel type, deals) drop hotels from a server page, it
+  // counts that page only, as other pages are not known (utils/resultsCounter).
+  const resultsCounter = resultsCounterText({
+    pageIndex,
+    pageSize,
+    shown: filteredResults.length,
+    pageRows: allResults.length,
+    totalElements,
+    totalPages: effectiveTotalPages,
+  });
 
+  // Page buttons: always the first 3 and last 3 pages, plus the current
+  // page and its neighbours (so the window slides as you page through the
+  // middle); "…" fills each gap. A gap of a single page shows that page
+  // instead — an ellipsis there would hide nothing.
   const pageNumbers = useMemo(() => {
+    const EDGE_PAGES = 3;
     const current = pageIndex + 1;
     const total = effectiveTotalPages;
-    const nums = [];
-    if (total <= 7) {
-      for (let i = 1; i <= total; i++) nums.push(i);
-    } else {
-      nums.push(1);
-      const left = Math.max(2, current - 1);
-      const right = Math.min(total - 1, current + 1);
-      if (left > 2) nums.push("ellipsis-left");
-      for (let i = left; i <= right; i++) nums.push(i);
-      if (right < total - 1) nums.push("ellipsis-right");
-      nums.push(total);
+    const shown = new Set();
+    for (let i = 1; i <= Math.min(EDGE_PAGES, total); i++) shown.add(i);
+    for (let i = Math.max(1, total - EDGE_PAGES + 1); i <= total; i++) shown.add(i);
+    for (let i = Math.max(1, current - 1); i <= Math.min(total, current + 1); i++) {
+      shown.add(i);
     }
+    const sorted = Array.from(shown).sort((a, b) => a - b);
+    const nums = [];
+    sorted.forEach((n, idx) => {
+      const prev = sorted[idx - 1];
+      if (prev !== undefined && n - prev === 2) nums.push(prev + 1);
+      else if (prev !== undefined && n - prev > 2) nums.push(`ellipsis-${prev}`);
+      nums.push(n);
+    });
     return nums;
   }, [pageIndex, effectiveTotalPages]);
 
@@ -1692,10 +1634,9 @@ export default function HotelSearch({
   // /api/personalProfile/{UserName}) so we can look up their currency below.
   useEffect(() => {
     if (!isAgentRole) return;
-    const cached = localStorage.getItem("userId");
+    const cached = getUserId();
     if (cached) { setSelfAgentId(cached); return; }
-    const userName =
-      localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+    const userName = getUserName();
     if (!userName) return;
     let cancelled = false;
     axiosInstance
@@ -1704,7 +1645,7 @@ export default function HotelSearch({
         if (cancelled) return;
         if (res?.data?.id != null) {
           const idv = String(res.data.id);
-          localStorage.setItem("userId", idv);
+          setUserId(idv);
           setSelfAgentId(idv);
         }
       })
@@ -1726,20 +1667,13 @@ export default function HotelSearch({
     if (currencyTouchedRef.current) return;
     if (!currencyAgentId || currencyOptions.length === 0) return;
     let cancelled = false;
-    const searchGenAtRequest = searchGenRef.current;
     axiosInstance
       .get(`/api/agent/${currencyAgentId}`)
       .then((res) => {
         const code = res?.data?.currencyCode;
         if (cancelled || !code || currencyTouchedRef.current) return;
         const opt = currencyOptions.find((o) => o.code === code);
-        // Skip the on-screen re-convert if a new search started meanwhile:
-        // this closure's searchId would belong to the previous search.
-        if (opt) {
-          changeDisplayCurrency(opt, {
-            reconvertAll: searchGenAtRequest === searchGenRef.current,
-          });
-        }
+        if (opt) changeDisplayCurrency(opt);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -1757,42 +1691,37 @@ export default function HotelSearch({
   // no need to pre-filter here. Enriched with the same fields the row-level
   // card shows (image, rating, channel badge, price, deal chips) so the
   // in-map popup gives the operator a real preview of the hotel instead of
-  // just a name and address.
-  const mapMarkers = useMemo(
-    () =>
-      filteredResults.map((hotel) => {
-        const priceLabel = hotel.price
-          ? `${hotel.displayCurrencyCode || displayCurrencyCode} ${Number(
-              hotel.displayPrice != null ? hotel.displayPrice : hotel.price,
-            ).toLocaleString(undefined, {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2,
-            })}`
-          : null;
-        return {
-          id: hotel.id,
-          name: hotel.name,
-          lat: hotel.latitude,
-          lng: hotel.longitude,
-          address: hotel.address,
-          contactNumber: hotel.contactNumber,
-          image: hotel.image || null,
-          rating: Number(hotel.rating) || 0,
-          channelType: hotel.channelType || null,
-          hotelType: hotel.type || hotel.hotelType || null,
-          priceLabel,
-          dealLabels: getHotelFeatureLabels(hotel),
-        };
-      }),
-    [filteredResults, displayCurrencyCode, featureFlagsMap],
-  );
+  // just a name and address. Agent-side logins never get a supplier name:
+  // no channelType, and the name loses any " (SUPPLIER)" suffix.
+  const mapMarkers = useMemo(() => {
+    const hideSupplier = isAgentLogin();
+    return filteredResults.map((hotel) => ({
+      id: hotel.id,
+      name: displayHotelName(hotel.name),
+      lat: hotel.latitude,
+      lng: hotel.longitude,
+      address: hotel.address,
+      contactNumber: hotel.contactNumber,
+      image: hotel.image || null,
+      rating: Number(hotel.rating) || 0,
+      channelType: hideSupplier ? null : hotel.channelType || null,
+      hotelType: hotel.type || hotel.hotelType || null,
+      // Same text as the card's price (formatHotelPrice); none when the
+      // hotel has no rate, so the popup leaves the price row out.
+      priceLabel: hotel.price
+        ? formatHotelPrice(hotel, displayCurrencyCode)
+        : null,
+      dealLabels: getHotelFeatureLabels(hotel),
+    }));
+  }, [filteredResults, displayCurrencyCode, featureFlagsMap]);
 
   useEffect(() => {
     setPageIndex(0);
     if (hasSearchResult && resultsRef.current) {
       resultsRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
     }
-  }, [starRating, hotelType, channelType, sortBy]);
+  }, [starRating, hotelType, channelType, sortBy, refundPolicyParam,
+      minPriceParam, maxPriceParam, availableDeals]);
 
   // After a fresh search, jump the viewport to the very top of the page so
   // the operator sees the "Hotel / Accommodation" heading and summary strip
@@ -1840,151 +1769,66 @@ export default function HotelSearch({
     });
   };
 
-  const fetchHotels = async (page, sid, agentId, nameSearch = "", currencyCodeOverride = null) => {
+  /**
+   * Fetches the page on screen and puts it on screen. The server's page replaces
+   * the list every time, while suppliers are answering too: the server has
+   * already grouped, filtered, sorted and paged it, so a hotel cannot show twice
+   * and a filter cannot be undone by the next reply.
+   */
+  const fetchHotels = async (page, sid, agentId, nameSearch = "") => {
+    const mySeq = ++fetchSeqRef.current;
     try {
       const isNameSearching = !!nameSearch.trim();
-      // Capture a per-call seq only for name-search. Basic (unfiltered)
-      // fetches don't need this — the poll loop is already the sole writer
-      // for them and never races with itself.
-      const mySeq = isNameSearching ? ++nameSearchSeqRef.current : null;
-      // Client-side owns hotel-name matching now (see filteredResults memo)
-      // so we always hit the plain /results endpoint. When a name filter is
-      // active we pull the entire result set in one page (mirroring the
-      // /resultsOut currency-refetch that already asks for size=100000) so
-      // the tokenized client filter can look at every hotel, not just the
-      // 10-row page slice — otherwise a hotel that sorts onto page 2+ could
-      // never match a partial name typed on page 1.
+      // Client-side owns hotel-name and deal matching (see filteredResults), so
+      // either filter pulls the entire result set in one page. Otherwise a
+      // hotel that sorts onto page 2+ could never match on page 1.
+      const wholeSet = needsWholeResultSet({
+        nameQuery: nameSearch,
+        deals: resultFilters.deals,
+      });
       const NAME_SEARCH_PAGE_SIZE = 100000;
       const endpoint = `/api/hotel-search/results/${sid}`;
 
-      const params = {
-        agentId:
-          agentId || (isAgentRole ? selfAgentId : agent) || 1,
-        page: isNameSearching ? 0 : page,
-        // pageSize is kept for the paginated case so existing behaviour is
-        // preserved (backend defaults to 10 anyway). For the name-search
-        // fetch we must send `size` — the backend's Pageable binder reads
-        // `size` (verified: /results?pageSize=1000 returns 10, /results?
-        // size=1000 returns 1000), matching the /resultsOut convention.
-        pageSize: isNameSearching ? undefined : pageSize,
-        size: isNameSearching ? NAME_SEARCH_PAGE_SIZE : undefined,
-        sortBy:
-          sortBy === "priceAsc" || sortBy === "priceDesc" ? "baseRate" : sortBy,
-        sortOrder:
-          sortBy === "priceAsc" ||
-          sortBy === "ratingAsc" ||
-          sortBy === "nameAsc"
-            ? "asc"
-            : "desc",
-        starRating: starRating ? starRating.value : undefined,
-        apiType:
-          channelType.map((c) => c.value.toUpperCase()).join(",") || undefined,
-      };
+      // The server-side filters, shared with the map (utils/hotelResultFilters).
+      // Currency conversion is fully backend-side. The admin-only picker's
+      // choice is sent as `displayCurrencyCode`; otherwise the backend defaults
+      // to the agent's configured currency.
+      const params = resultsQueryParams(resultFilters, {
+        agentId: agentId || (isAgentRole ? selfAgentId : agent) || 1,
+        page: wholeSet ? 0 : page,
+        // The backend reads `size`, and defaults to 10 like pageSize here.
+        pageSize: wholeSet ? undefined : pageSize,
+        size: wholeSet ? NAME_SEARCH_PAGE_SIZE : undefined,
+        displayCurrencyCode: selectedCurrency?.code,
+      });
 
-      // Currency-conversion is fully backend-side now. When the operator
-      // picked an override from the (admin-only) currency dropdown we send
-      // it as `displayCurrencyCode`; otherwise the backend defaults to the
-      // agent's configured currency (Agent.currency_id → master_currency).
-      //
-      // `currencyCodeOverride` wins over the state read — the picker's
-      // onChange calls fetchHotels with the just-picked code even though
-      // setSelectedCurrency hasn't flushed yet, so the very first request
-      // after a picker change already carries the new code.
-      const effectiveCurrencyCode =
-        currencyCodeOverride || selectedCurrency?.code;
-      if (effectiveCurrencyCode) {
-        params.displayCurrencyCode = effectiveCurrencyCode;
-      }
-
-      // hotelName is deliberately NOT sent — the client-side filter in
-      // filteredResults does tokenized substring matching, which is broader
-      // than the backend endpoint's whole-string match ("smart hyde" would
-      // otherwise return zero even though "Smart Hyde Park Inn" is in the
-      // result set). Server-side filters (starRating, apiType) still ride
-      // on the same request so combined filtering keeps working.
-
-      // Capture the currency-version at send-time; if the user picks a
-      // different currency before the response lands, we DROP the response
-      // rather than merge — otherwise a slow in-flight request would
-      // overwrite freshly-fetched rows with old-currency data (that was
-      // the "mixed AED/GBP cards" bug in the screenshot).
       const myCurrencyVersion = currencyVersionRef.current;
       const mySearchGen = searchGenRef.current;
-      if (isNameSearching || pollStatus !== "IN_PROGRESS") {
-        replaceGenRef.current += 1;
-      }
 
       const res = await axiosInstance.get(endpoint, {
         params,
       });
 
-      // A newer search has started since this request went out — its
-      // payload belongs to the previous destination, so never let it touch
-      // allResults / totals / hasSearchResult.
-      if (mySearchGen !== searchGenRef.current) {
-        return res.data;
-      }
-
-      // Drop stale name-search responses so an older term can't overwrite
-      // results for the term the user is actually looking at.
-      if (isNameSearching && mySeq !== nameSearchSeqRef.current) {
-        return res.data;
-      }
-
-      // Same idea for currency: if the picker moved on, this response is
-      // now stale — return the raw data (so the caller's Promise resolves
-      // as before) without touching allResults.
-      if (myCurrencyVersion !== currencyVersionRef.current) {
+      // Too late for the screen: a newer search has started, a newer request
+      // has been sent, or the currency has changed. The caller still gets the
+      // reply, so a poll can see that the search has finished.
+      if (
+        mySearchGen !== searchGenRef.current ||
+        mySeq !== fetchSeqRef.current ||
+        myCurrencyVersion !== currencyVersionRef.current
+      ) {
         return res.data;
       }
 
       const mappedResults = Array.isArray(res.data.result)
-        ? res.data.result.map((hotel, index) => ({
-            id: hotel.hotelCode
-              ? `${sid}-${hotel.hotelCode}`
-              : `${sid}-h${index + 1}`,
-            searchId: sid,
-            hotelCode: hotel.hotelCode || null,
-            name: hotel.hotelName || "Unknown Hotel",
-            address: hotel.hotelAddress || "",
-            city: hotel.hotelAddress
-              ? hotel.hotelAddress.split(", ").pop() || "Unknown City"
-              : "Unknown City",
-            price: hotel.baseRate || null,
-            // Backend-converted price + code in the agent's display currency
-            // (see HotelSearchController.applyDisplayCurrency). Card renderer
-            // reads these; `price` (AED) stays the source of truth for every
-            // downstream flow (sorting, dedupe, booking payloads, credit
-            // checks) — same as before this fix.
-            displayPrice:
-              hotel.displayBaseRate != null ? hotel.displayBaseRate : hotel.baseRate,
-            displayCurrencyCode:
-              hotel.displayCurrencyCode || "AED",
-            displayFactor:
-              Number(res.data.displayCurrencyFactor) > 0
-                ? Number(res.data.displayCurrencyFactor)
-                : 1,
-            badge: hotel.baseRate ? "Rate Available" : "Rate Unavailable",
-            image:
-              hotel.hotelImage ||
-              "https://details/assets/details/profilepic/hotel/hoteldefault.jpg",
-            rating: hotel.starRating || 0,
-            hotelType: "hotel",
-            channelType: hotel.apiType?.toLowerCase() || "inhouse",
-            // Surface the backend-computed promotion flag so the
-            // "Destination Sales" pill and filter actually work.
-            hasDestinationSales: !!hotel.hasDestinationSales,
-            flashSale: !!hotel.flashSale,
-            latitude: hotel.latitude,
-            longitude: hotel.longitude,
-            contactNumber: hotel.contactNumber || "",
-          }))
+        ? res.data.result.map((hotel, index) =>
+            mapHotelRow(hotel, sid, index, res.data),
+          )
         : [];
 
       // Envelope-level currency metadata that the RoomList / booking-page
-      // handoff needs. Cached on a ref so `handleHotelClick` (which reads
-      // the sessionStorage handoff) sees the latest value without depending
-      // on setState timing.
+      // handoff needs. Cached on a ref so the View Rooms click (which writes the
+      // sessionStorage handoff) sees the latest value.
       if (res.data && res.data.displayCurrencyCode) {
         backendDisplayCurrencyRef.current = {
           code: res.data.displayCurrencyCode,
@@ -1995,41 +1839,20 @@ export default function HotelSearch({
         };
       }
 
-      if (mappedResults.length > 0 || isNameSearching) {
-        if (pollStatus === "IN_PROGRESS" && !isNameSearching) {
-          setAllResults((prev) => {
-            const map = new Map(prev.map((h) => [h.id, h]));
-            mappedResults.forEach((h) => map.set(h.id, h));
-            return Array.from(map.values());
-          });
-        } else {
-          setAllResults(mappedResults);
-        }
-      } else if (!isNameSearching && pollStatus !== "IN_PROGRESS") {
-        setAllResults([]);
-      }
+      setAllResults(mappedResults);
+      setWholeSetLoaded(wholeSet);
+      if (mappedResults.length > 0) setIsInitialResultsLoaded(true);
 
-      // For a name-search fetch we pulled everything (up to
-      // NAME_SEARCH_PAGE_SIZE) in one go and filter it client-side, so the
-      // paginator collapses to a single page for the visible/filtered set.
-      // Everything else uses the server-side totals exactly as before.
-      if (isNameSearching) {
-        setTotalElements(mappedResults.length);
-        setTotalPages(1);
-      } else {
-        setTotalElements(Number(res.data.totalResults) || mappedResults.length);
-        setTotalPages(
-          Math.max(
-            1,
-            Math.ceil(
-              (Number(res.data.totalResults) || mappedResults.length) / pageSize,
-            ),
-          ),
-        );
-      }
-      // Keep the LIVE/OFF badges in sync on filter / page refetches too.
-      // The backend counts over the full set BEFORE the apiType filter,
-      // so ticking one channel never flips the others to OFF.
+      // A name or deal filter pulled everything in one go and filters it
+      // client-side, so the paginator collapses to a single page. Everything
+      // else uses the server's totals.
+      const total = Number(res.data.totalResults) || mappedResults.length;
+      setTotalElements(wholeSet ? mappedResults.length : total);
+      setTotalPages(wholeSet ? 1 : Math.max(1, Math.ceil(total / pageSize)));
+
+      // Keep the LIVE/OFF badges in sync. The backend counts over the full set
+      // BEFORE the apiType filter, so ticking one channel never flips the others
+      // to OFF. Agents do not receive this: their page has no Channel filter.
       if (
         !isNameSearching &&
         res.data.channelCounts &&
@@ -2043,53 +1866,34 @@ export default function HotelSearch({
           ),
         );
       }
+      updatePriceBounds(res.data);
       setHasSearchResult(true);
+      if (res.data.progress) setSearchProgress(readProgress(res.data));
       return res.data;
     } catch (err) {
       console.error("Fetch hotels failed:", err);
-      if (!nameSearch) setPollStatus("ERROR");
+      // While suppliers are answering the poll tries again: one failed request
+      // must not end a search that is going well.
+      if (!nameSearch && pollStatusRef.current !== "IN_PROGRESS") {
+        setPollStatus("ERROR");
+      }
       throw err;
     }
   };
 
-  const pollUntilComplete = async (
-    url,
-    params,
-    checkComplete,
-    onUpdate,
-    intervalMs = 2000,
-    timeoutMs = 20000,
-    initialDelay = 2000,
-  ) => {
-    return new Promise((resolve, reject) => {
-      const startTime = Date.now();
-      let localPollCount = 0;
+  // The search's poll is started once but must always ask for what is on screen
+  // now: the current page, sort, filters and currency. Reassigned on every render.
+  const fetchCurrentPageRef = useRef(null);
+  fetchCurrentPageRef.current = (sid) =>
+    fetchHotels(pageIndex, sid, agent, finalHotelSearchTerm);
 
-      const poll = async () => {
-        try {
-          localPollCount++;
-          const res = await axiosInstance.get(url, { params });
-          if (onUpdate) onUpdate(res.data, localPollCount);
-          if (checkComplete(res.data)) {
-            setPollStatus("COMPLETED");
-            return resolve(res.data);
-          }
-          if (Date.now() - startTime >= timeoutMs) {
-            setPollStatus("TIMEOUT");
-            return reject(new Error("Polling timed out"));
-          }
-          setTimeout(poll, intervalMs);
-        } catch (err) {
-          console.error("Poll failed:", err);
-          setPollStatus("ERROR");
-          reject(err);
-        }
-      };
-
-      setPollStatus("IN_PROGRESS");
-      setTimeout(poll, initialDelay);
-    });
-  };
+  // Leaving the page ends its poll.
+  useEffect(
+    () => () => {
+      searchGenRef.current += 1;
+    },
+    [],
+  );
 
   const handleSearchSubmit = async (e) => {
     e.preventDefault();
@@ -2111,6 +1915,7 @@ export default function HotelSearch({
     // early-return exactly as it does on the very first search; the
     // generation bump covers any reply that is already in flight.
     searchGenRef.current += 1;
+    const mySearchGen = searchGenRef.current;
     setSearchId(null);
     setIsLoading(true);
     setHasSearched(true);
@@ -2118,15 +1923,16 @@ export default function HotelSearch({
     setHasSearchResult(false);
     setAllResults([]);
     setChannelsWithResults(new Set());
+    setPriceBounds(null);
+    setPriceSlider(null);
+    setPriceRange(null);
     setPollStatus("IDLE");
     setPageIndex(0);
     setTotalElements(0);
     setTotalPages(1);
     setIsInitialResultsLoaded(false);
-    completedChannelsRef.current = new Set();
-    setCompletedChannels(new Set());
-    dispatchedChannelsRef.current = new Set();
-    setDispatchedChannels(new Set());
+    setSearchProgress(null);
+    setSearched24Slot({ date: checkIn, time: checkInTime24 });
     // Drop the previous search's id until the new one comes back. Keeping it
     // let the results effect refetch the OLD search as soon as pollStatus
     // reset to IDLE — which is why a second Search press showed the first
@@ -2175,7 +1981,12 @@ export default function HotelSearch({
       );
       const newSearchId = searchKeyRes.data.searchId;
       if (!newSearchId) throw new Error("No searchId returned");
+      if (mySearchGen !== searchGenRef.current) return;
+      // The hotels found so far are usable from here on, so the form is free
+      // again: the bar shows the search is still going.
       setSearchId(newSearchId);
+      setPollStatus("IN_PROGRESS");
+      setIsLoading(false);
 
       // ── Agent search log (Unbooked Opportunities → Searches tab) ──────
       // Fire-and-forget snapshot of the search context so the admin AI
@@ -2194,281 +2005,39 @@ export default function HotelSearch({
         source: "search-page",
       });
 
-      const params = {
-        agentId,
-        page: 0,
-        pageSize,
-        sortBy:
-          sortBy === "priceAsc" || sortBy === "priceDesc" ? "baseRate" : sortBy,
-        sortOrder:
-          sortBy === "priceAsc" ||
-          sortBy === "ratingAsc" ||
-          sortBy === "nameAsc"
-            ? "asc"
-            : "desc",
-        starRating: starRating ? starRating.value : undefined,
-        apiType:
-          channelType.map((c) => c.value.toUpperCase()).join(",") || undefined,
-      };
-
-      // The poll uses the SAME /results endpoint fetchHotels does — pass the
-      // picker override the same way so the very first wave of results also
-      // arrives already converted to the chosen display currency. Missing
-      // this made the initial rows render in AED for the ~10-15 s the poll
-      // took to finish, which is the "still see AED" symptom.
-      // Read the ref, not the closure: the agent-default currency can land
-      // while the POST above is still awaiting.
-      const pollDisplayCode = selectedCurrencyCodeRef.current;
-      if (pollDisplayCode) {
-        params.displayCurrencyCode = pollDisplayCode;
-        pollCurrencyCodeRef.current = pollDisplayCode;
-      } else {
-        pollCurrencyCodeRef.current = null;
-      }
-      // Stash the params object so a picker change mid-poll can mutate its
-      // `displayCurrencyCode` field in place — pollUntilComplete's closure
-      // reads the SAME object each tick, so the new code takes effect on
-      // the next axios call without restarting the search.
-      pollParamsRef.current = params;
-
-      const expectedChannels = [
-        "inhouse",
-        // "iwtx",
-        // "x3",
-        "ratehawk",
-        // "darina",
-        // "atharva",
-        // "jumeirah",
-      ];
-
-      const finalPollData = await pollUntilComplete(
-        `/api/hotel-search/results/${newSearchId}`,
-        params,
-        (data) => data.finalStatus === "COMPLETED",
-        (data, pollCount) => {
-          // Discard the tick when the currency this response was generated
-          // in no longer matches what the user has picked. Prevents an
-          // in-flight tick (fired before the picker moved) from clobbering
-          // freshly-fetched rows in the new currency two seconds later.
-          if (
-            pollCurrencyCodeRef.current &&
-            data?.displayCurrencyCode &&
-            String(data.displayCurrencyCode).toUpperCase() !==
-              String(pollCurrencyCodeRef.current).toUpperCase()
-          ) {
-            return;
-          }
-
-          // Poll payload also carries the backend-converted display currency
-          // — same shape as the /results endpoint. Cache it on the ref so
-          // handleHotelClick's sessionStorage handoff picks up the correct
-          // {code, factor} even when the user clicks a card that arrived
-          // during the polling phase.
-          if (data && data.displayCurrencyCode) {
-            backendDisplayCurrencyRef.current = {
-              code: data.displayCurrencyCode,
-              factor:
-                data.displayCurrencyFactor != null
-                  ? Number(data.displayCurrencyFactor)
-                  : 1,
-            };
-          }
-
-          const mappedResults = Array.isArray(data.result)
-            ? data.result.map((hotel, index) => ({
-                id: hotel.hotelCode
-                  ? `${newSearchId}-${hotel.hotelCode}`
-                  : `${newSearchId}-h${index + 1}`,
-                searchId: newSearchId,
-                hotelCode: hotel.hotelCode || null,
-                name: hotel.hotelName || "Unknown Hotel",
-                address: hotel.hotelAddress || "",
-                city: hotel.hotelAddress
-                  ? hotel.hotelAddress.split(", ").pop() || "Unknown City"
-                  : "Unknown City",
-                price: hotel.baseRate || null,
-                // Backend-converted display fields — MUST match the shape
-                // used by fetchHotels' mapping below. Missing these fields
-                // is what makes the FIRST wave of poll results render in
-                // raw AED even though the backend correctly sends GBP.
-                displayPrice:
-                  hotel.displayBaseRate != null ? hotel.displayBaseRate : hotel.baseRate,
-                displayCurrencyCode:
-                  hotel.displayCurrencyCode || "AED",
-                displayFactor:
-                  Number(data.displayCurrencyFactor) > 0
-                    ? Number(data.displayCurrencyFactor)
-                    : 1,
-                badge: hotel.baseRate ? "Rate Available" : "Rate Unavailable",
-                image:
-                  hotel.hotelImage ||
-                  "https://details/assets/details/profilepic/hotel/hoteldefault.jpg",
-                rating: hotel.starRating || 0,
-                hotelType: "hotel",
-                channelType: hotel.apiType?.toLowerCase() || "inhouse",
-                // Surface backend promotion flags so the
-                // "Destination Sales" pill + filter actually work.
-                hasDestinationSales: !!hotel.hasDestinationSales,
-                flashSale: !!hotel.flashSale,
-                latitude: hotel.latitude,
-                longitude: hotel.longitude,
-                contactNumber: hotel.contactNumber || "",
-              }))
-            : [];
-
-          // When a hotel-name filter is active, /filter-by-name owns
-          // allResults. Merging the poll's unfiltered payload here would
-          // repopulate the list with non-matching hotels every 2 s and
-          // undo the filter. Clearing the box unblocks this branch on the
-          // next poll tick, and the poll returns the full Redis payload so
-          // the unfiltered list rebuilds naturally.
-          if (!finalHotelSearchTermRef.current.trim()) {
-            setAllResults((prev) => {
-              const map = new Map(prev.map((h) => [h.id, h]));
-              mappedResults.forEach((h) => map.set(h.id, h));
-              return Array.from(map.values());
-            });
-          }
-
-          const currentStatuses = data.status || {};
-          // Track every supplier the backend fan-out'd to (denominator)
-          // AND every one that reported COMPLETED (numerator). Iterate
-          // over the LIVE status keys so we never miss a supplier that
-          // wasn't on the old hardcoded expectedChannels list; the bar
-          // now progresses through every real reply and only reserves
-          // the final 10% for the overall COMPLETED flip.
-          let dispatchedGrew = false;
-          Object.keys(currentStatuses).forEach((ch) => {
-            if (!dispatchedChannelsRef.current.has(ch)) {
-              dispatchedChannelsRef.current.add(ch);
-              dispatchedGrew = true;
-            }
-            if (
-              currentStatuses[ch] === "COMPLETED" &&
-              !completedChannelsRef.current.has(ch)
-            ) {
-              completedChannelsRef.current.add(ch);
-            }
-          });
-          if (dispatchedGrew) {
-            setDispatchedChannels(new Set(dispatchedChannelsRef.current));
-          }
-          setCompletedChannels(new Set(completedChannelsRef.current));
-
-          if (pollCount === 1 || mappedResults.length > 0) {
-            setHasSearchResult(true);
-            if (
-              completedChannelsRef.current.size >= 1 ||
-              mappedResults.length > 0
-            ) {
-              setIsInitialResultsLoaded(true);
-            }
-          }
-
-          // Same reason as the setAllResults guard above — while a name
-          // filter is active the /filter-by-name response owns the paging
-          // counts; the unfiltered poll totals would flash the wrong page
-          // count next to a filtered list.
-          if (!finalHotelSearchTermRef.current.trim()) {
-            setTotalElements(Number(data.totalResults) || mappedResults.length);
-            setTotalPages(
-              Math.max(
-                1,
-                Math.ceil(
-                  (Number(data.totalResults) || mappedResults.length) / pageSize,
-                ),
-              ),
-            );
-          }
-
-          // Full-set supplier presence for the LIVE/OFF badges. Counted
-          // by the backend over every page, so it is correct even when
-          // the current page happens to be all one supplier.
-          if (data.channelCounts && typeof data.channelCounts === "object") {
-            setChannelsWithResults(
-              new Set(
-                Object.entries(data.channelCounts)
-                  .filter(([, n]) => Number(n) > 0)
-                  .map(([ct]) => String(ct).toLowerCase()),
-              ),
-            );
-          }
-        },
-        2000,
-        // 30 s poll ceiling — keeps the UI responsive; GRN's slower
-        // Dubai fan-out (~30-40 s) that would previously push the total
-        // wait to a full minute now caps out at 30 s. Faster suppliers
-        // (inhouse / RateHawk) still resolve early via the
-        // finalStatus=COMPLETED check, and any GRN rows that arrive
-        // between poll ticks before the timeout still show up. If GRN
-        // hasn't finished by then the catch below no longer flips
-        // hasSearched=false (existing behaviour after the 60 s bump), so
-        // filter changes keep working. Supplier legs that finish after the
-        // timeout are picked up by the late-results check (the effect right
-        // after the results effect).
-        30000,
-        2000,
-      );
-      // ── 24 Hour Check-In post-processing ───────────────────────────
-      // Probe each hotel's 24-hour config eligibility for the requested
-      // check-in date+time. The result map keys hotelId -> { eligible,
-      // percentage }; filteredResults uses it to filter non-eligible hotels
-      // and uplift displayed rates.
-      //
-      // We read `finalPollData.result` (the freshest payload from the last
-      // poll) rather than `allResults`, because setAllResults inside the
-      // poll's onUpdate callback hasn't been flushed back into this
-      // closure — reading allResults here returns the stale value (empty
-      // list on the first search), which would cause the probe to receive
-      // no IDs and return {}, filtering every hotel out.
-      if (is24HourCheckin) {
-        try {
-          // hotelCode comes back as a string like "IN5" / "IN12" — the
-          // numeric tail is the real hotel_id. Strip the leading "IN" (or
-          // any non-digit prefix) before sending to the probe endpoint.
-          const idsAfterSearch = (finalPollData?.result || [])
-            .map((h) => {
-              const raw = String(h.hotelCode || "");
-              const m = raw.match(/(\d+)$/);
-              return m ? Number(m[1]) : NaN;
-            })
-            .filter((n) => Number.isFinite(n) && n > 0);
-
-          if (idsAfterSearch.length > 0 && checkIn && checkInTime24) {
-            const probeRes = await axiosInstance.post(
-              "/api/24-hour-checkin/probe-bulk",
-              {
-                hotelIds: idsAfterSearch,
-                date: checkIn,
-                time: checkInTime24,
-              }
-            );
-            setTwentyFourHourMap(probeRes.data || {});
-          } else {
-            setTwentyFourHourMap({});
-          }
-        } catch (probeErr) {
-          console.warn("24-hour probe failed (non-fatal):", probeErr);
-          setTwentyFourHourMap({});
-        }
-      }
+      const { outcome } = await pollUntilFinished({
+        fetchPage: () => fetchCurrentPageRef.current(newSearchId),
+        isCancelled: () => mySearchGen !== searchGenRef.current,
+      });
+      if (outcome === "cancelled") return;
+      // The results effect fetches once more on this change, quietly, so the
+      // list is right even if the last poll's reply lost to a newer request.
+      backgroundRefreshRef.current = true;
+      setPollStatus(outcome === "completed" ? "COMPLETED" : "TIMEOUT");
+      // 24 Hour Check-In eligibility is probed by useTwentyFourHourEligibility
+      // for whatever hotels are on screen, so page 2 and later get theirs too.
     } catch (err) {
       console.error("Search failed:", err);
-      // Timeouts (30 s ceiling for GRN) are NOT a real failure — the rows
-      // that came in via prior poll ticks are still valid. Flipping
-      // hasSearched=false here used to block every subsequent picker /
-      // filter refetch, which is exactly the "AED still shown after USD
-      // picked" symptom. Leave hasSearched=true so downstream effects
-      // (currency-picker refetch, channel filter, pagination) keep
-      // working.
-      const isTimeout =
-        err && (err.message === "Polling timed out" || err.name === "TimeoutError");
-      if (!isTimeout) {
+      // Only the request that starts the search can land here: polling handles
+      // its own failures.
+      if (mySearchGen === searchGenRef.current) {
         setHasSearched(false);
+        setPollStatus("ERROR");
+        // Say why instead of silently dropping back to the empty form: the
+        // server's own message when it sent one (e.g. a 400 / 409 sentence),
+        // otherwise the HTTP status, so the cause is visible on screen.
+        const status = err?.response?.status;
+        toast.error(
+          apiErrorMessage(
+            err,
+            status
+              ? `The search could not start (server error ${status}). Please try again.`
+              : "The search could not start: the server did not answer. Please check the connection and try again.",
+          ),
+        );
       }
-      setPollStatus(isTimeout ? "TIMEOUT" : "ERROR");
     } finally {
-      setIsLoading(false);
+      if (mySearchGen === searchGenRef.current) setIsLoading(false);
     }
   };
 
@@ -2478,109 +2047,15 @@ export default function HotelSearch({
   //   (pollStatus === "IN_PROGRESS" || pollStatus === "COMPLETED");
 
   // Single path for every display-currency change (picker + agent default).
-  // Same code → no-op. Otherwise redirect the running poll, drop in-flight
-  // replies in the old currency, and re-convert what's already on screen.
-  const changeDisplayCurrency = (opt, { manual = false, reconvertAll = true } = {}) => {
+  // Same code → no-op. Otherwise drop in-flight replies in the old currency; the
+  // results effect then fetches the page again in the new one.
+  const changeDisplayCurrency = (opt, { manual = false } = {}) => {
     if (manual) currencyTouchedRef.current = true;
     if (!opt?.code) return;
     setSelectedCurrency(opt);
     if (opt.code === selectedCurrencyCodeRef.current) return;
     selectedCurrencyCodeRef.current = opt.code;
     currencyVersionRef.current += 1;
-    if (pollParamsRef.current) {
-      pollParamsRef.current.displayCurrencyCode = opt.code;
-    }
-    pollCurrencyCodeRef.current = opt.code;
-
-    // Once polling is over (or a name filter is active) the results effect
-    // REPLACES the list in the new currency itself (selectedCurrency?.code is
-    // one of its deps). While polling, its fetches only MERGE one page — even
-    // with a channel/star filter — so re-convert the whole list via /resultsOut.
-    const effectWillRefetch =
-      hasSearched &&
-      (pollStatus !== "IN_PROGRESS" || !!finalHotelSearchTermRef.current.trim());
-    if (!reconvertAll || !searchId || effectWillRefetch) return;
-
-    const myVersion = currencyVersionRef.current;
-    const mySearchGen = searchGenRef.current;
-    const myReplaceGen = replaceGenRef.current;
-    axiosInstance
-      .get(`/api/hotel-search/resultsOut/${searchId}`, {
-        params: {
-          agentId: (isAgentRole ? selfAgentId : agent) || 1,
-          page: 0,
-          size: 100000,
-          sortBy:
-            sortBy === "priceAsc" || sortBy === "priceDesc" ? "baseRate" : sortBy,
-          sortOrder:
-            sortBy === "priceAsc" || sortBy === "ratingAsc" || sortBy === "nameAsc"
-              ? "asc"
-              : "desc",
-          starRating: starRating ? starRating.value : undefined,
-          apiType:
-            channelType.map((c) => c.value.toUpperCase()).join(",") || undefined,
-          displayCurrencyCode: opt.code,
-        },
-      })
-      .then((res) => {
-        // Drop if the currency or search moved on, a newer page/name fetch
-        // replaced the list, or a hotel-name filter now owns allResults.
-        if (
-          myVersion !== currencyVersionRef.current ||
-          mySearchGen !== searchGenRef.current ||
-          myReplaceGen !== replaceGenRef.current ||
-          finalHotelSearchTermRef.current.trim()
-        ) {
-          return;
-        }
-        if (res.data && res.data.displayCurrencyCode) {
-          backendDisplayCurrencyRef.current = {
-            code: res.data.displayCurrencyCode,
-            factor:
-              res.data.displayCurrencyFactor != null
-                ? Number(res.data.displayCurrencyFactor)
-                : 1,
-          };
-        }
-        const mapped = Array.isArray(res.data?.result)
-          ? res.data.result.map((hotel, i) => ({
-              id: hotel.hotelCode
-                ? `${searchId}-${hotel.hotelCode}`
-                : `${searchId}-h${i + 1}`,
-              searchId,
-              hotelCode: hotel.hotelCode || null,
-              name: hotel.hotelName || "Unknown Hotel",
-              address: hotel.hotelAddress || "",
-              city: hotel.hotelAddress
-                ? hotel.hotelAddress.split(", ").pop() || "Unknown City"
-                : "Unknown City",
-              price: hotel.baseRate || null,
-              displayPrice:
-                hotel.displayBaseRate != null ? hotel.displayBaseRate : hotel.baseRate,
-              displayCurrencyCode: hotel.displayCurrencyCode || "AED",
-              displayFactor:
-                Number(res.data.displayCurrencyFactor) > 0
-                  ? Number(res.data.displayCurrencyFactor)
-                  : 1,
-              badge: hotel.baseRate ? "Rate Available" : "Rate Unavailable",
-              image:
-                hotel.hotelImage ||
-                "https://details/assets/details/profilepic/hotel/hoteldefault.jpg",
-              rating: hotel.starRating || 0,
-              hotelType: "hotel",
-              channelType: hotel.apiType?.toLowerCase() || "inhouse",
-              hasDestinationSales: !!hotel.hasDestinationSales,
-              flashSale: !!hotel.flashSale,
-              latitude: hotel.latitude,
-              longitude: hotel.longitude,
-              contactNumber: hotel.contactNumber || "",
-            }))
-          : [];
-        setAllResults(mapped);
-      })
-      .catch(() => {
-        /* fail-safe: leave existing rows */
-      });
   };
 
   const showResultsDuringPolling = hasSearchResult || allResults.length > 0;
@@ -2589,118 +2064,71 @@ export default function HotelSearch({
   // are on screen, unless the user explicitly chose to modify the search.
   const collapseSearch = showResultsDuringPolling && !isEditingSearch;
 
-  // Bumped by the late-results check below to make the results effect
-  // refetch the visible page. lateResultsRefreshRef marks that refetch as a
-  // background one so it doesn't flash the loading card every few seconds.
-  const [resultsRefreshTick, setResultsRefreshTick] = useState(0);
-  const lateResultsRefreshRef = useRef(false);
-
+  // Track the summary bar's live height. When the summary bar shows up the
+  // sticky progress bar has to sit right below it (both are sticky at the
+  // top of the results area — without this the summary bar's higher
+  // z-index just covers the progress bar and the user sees nothing while
+  // scrolling). ResizeObserver keeps this in sync with chip wrap, viewport
+  // changes, and Modify-Search collapse/expand.
   useEffect(() => {
-    const isBackgroundRefresh = lateResultsRefreshRef.current;
-    lateResultsRefreshRef.current = false;
-    if (!searchId || !hasSearched) return;
-    // Gate basic (unfiltered) fetches until polling finishes so we don't
-    // double-write allResults alongside the poll's merge. Name-search
-    // (/filter-by-name) is exempt — it targets a separate endpoint,
-    // REPLACES allResults on its own, and is protected from stale-response
-    // races by nameSearchSeqRef. Without this exemption, typing a hotel
-    // name during the initial supplier poll silently no-ops until poll
-    // completes, which is the "sometimes it doesn't work" symptom.
-    //
-    // Filter-driven fetches (channelType, starRating) are ALSO exempt from
-    // the guard: they issue a filtered /results call (e.g. apiType=GRN)
-    // that returns a different result set than the unfiltered poll, so
-    // the "double-write" concern doesn't apply. Blocking them meant that
-    // ticking Channel = GRN while a slow supplier (GRN itself, ~30-40 s
-    // for Dubai) was still polling silently zeroed the list.
-    const hasActiveFilter =
-      (channelType && channelType.length > 0) ||
-      !!starRating ||
-      (hotelType && hotelType.length > 0);
-    if (
-      pollStatus === "IN_PROGRESS" &&
-      !finalHotelSearchTerm.trim() &&
-      !hasActiveFilter
-    ) return;
-    if (!isBackgroundRefresh) setIsLoading(true);
-    fetchHotels(pageIndex, searchId, agent, finalHotelSearchTerm).finally(() => {
-      if (!isBackgroundRefresh) setIsLoading(false);
+    if (!collapseSearch) {
+      setSummaryBarHeight(0);
+      return;
+    }
+    const el = summaryBarRef.current;
+    if (!el) return;
+    // offsetHeight includes padding + border, matching the summary bar's
+    // real sticky footprint (contentRect.height would exclude padding and
+    // let the progress bar overlap the bottom of the summary strip).
+    setSummaryBarHeight(el.offsetHeight);
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      const h = el.offsetHeight;
+      setSummaryBarHeight((prev) => (prev === h ? prev : h));
     });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [collapseSearch]);
+
+  // Set just before the search finishes, so that last fetch stays quiet.
+  const backgroundRefreshRef = useRef(false);
+
+  // Fetches at once when the page, sort, a filter or the currency changes,
+  // including while suppliers are answering. The poll then keeps that same view
+  // up to date. No loading card during a search: the bar is already on screen and
+  // the hotels so far stay usable.
+  useEffect(() => {
+    const quiet = backgroundRefreshRef.current || pollStatus === "IN_PROGRESS";
+    backgroundRefreshRef.current = false;
+    if (!searchId || !hasSearched) return;
+    if (!quiet) setIsLoading(true);
+    fetchHotels(pageIndex, searchId, agent, finalHotelSearchTerm)
+      .catch(() => {
+        /* already reported by fetchHotels */
+      })
+      .finally(() => {
+        if (!quiet) setIsLoading(false);
+      });
   }, [
     pageIndex,
     sortBy,
     starRating,
     channelType,
+    refundPolicyParam,
+    minPriceParam,
+    maxPriceParam,
     hotelType,
     searchId,
     agent,
     hasSearched,
     pollStatus,
     finalHotelSearchTerm,
-    // Currency conversion happens server-side now (see fetchHotels — it
-    // sends `displayCurrencyCode=…` from selectedCurrency.code). Adding
-    // the code as a dep so a picker change re-fetches the results in the
-    // new currency instead of leaving stale numbers on screen.
+    // Ticking the first deal box (or clearing the last) switches between one
+    // page and the whole set; changing deals in between filters what's loaded.
+    dealsTicked,
+    // Conversion happens server-side, so a picker change has to fetch again.
     selectedCurrency?.code,
-    resultsRefreshTick,
   ]);
-
-  // Late supplier results. The search poll gives up after 30 s, but a slow
-  // supplier leg (GRN waits up to its 25 s cutoff_time; big cities take
-  // longer) can still add hotels after that. Nothing asked again, so those
-  // hotels only appeared on the next Search press. After a poll timeout,
-  // check the result count every few seconds until the backend reports every
-  // supplier finished, and refresh the visible page whenever the count moves.
-  useEffect(() => {
-    if (pollStatus !== "TIMEOUT" || !searchId) return;
-    const CHECK_EVERY_MS = 4000;
-    const GIVE_UP_AFTER_MS = 90000;
-    const startedAt = Date.now();
-    let cancelled = false;
-    let timer;
-    let lastTotal = null;
-
-    const checkForLateResults = async () => {
-      try {
-        const res = await axiosInstance.get(
-          `/api/hotel-search/results/${searchId}`,
-          {
-            params: {
-              agentId: (isAgentRole ? selfAgentId : agent) || 1,
-              page: 0,
-              size: 1,
-            },
-          },
-        );
-        if (cancelled) return;
-        if (res.data?.finalStatus === "COMPLETED") {
-          // pollStatus is a dependency of the results effect, so this also
-          // runs its final (background) refetch.
-          lateResultsRefreshRef.current = true;
-          setPollStatus("COMPLETED");
-          return;
-        }
-        const total = Number(res.data?.totalResults) || 0;
-        if (total !== lastTotal) {
-          lastTotal = total;
-          lateResultsRefreshRef.current = true;
-          setResultsRefreshTick((tick) => tick + 1);
-        }
-      } catch (err) {
-        if (cancelled) return;
-        console.warn("Late supplier results check failed (will retry):", err);
-      }
-      if (Date.now() - startedAt < GIVE_UP_AFTER_MS) {
-        timer = setTimeout(checkForLateResults, CHECK_EVERY_MS);
-      }
-    };
-
-    timer = setTimeout(checkForLateResults, CHECK_EVERY_MS);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [pollStatus, searchId, agent, selfAgentId, isAgentRole]);
 
   return (
     <div className="min-vh-100 bg-light d-flex flex-column">
@@ -2729,7 +2157,7 @@ export default function HotelSearch({
               Shown once results are on screen. "Modify Search" re-expands
               the full form by flipping isEditingSearch. */}
           {collapseSearch && (
-            <div className="hs-summary-bar">
+            <div className="hs-summary-bar" ref={summaryBarRef}>
               <Button
                 type="button"
                 className="hs-summary-modify"
@@ -3361,13 +2789,30 @@ export default function HotelSearch({
           </div>
           )}
 
-          {/* ── Progress Bar ── */}
-          <SearchProgressBar
-            pollStatus={pollStatus}
-            completedChannels={completedChannels}
-            channels={visibleProgressChannels}
-            isLoading={isLoading}
-          />
+          {/* ── Progress Bar ──
+              Rendered here so it sits between the search summary/form and
+              the Accommodation results. .search-progress-bar-wrap is made
+              sticky in HotelSearch.css so it stays anchored to the top of
+              the results area while the user scrolls during a search.
+              The wrapper's .hs-progress--below-summary modifier bumps the
+              sticky top down when the collapsed summary bar is also on
+              screen — otherwise the two would fight for top:64 and the
+              summary bar (higher z-index) would cover the progress bar. */}
+          <div
+            className={
+              collapseSearch
+                ? "hs-progress-anchor hs-progress--below-summary"
+                : "hs-progress-anchor"
+            }
+            style={{ "--hs-summary-h": `${summaryBarHeight}px` }}
+          >
+            <HotelSearchProgressBar
+              pollStatus={pollStatus}
+              progress={searchProgress}
+              hotelsSoFar={totalElements}
+              isLoading={isLoading}
+            />
+          </div>
 
           {/* ── Loading skeleton ──
           {hasSearched && !showResultsDuringPolling && (
@@ -3464,18 +2909,12 @@ export default function HotelSearch({
                             )}
                           </div>
 
-                          <Form.Control
-                            type="text"
-                            placeholder={placeholder}
-                            className="ps-3 mb-2"
-                            value={hotelSearchTerm}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              setHotelSearchTerm(val);
-                              setPageIndex(0);
-                              debouncedSetFinalTerm(val);
-                            }}
-                          />
+                          {/* Hotel-name search input intentionally removed
+                              from the left sidebar — it now lives in the
+                              top filter row on the right, next to the
+                              Clear button (see &lt;Col lg={9}&gt; below). Same
+                              state / handlers, so filtering, debounce,
+                              and page-reset behaviour are unchanged. */}
 
                           {/* Display currency — converts the shown rates from
                               AED into the chosen currency using the
@@ -3527,6 +2966,108 @@ export default function HotelSearch({
                             </>
                           )}
 
+                          {/* Budget — a bar chart of how many hotels sit at
+                              each price, with a two-handle slider under it to
+                              narrow the list. Ends come from the whole result
+                              set (AED); labels are in the display currency.
+                              Shown once any hotel has a price. */}
+                          {priceBounds && (
+                            <>
+                              <Form.Group className="mb-2">
+                                <Form.Label className="fw-semibold small">
+                                  Budget
+                                </Form.Label>
+                                <PriceRangeSlider
+                                  min={budgetMin}
+                                  max={budgetMax}
+                                  value={[
+                                    priceSlider?.[0] ?? budgetMin,
+                                    priceSlider?.[1] ?? budgetMax,
+                                  ]}
+                                  // An end dragged back to its edge means
+                                  // "no limit" on that side — stored as null.
+                                  onChange={([lo, hi]) =>
+                                    setPriceSlider(
+                                      lo <= budgetMin && hi >= budgetMax
+                                        ? null
+                                        : [
+                                            lo <= budgetMin ? null : lo,
+                                            hi >= budgetMax ? null : hi,
+                                          ],
+                                    )
+                                  }
+                                  histogram={priceBounds.histogram}
+                                  format={(aed) => {
+                                    const factor =
+                                      Number(backendDisplayCurrencyRef.current?.factor) > 0
+                                        ? Number(backendDisplayCurrencyRef.current.factor)
+                                        : 1;
+                                    return `${displayCurrencyCode} ${Math.round(
+                                      aed * factor,
+                                    ).toLocaleString()}`;
+                                  }}
+                                  ariaLabel="Budget"
+                                />
+                              </Form.Group>
+
+                              <hr />
+                            </>
+                          )}
+
+                          {/* Refund Policy — lets the agent narrow the hotel
+                              list without opening each hotel's rooms. The two
+                              boxes are mutually exclusive: ticking one clears
+                              the other, and either can be unticked to show
+                              every hotel again. */}
+                          <Form.Group className="mb-2">
+                            <Form.Label className="fw-semibold small">
+                              Refund Policy
+                            </Form.Label>
+                            <div className="filter-checkbox-list">
+                              <Form.Check
+                                type="checkbox"
+                                id="refund-policy-refundable"
+                                label="Flexible"
+                                checked={refundPolicy.refundable}
+                                onChange={(e) =>
+                                  setRefundPolicy({
+                                    refundable: e.target.checked,
+                                    partial: false,
+                                    nonRefundable: false,
+                                  })
+                                }
+                              />
+                              <Form.Check
+                                type="checkbox"
+                                id="refund-policy-partial"
+                                label="Flexible - Partial"
+                                checked={refundPolicy.partial}
+                                onChange={(e) =>
+                                  setRefundPolicy({
+                                    refundable: false,
+                                    partial: e.target.checked,
+                                    nonRefundable: false,
+                                  })
+                                }
+                              />
+                              <Form.Check
+                                type="checkbox"
+                                id="refund-policy-non-refundable"
+                                label="Non Refundable"
+                                checked={refundPolicy.nonRefundable}
+                                onChange={(e) =>
+                                  setRefundPolicy({
+                                    refundable: false,
+                                    partial: false,
+                                    nonRefundable: e.target.checked,
+                                  })
+                                }
+                              />
+                            </div>
+                          </Form.Group>
+
+                          <hr />
+
                           <Form.Group className="mb-2">
                             <Form.Label className="fw-semibold small">
                               Hotel Type
@@ -3559,10 +3100,11 @@ export default function HotelSearch({
                           <hr />
 
                           {/* Channel — supplier/channel checkbox filter.
-                              Hidden for AGENT logins (agents book only
-                              through their contracted channel and the
-                              backend already scopes results). */}
-                          {!isAgentRole && (
+                              Hidden for agent-side logins, sub-accounts
+                              included (agents book only through their
+                              contracted channel and the backend already
+                              scopes results). */}
+                          {!isAgentLogin() && (
                             <>
                               <Form.Group>
                                 <Form.Label className="fw-semibold small">
@@ -3741,6 +3283,9 @@ export default function HotelSearch({
                               setHotelType([]);
                               setChannelType([]);
                               setAvailableDeals([]);
+                              setRefundPolicy({ refundable: false, partial: false, nonRefundable: false });
+                              setPriceSlider(null);
+                              setPriceRange(null);
                               setSortBy("priceAsc");
                               setHotelSearchTerm("");
                             }}
@@ -3748,6 +3293,31 @@ export default function HotelSearch({
                             Clear
                           </Button>
 
+                          {/* Hotel-name search — moved here from the left
+                              sidebar. Same state + handlers (500 ms
+                              debounce, page-reset) so filtering / name
+                              search flows are unchanged. ms-auto pushes it
+                              to the right edge of the row so on wide
+                              viewports it sits at the far right next to
+                              Clear, and on narrow ones it wraps below the
+                              sort pills without breaking the layout. */}
+                          <Form.Control
+                            type="text"
+                            placeholder={placeholder}
+                            value={hotelSearchTerm}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setHotelSearchTerm(val);
+                              setPageIndex(0);
+                              debouncedSetFinalTerm(val);
+                            }}
+                            className="ms-auto ps-3"
+                            style={{
+                              height: "36px",
+                              maxWidth: "260px",
+                              minWidth: "180px",
+                            }}
+                          />
                         </div>
                       </Card.Body>
                     </Card>
@@ -3756,8 +3326,7 @@ export default function HotelSearch({
                     {(hasSearchResult || allResults.length > 0) && (
                       <div className="d-flex justify-content-between align-items-center mb-3">
                         <small className="text-muted fw-semibold">
-                          Showing {startEntry} to {endEntry} of {displayTotal}{" "}
-                          entries
+                          {resultsCounter}
                           {pollStatus === "IN_PROGRESS" && (
                             <span className="ms-1 text-primary">
                               (updating…)
@@ -3765,6 +3334,26 @@ export default function HotelSearch({
                           )}
                         </small>
                       </div>
+                    )}
+
+                    {/* Search has finished but not every supplier answered. The
+                        supplier names here come only from an admin's reply. */}
+                    {pollStatus === "TIMEOUT" ? (
+                      <div className="small text-muted mb-3" role="status">
+                        Could not reach the server to finish this search.
+                        Showing the hotels found so far.
+                      </div>
+                    ) : (
+                      pollStatus === "COMPLETED" &&
+                      incompleteSearchNotice(searchProgress) && (
+                        <div
+                          className="small text-muted mb-3"
+                          role="status"
+                          data-testid="hotel-search-incomplete"
+                        >
+                          {incompleteSearchNotice(searchProgress)}
+                        </div>
+                      )
                     )}
 
                     {isLoading && pollStatus !== "IN_PROGRESS" && (
@@ -3804,15 +3393,15 @@ export default function HotelSearch({
                                       padding: "10px",
                                     }}
                                   >
+                                    {/* hs-hotel-img makes the photo follow the
+                                        card's height instead of setting it —
+                                        see HotelSearch.css. LazyImage takes
+                                        only src/alt/className, so a `style`
+                                        prop here would be silently dropped. */}
                                     <LazyImage
                                       src={hotel.image}
                                       alt={hotel.name}
-                                      style={{
-                                        width: "100%",
-                                        height: "100%",
-                                        objectFit: "cover",
-                                        borderRadius: "9px",
-                                      }}
+                                      className="hs-hotel-img"
                                     />
                                     <div
                                       style={{
@@ -3837,10 +3426,11 @@ export default function HotelSearch({
                                           supplier a hotel came from —
                                           agents book against a single
                                           curated inventory and the label
-                                          just adds noise. Guarded on
-                                          isAgentRole so admin / super
-                                          admin / all other roles keep it. */}
-                                      {!isAgentRole && (
+                                          just adds noise. Hidden for every
+                                          agent-side login (isAgentLogin) and
+                                          when the hotel has no channelType,
+                                          so no empty grey pill is drawn. */}
+                                      {!isAgentLogin() && hotel.channelType && (
                                         <span
                                           style={{
                                             marginLeft: "5px",
@@ -3914,6 +3504,16 @@ export default function HotelSearch({
                                           {hotel.badge}
                                         </span>
                                       )}
+                                      {/* Rate Available is the only box on the
+                                          card, for in-house and supplier hotels
+                                          alike: no "Best of N suppliers" and no
+                                          Flexible / Flexible - Partial / Non
+                                          Refundable pills. A hotel several
+                                          suppliers sell is still one card at
+                                          the best price, and the hasRefundable /
+                                          hasPartial / hasNonRefundable flags
+                                          still drive the sidebar Refund Policy
+                                          filter. */}
                                       {/* Flash Sale badge — shown beside Rate Available
                                           when the hotel has any active deal feature.
                                           Uses the same /images/flash-sale-logo.png asset
@@ -4039,16 +3639,8 @@ export default function HotelSearch({
                                           color: "#333",
                                         }}
                                       >
-                                        {hotel.price
-                                          ? `${hotel.displayCurrencyCode || displayCurrencyCode} ${Number(
-                                              hotel.displayPrice != null
-                                                ? hotel.displayPrice
-                                                : hotel.price,
-                                            ).toLocaleString(undefined, {
-                                              minimumFractionDigits: 2,
-                                              maximumFractionDigits: 2,
-                                            })}`
-                                          : "Price on request"}
+                                        {/* Same text as the map's marker. */}
+                                        {formatHotelPrice(hotel, displayCurrencyCode)}
                                       </div>
 
                                       <div
@@ -4080,7 +3672,7 @@ export default function HotelSearch({
                             </div>
                           </Col>
                         ))
-                      ) : pollStatus === "IN_PROGRESS" || isLoading ? (
+                      ) : pollStatus === "IN_PROGRESS" || isLoading || dealFlagsPending ? (
                         // Search is still in flight — the supplier
                         // fan-out hasn't finished yet, so an empty
                         // filteredResults just means we don't have
@@ -4129,6 +3721,8 @@ export default function HotelSearch({
                                   setChannelType([]);
                                   setSortBy("priceAsc");
                                   setHotelSearchTerm("");
+                                  setAvailableDeals([])
+                                  setRefundPolicy({ refundable: false, partial: false, nonRefundable: false });
                                 }}
                               >
                                 Clear All Filters
@@ -4140,9 +3734,16 @@ export default function HotelSearch({
                     </Row>
 
                     {/* {hasSearched && */}
-                    {filteredResults.length > 0 &&
+                    {/* Shown whenever the server sent hotels for this page,
+                        even if 24-hour eligibility or Hotel Type leaves none
+                        on screen: other pages may have some, and without the
+                        pager there is no way on. (Every result is a "hotel"
+                        today, so ticking Hotel removes nothing.) A name or
+                        deal filter shows the whole set on one page, so it
+                        has none. */}
+                    {allResults.length > 0 &&
                       totalElements > 0 &&
-                      !(hotelSearchTerm || hotelType.length > 0) && (
+                      !(hotelSearchTerm || dealsTicked) && (
                         <div className="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4 mt-3">
                           <small className="text-muted fw-semibold"></small>
                           <Pagination className="mb-0 pagination-modern">
@@ -4198,10 +3799,15 @@ export default function HotelSearch({
               sortBy={sortBy}
               onSortByChange={setSortBy}
               onClearFilters={() => {
+                // Same reset as the filter row's Clear button, so the
+                // list and the map markers stay in step.
                 setStarRating(null);
                 setHotelType([]);
                 setChannelType([]);
                 setAvailableDeals([]);
+                setRefundPolicy({ refundable: false, partial: false, nonRefundable: false });
+                setPriceSlider(null);
+                setPriceRange(null);
                 setSortBy("priceAsc");
                 setHotelSearchTerm("");
               }}

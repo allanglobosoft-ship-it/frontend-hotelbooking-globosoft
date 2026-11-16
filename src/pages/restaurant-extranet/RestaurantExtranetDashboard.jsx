@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import axiosInstance from "../../components/AxiosInstance";
+import FooterLegalLinks from "../../components/FooterLegalLinks";
 import { Row, Col, Spinner } from "react-bootstrap";
 import {
   FaUserCog,
@@ -248,6 +249,12 @@ const RestaurantExtranetDashboard = () => {
                 <StatCard label="No Show" value={stats.noShow} loading={loading} />
               </Col>
             </Row>
+
+            {/* This portal has its own shell with no footer band, so the legal
+                links get a slim rule of their own at the end of the page. */}
+            <footer className="rx-dash-foot">
+              <FooterLegalLinks />
+            </footer>
           </>
         );
       }}

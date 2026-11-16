@@ -17,6 +17,9 @@ import { toast } from "react-hot-toast";
 import Supplier from "../../components/filters/Supplier";
 import DestinationCity from "../../components/filters/DestinationCity";
 import BackButton from "../../components/BackButton";
+import { isAgentLogin } from "../../utils/supplierDisplay";
+import { escapeHtml } from "../../utils/safeHtml";
+import { csvCell } from "../../utils/csvSafe";
 
 export default function OnlineDailySalesReport() {
 
@@ -61,9 +64,15 @@ export default function OnlineDailySalesReport() {
  const updateFilter = (field, value) =>
   setTempFilters((prev) => ({ ...prev, [field]: value }));
 
- const activeRole = (localStorage.getItem("currentActiveRole") || "").trim().toUpperCase();
- const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+ const activeRole = (sessionStorage.getItem("currentActiveRole") || "").trim().toUpperCase();
+ const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
  const isAgentRole = activeRole ? activeRole === "AGENT" : (storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN"));
+ // Net Price (our cost) and Profit (our margin) are not shown to agents —
+ // the server also leaves them out of the agent's report data.
+ // isAgentLogin() also covers sub-agents and sub-users (utils/supplierDisplay).
+ const showCost = !isAgentLogin();
+ // Supplier names are never shown to agents (owner rule).
+ const showSupplier = !isAgentLogin();
 
  const fetchSales = async (filters = {}) => {
   try {
@@ -144,31 +153,29 @@ const handleReset = async () =>{
     <tr>
     <th>SI.No</th>
     <th>Agent Name</th>
-    <th>Supplier Name</th>
+    ${showSupplier ? '<th>Supplier Name</th>' : ''}
     <th>Customer Name</th>
     <th>Booking Code</th>
     <th>Booking Done By</th>
     <th>Book Date</th>
     <th>Native Country</th>
     <th>Selling Price</th>
-    <th>Net Price</th>
-    <th>Profit</th>
+    ${showCost ? '<th>Net Price</th><th>Profit</th>' : ''}
      </tr>
     </thead>
     <tbody>
     ${currentfilter.map((r,index)=>`
       <tr>
       <td>${index+1}</td>
-      <td>${r.agentName || 'N/A'}</td>
-      <td>${r.supplierName || 'N/A'}</td>
-      <td>${r.customerName || 'N/A'}</td>
-      <td>${r.bookingCode || 'N/A'}</td>
-      <td>${r.bookingDoneBy || 'N/A'}</td>
-      <td>${r.bookingDate ? r.bookingDate.split("T")[0] : 'N/A'}</td>
-      <td>${r.nativeCountry || 'N/A'}</td>
-      <td>${r.sellingPrice || '0.00'}</td>
-      <td>${r.netPrice || '0.00'}</td>
-      <td>${r.profit || '0.00'}</td>
+      <td>${escapeHtml(r.agentName || 'N/A')}</td>
+      ${showSupplier ? `<td>${escapeHtml(r.supplierName || 'N/A')}</td>` : ''}
+      <td>${escapeHtml(r.customerName || 'N/A')}</td>
+      <td>${escapeHtml(r.bookingCode || 'N/A')}</td>
+      <td>${escapeHtml(r.bookingDoneBy || 'N/A')}</td>
+      <td>${escapeHtml(r.bookingDate ? r.bookingDate.split("T")[0] : 'N/A')}</td>
+      <td>${escapeHtml(r.nativeCountry || 'N/A')}</td>
+      <td>${escapeHtml(r.sellingPrice || '0.00')}</td>
+      ${showCost ? `<td>${escapeHtml(r.netPrice || '0.00')}</td><td>${escapeHtml(r.profit || '0.00')}</td>` : ''}
       </tr>
       `).join('')}
     </tbody>
@@ -182,18 +189,13 @@ const handleReset = async () =>{
 
 const handleExcel = () => {
   const headers = [
-    'SI.No', 'Agent Name', 'Supplier Name', 'Customer Name', 'Booking Code',
-    'Booking Done By', 'Book Date', 'Native Country', 'Selling Price', 'Net Price', 'Profit'
+    'SI.No', 'Agent Name', ...(showSupplier ? ['Supplier Name'] : []), 'Customer Name', 'Booking Code',
+    'Booking Done By', 'Book Date', 'Native Country', 'Selling Price',
+    ...(showCost ? ['Net Price', 'Profit'] : [])
   ];
 
-  const escapeCSV = (value) => {
-    if (value === null || value === undefined) return '';
-    const stringValue = String(value);
-    if (stringValue.includes(',') || stringValue.includes('\n') || stringValue.includes('"')) {
-      return `"${stringValue.replace(/"/g, '""')}"`;
-    }
-    return stringValue;
-  };
+  // csvCell neutralises text a spreadsheet would run as a formula.
+  const escapeCSV = (value) => csvCell(value);
 
 
   const csvContent = [
@@ -201,15 +203,14 @@ const handleExcel = () => {
     ...currentfilter.map((r, index) => [
       index + 1,
       r.agentName || 'N/A',
-      r.supplierName || 'N/A',
+      ...(showSupplier ? [r.supplierName || 'N/A'] : []),
       r.customerName || 'N/A',
       r.bookingCode || 'N/A',
       r.bookingDoneBy || 'N/A',
       r.bookingDate ? r.bookingDate.split("T")[0] : 'N/A',
       r.nativeCountry || 'N/A',
       r.sellingPrice || '0.00',
-      r.netPrice || '0.00',
-      r.profit || '0.00'
+      ...(showCost ? [r.netPrice || '0.00', r.profit || '0.00'] : [])
     ].map(escapeCSV).join(','))
   ].join('\n');
 
@@ -233,7 +234,7 @@ const filteredreports = useMemo(()=>{
       const search = searchQuery.trim().toLowerCase();
       return (
         String(a.agentName || '').toLowerCase().includes(search)||
-        String(a.supplierName || '').toLowerCase().includes(search)||
+        (showSupplier && String(a.supplierName || '').toLowerCase().includes(search))||
         String(a.customerName || '').toLowerCase().includes(search)||
         String(a.bookingCode || '').toLowerCase().includes(search)||
         String(a.bookingDoneBy || '').toLowerCase().includes(search)||
@@ -494,15 +495,15 @@ const filteredreports = useMemo(()=>{
                   <tr>
                     <th style={{ width: 100 }}>S/N</th>
                     <th>Agent Name</th>
-                    <th>Supplier Name</th>
+                    {showSupplier && <th>Supplier Name</th>}
                     <th>Customer Name</th>
                     <th>Booking Code</th>
                     <th>Booking Done By</th>
                     <th>Book Date</th>
                     <th>Native Country</th>
                     <th>Selling Price</th>
-                    <th>Net Price</th>
-                    <th>Profit</th>
+                    {showCost && <th>Net Price</th>}
+                    {showCost && <th>Profit</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -511,20 +512,20 @@ const filteredreports = useMemo(()=>{
                       <tr key={r.bookingId || index}>
                         <td>{startIndex + index + 1}</td>
                         <td>{r.agentName || 'N/A'}</td>
-                        <td>{r.supplierName || 'N/A'}</td>
+                        {showSupplier && <td>{r.supplierName || 'N/A'}</td>}
                         <td>{r.customerName || 'N/A'}</td>
                         <td>{r.bookingCode || 'N/A'}</td>
                         <td>{r.bookingDoneBy || 'N/A'}</td>
                         <td>{r.bookingDate ? r.bookingDate.split("T")[0] : 'N/A'}</td>
                         <td>{r.nativeCountry || 'N/A'}</td>
                         <td>{r.sellingPrice || '0.00'}</td>
-                        <td>{r.netPrice || '0.00'}</td>
-                        <td>{r.profit || '0.00'}</td>
+                        {showCost && <td>{r.netPrice || '0.00'}</td>}
+                        {showCost && <td>{r.profit || '0.00'}</td>}
                       </tr>
                     ))
                   ) : (
                     <tr>
-                      <td colSpan="11" className="text-center text-muted py-4">
+                      <td colSpan={showCost ? 11 : 9} className="text-center text-muted py-4">
                         No data available in table
                       </td>
                     </tr>

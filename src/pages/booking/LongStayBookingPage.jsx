@@ -28,10 +28,19 @@ import AgentBalanceDisplay from "../../components/AgentBalanceDisplay";
 import QuotationPdfCard from "../../components/quotation/QuotationPdfCard";
 import { toast } from "react-hot-toast";
 import { toLocalDateTime, formatDateTime } from "../../utils/dateUtils";
+import RefundBadge from "../../components/RefundBadge";
+import {
+  REFUND_FLEXIBLE,
+  REFUND_NON_REFUNDABLE,
+  REFUND_PARTIAL,
+  refundLabelText,
+  uaeToday,
+} from "../../utils/refundLabel";
 // Reuse the hotel-booking-page styles so the long-stay page renders
 // with the same shell, summary cards, and Policies & Terms modal as
 // /booking/hotel.
 import "../../styles/HotelBookingPage.css";
+import { orderIdPathSegment } from "../../utils/urlSafety";
 
 // Online-payment gateways — mirrors HotelBookingPage so the operator gets
 // the same payment picker when the agent's credit is short. CC Avenue is
@@ -103,6 +112,16 @@ async function reverseGeocode(lat, lon) {
   }
   return null;
 }
+
+// Same rule as LongStayRoomList: policies are free text, so a refundable room
+// whose contract has any charge row above 0 shows Flexible - Partial at all times.
+const longStayLabel = (refundable, contract) => {
+  if (!refundable) return REFUND_NON_REFUNDABLE;
+  const charged = (contract?.cancellationPolicy || []).some(
+    (row) => Number(row?.value) > 0,
+  );
+  return charged ? REFUND_PARTIAL : REFUND_FLEXIBLE;
+};
 
 // Pretty-print the structured cancellation policy chargeType + value
 // rendered on the booking page. Mirrors the dropdown labels used in
@@ -176,7 +195,7 @@ export default function LongStayBookingPage() {
   // render it as "Contact: <value>/<agentName>". The input is ADMIN-only.
   const [bookingDoneFor, setBookingDoneFor] = useState("");
   const isAdmin =
-    String(localStorage.getItem("currentActiveRole") || "").toUpperCase() ===
+    String(sessionStorage.getItem("currentActiveRole") || "").toUpperCase() ===
     "ADMIN";
 
   const handleSpecialRequestToggle = (request) => {
@@ -470,7 +489,7 @@ export default function LongStayBookingPage() {
       try {
         setSubmitting(true);
         const statusResponse = await axiosInstance.get(
-          `/api/payment/ccavenue/status/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/status/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         if (statusResponse.data?.status !== "SUCCESS") {
           toast.error(
@@ -480,7 +499,7 @@ export default function LongStayBookingPage() {
           return;
         }
         const res = await axiosInstance.post(
-          `/api/payment/ccavenue/finalize-longstay/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/finalize-longstay/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         toast.success(`Booking confirmed: ${res.data?.bookingCode || ""}`);
         sessionStorage.removeItem("longStayBookingDraft");
@@ -564,9 +583,7 @@ export default function LongStayBookingPage() {
   })();
   const isOutsideDeadline = (() => {
     if (!cancellationDeadline) return false;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    return today > cancellationDeadline;
+    return uaeToday() > cancellationDeadline;
   })();
   // Only shown for Refundable rates whose deadline hasn't passed.
   // Non-refundable / past-deadline / On-Request skip the choice.
@@ -1386,11 +1403,9 @@ export default function LongStayBookingPage() {
                                 ? "Weekly billing"
                                 : "Day-wise billing"}
                             </span>
-                            {draft.room.refundable ? (
-                              <Badge bg="success">Flexible</Badge>
-                            ) : (
-                              <Badge bg="danger">Non-Refundable</Badge>
-                            )}
+                            <RefundBadge
+                              label={longStayLabel(draft.room.refundable, draft.contract)}
+                            />
                           </div>
                         </div>
 
@@ -1916,7 +1931,7 @@ export default function LongStayBookingPage() {
                                 className="badge bg-danger"
                                 style={{ fontSize: "0.7rem" }}
                               >
-                                Non-refundable
+                                {refundLabelText(REFUND_NON_REFUNDABLE)}
                               </span>
                             </p>
                             <p
@@ -1943,7 +1958,7 @@ export default function LongStayBookingPage() {
                                       year: "numeric",
                                     },
                                   )}
-                                  , 02:00 PM (UAE)
+                                  , 11:59 PM (UAE)
                                 </span>
                                 {isOutsideDeadline ? (
                                   <span
@@ -1952,6 +1967,8 @@ export default function LongStayBookingPage() {
                                   >
                                     Passed
                                   </span>
+                                ) : longStayLabel(draft.room.refundable, draft.contract) === REFUND_PARTIAL ? (
+                                  <RefundBadge label={REFUND_PARTIAL} className="ms-2" />
                                 ) : (
                                   <span
                                     className="badge bg-success ms-2"

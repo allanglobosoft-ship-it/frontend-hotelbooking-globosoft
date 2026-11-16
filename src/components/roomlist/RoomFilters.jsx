@@ -37,10 +37,19 @@ export default function RoomFilters({ filters }) {
           <Form.Check
             type="checkbox"
             id="filter-refundable"
-            label="Refundable"
+            label="Flexible"
             checked={refundFilter.refundable}
             onChange={(e) =>
               setRefundFilter((p) => ({ ...p, refundable: e.target.checked }))
+            }
+          />
+          <Form.Check
+            type="checkbox"
+            id="filter-partial"
+            label="Flexible - Partial"
+            checked={refundFilter.partial === true}
+            onChange={(e) =>
+              setRefundFilter((p) => ({ ...p, partial: e.target.checked }))
             }
           />
           <Form.Check

@@ -1269,3 +1269,73 @@ display: flex;
 gap: 8px;
 }
 
+/* ---- Ported from HBS (new selectors only; fork rules unchanged) ---- */
+.db-brand-mark {
+  display: block;
+  width: 175px;
+  height: auto;
+}
+
+.topbar .navbar-brand .db-brand-tag,
+.sidebar-globo {
+  flex: 0 0 auto;
+  margin-top: auto;
+  padding: 0.7rem 0.25rem 0.15rem;
+  border-top: 1px solid #eef0f4;
+  text-align: center;
+}
+
+.sidebar-globo img {
+  display: block;
+  width: 100%;
+  max-width: 140px;
+  height: auto;
+  margin: 0 auto;
+  opacity: 0.9;
+}
+
+.submenu .submenu-link.is-coming-soon.is-coming-soon.is-coming-soon {
+  opacity: .55;
+  filter: grayscale(.35);
+  cursor: not-allowed !important;
+}
+
+.submenu .submenu-link.is-coming-soon.is-coming-soon.is-coming-soon:hover,
+.submenu .submenu-link.is-coming-soon.is-coming-soon.is-coming-soon:focus {
+  background: transparent !important;
+  color: #111827 !important;
+}
+
+.submenu-coming-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.submenu-coming-badge {
+  flex: 0 0 auto;
+  background: #FF6B00;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  line-height: 1.5;
+  padding: 1px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.submenu-pending-badge {
+  background: $brand-red;
+  color: #fff;
+  font-size: 0.65rem;
+  padding: 3px 7px;
+  line-height: 1;
+}
+
+.submenu .submenu-link:hover .submenu-pending-badge {
+  background: #fff;
+  color: $brand-red;
+}

@@ -315,7 +315,7 @@ const CompulsoryEventsPage = () => {
   // Handle delete
   const handleDelete = (event) => {
     Swal.fire({
-      title: `Are you sure? You want to delete ${event.supplyments}`,
+      titleText: `Are you sure? You want to delete ${event.supplyments}`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

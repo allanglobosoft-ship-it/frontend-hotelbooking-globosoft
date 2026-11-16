@@ -1441,7 +1441,7 @@ const HotelRegistrationActions = () => {
       try {
         // setIsLoading(true);
 
-        let activeUserRole = localStorage.getItem("currentActiveRole");
+        let activeUserRole = sessionStorage.getItem("currentActiveRole");
         console.log("currentActiveRole::", activeUserRole);
         // console.log("roleslist::", rolesList);
 
@@ -1741,8 +1741,8 @@ const HotelRegistrationActions = () => {
                     // page, so Back returns them to their dashboard. Admin
                     // behavior is unchanged — back to the hotel list.
                     const activeRole = (
-                      localStorage.getItem("currentActiveRole") ||
-                      localStorage.getItem("userRole") ||
+                      sessionStorage.getItem("currentActiveRole") ||
+                      sessionStorage.getItem("userRole") ||
                       ""
                     ).toLowerCase();
                     if (activeRole.includes("extranet")) {

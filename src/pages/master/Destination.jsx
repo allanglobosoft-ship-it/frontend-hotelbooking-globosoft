@@ -244,7 +244,7 @@ export default function Destination() {
 
   const handleDelete = (item) => {
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.name}`,
+      titleText: `Are you sure? You want to delete ${item.name}`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

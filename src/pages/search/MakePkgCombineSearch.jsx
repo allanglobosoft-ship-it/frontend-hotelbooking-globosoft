@@ -44,8 +44,11 @@ import {
 import AgentBalanceDisplay from "../../components/AgentBalanceDisplay";
 import { useLocation, useNavigate } from "react-router-dom";
 import axiosInstance from "../../components/AxiosInstance";
+import { SUPPLIER_SEARCH_TIMEOUT_MS } from "../../config/apiTimeouts";
 import { toast } from "react-hot-toast";
 import "../../styles/RoomList.css";
+import { isAgentLogin } from "../../utils/supplierDisplay";
+import RefundBadge from "../../components/RefundBadge";
 
 // ─────────────────────────────────────────────
 // Search Progress Bar (same as HotelSearch)
@@ -1419,7 +1422,7 @@ const [activeAccordion, setActiveAccordion] = useState({});
     };
 
     try {
-      const res = await axiosInstance.post("/api/hotel-rooms/search", payload);
+      const res = await axiosInstance.post("/api/hotel-rooms/search", payload, { timeout: SUPPLIER_SEARCH_TIMEOUT_MS });
 
       if (!res.data || res.data.success === false) {
         toast.error(res.data?.message || "Failed to fetch rooms.");
@@ -1507,6 +1510,7 @@ const [activeAccordion, setActiveAccordion] = useState({});
         nationality: String(payload.nationality || ""),
         noOfRoom: String(hotelsdetail.numberOfRooms || payload.noOfRoom || "1"),
         refundstatus,
+        refundTerms: rate.refundTerms,
         searchRoomDTOs,
         agentId: String(payload.agentId || ""),
         totalRate: Number(rate.totalRate) || 0,
@@ -1546,18 +1550,6 @@ const [activeAccordion, setActiveAccordion] = useState({});
         return <FaUtensils className="text-success" />;
       default:
         return <FaUtensils className="text-primary" />;
-    }
-  };
-
-  const getRefundStatusBadge = (nonRefundable) => {
-    const value = String(nonRefundable).toLowerCase();
-    switch (value) {
-      case "false":
-        return <Badge bg="success">Flexible</Badge>;
-      case "true":
-        return <Badge bg="danger">Non-Refundable</Badge>;
-      default:
-        return <Badge bg="secondary">{String(nonRefundable)}</Badge>;
     }
   };
 
@@ -2547,9 +2539,7 @@ const [activeAccordion, setActiveAccordion] = useState({});
                                                                             )}
                                                                           </div>
                                                                           <div>
-                                                                            {getRefundStatusBadge(
-                                                                              rate.nonRefundable
-                                                                            )}
+                                                                            <RefundBadge rate={rate} />
                                                                           </div>
                                                                         </div>
 
@@ -3158,7 +3148,7 @@ const [activeAccordion, setActiveAccordion] = useState({});
                                           {activity.starRating}
                                         </>
                                       )}
-                                      {activity.apiType && (
+                                      {activity.apiType && !isAgentLogin() && (
                                         <span
                                           style={{
                                             marginLeft: "4px",
@@ -3524,7 +3514,7 @@ const [activeAccordion, setActiveAccordion] = useState({});
                         </div>
                       </Col>
                     )}
-                    {selectedActivity.apiType && (
+                    {selectedActivity.apiType && !isAgentLogin() && (
                       <Col md={6}>
                         <div>
                           <strong>API Type:</strong> {selectedActivity.apiType}

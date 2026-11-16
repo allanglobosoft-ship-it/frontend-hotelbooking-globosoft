@@ -1,0 +1,116 @@
+/* ============================================================
+   PriceRangeSlider — two stacked native range inputs on one track.
+   Inputs are transparent and ignore pointer events except on their
+   thumbs, so each handle can be dragged independently.
+   Every class is `prs-` prefixed. Brand orange: #EC0B43
+   ============================================================ */
+
+.prs-values {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #15171c;
+  margin-bottom: 6px;
+}
+
+/* Bar chart above the track. Inset 9px each side (half a thumb) so the
+   bars span exactly the distance the thumb centres travel. */
+.prs-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 56px;
+  padding: 0 9px;
+  margin-bottom: 2px;
+}
+.prs-bar {
+  flex: 1;
+  min-width: 0;
+  background: #e5e7eb;
+  border-radius: 2px 2px 0 0;
+  transition: background 0.15s ease;
+}
+.prs-bar-in {
+  background: #9ca3af;
+}
+
+.prs-track-wrap {
+  position: relative;
+  height: 24px;
+}
+.prs-track,
+.prs-range {
+  position: absolute;
+  top: 50%;
+  height: 4px;
+  transform: translateY(-50%);
+  border-radius: 4px;
+}
+.prs-track {
+  left: 9px;
+  right: 9px;
+  background: #e5e7eb;
+}
+.prs-range {
+  background: #ec0b43;
+  transition: all ease;
+}
+
+.prs-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 24px;
+  margin: 0;
+  background: transparent;
+  pointer-events: none;
+  -webkit-appearance: none;
+  appearance: none;
+  z-index: 3;
+}
+.prs-input:focus {
+  outline: none;
+}
+.prs-input::-webkit-slider-runnable-track {
+  background: transparent;
+  height: 24px;
+}
+.prs-input::-moz-range-track {
+  background: transparent;
+}
+
+.prs-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  box-sizing: border-box; /* 18px incl. border — THUMB_HALF in the component is 9 */
+  pointer-events: auto;
+  width: 18px;
+  height: 18px;
+  margin-top: 3px; /* centre on the 24px track */
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #ec0b43;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  cursor: grab;
+}
+.prs-input::-moz-range-thumb {
+  pointer-events: auto;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #ec0b43;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  cursor: grab;
+}
+.prs-input:active::-webkit-slider-thumb {
+  cursor: grabbing;
+}
+.prs-input:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgba(236, 11, 67, 0.2);
+}
+.prs-input:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 4px rgba(236, 11, 67, 0.2);
+}

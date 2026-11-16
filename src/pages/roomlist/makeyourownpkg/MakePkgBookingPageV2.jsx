@@ -46,6 +46,7 @@ import AddOnServicesPanel, {
 } from "../../../components/AddOnServicesPanel";
 import axiosInstance from "../../../components/AxiosInstance";
 import toast from "react-hot-toast";
+import { REFUND_NON_REFUNDABLE, refundLabelText } from "../../../utils/refundLabel";
 import "../../../styles/HotelBookingPage.css";
 import "../../../styles/MakePkgBookingPage.css";
 import "../../../styles/MakeYourOwnPackageV2.css";
@@ -819,21 +820,28 @@ const MakePkgBookingPageV2 = () => {
       try {
         const next = { hotel: {}, cab: {}, activity: {} };
 
-        // Hotel IDs in cart
+        // In-house hotel IDs in cart. Both hotel endpoints read our own hotel
+        // tables, so a supplier hotel's code (cart `api` other than 1) is never
+        // sent there — it could match an unrelated in-house hotel. Cart lines
+        // without `api` predate supplier hotels on this flow and are in-house.
+        const isInhouseHotelLine = (h) =>
+          h && (h.api == null || h.api === "" || Number(h.api) === 1);
         const hotelIds = Array.from(
           new Set(
             (cartData || [])
-              .filter((it) => it && it.hotel)
+              .filter((it) => it && it.hotel && isInhouseHotelLine(it.hotel))
               .map((it) => it.hotel?.hotelId)
               .filter((v) => v !== undefined && v !== null && v !== "")
               .map((v) => String(v))
           )
         );
-        // Cab IDs in cart
+        // In-house cab IDs in cart. A supplier (iWay) transfer line is not one
+        // of our cabs — its id ("iway-…") must not reach the in-house policy
+        // endpoint below.
         const cabIds = Array.from(
           new Set(
             (cartData || [])
-              .filter((it) => it && it.cab)
+              .filter((it) => it && it.cab && it.cab.external !== true)
               .map((it) => it.cab?.cabId)
               .filter((v) => v !== undefined && v !== null && v !== "")
               .map((v) => String(v))
@@ -996,6 +1004,22 @@ const MakePkgBookingPageV2 = () => {
             next.activity[activityId] = slot;
           }),
         ]);
+
+        // Supplier hotels: the cancellation policy their supplier sent with
+        // the rate (stored on the cart line when it was added).
+        (cartData || [])
+          .filter((it) => it && it.hotel && !isInhouseHotelLine(it.hotel))
+          .forEach((it) => {
+            const key = String(it.hotel.hotelId || "");
+            if (!key || next.hotel[key]) return;
+            next.hotel[key] = {
+              terms: [],
+              cancellations: (Array.isArray(it.hotel.cancellationPolicy)
+                ? it.hotel.cancellationPolicy
+                : []
+              ).filter((s) => typeof s === "string" && s.trim().length > 0),
+            };
+          });
 
         if (!cancelled) setServicePolicies(next);
       } finally {
@@ -1486,6 +1510,10 @@ const MakePkgBookingPageV2 = () => {
               const day = String(deadline.getDate()).padStart(2, "0");
               return `${year}-${month}-${day}T00:00:00`;
             } else {
+              // The backend's own last free day, when the rate carries it.
+              if (hotel.refundTerms?.cutoff) {
+                return `${hotel.refundTerms.cutoff}T00:00:00`;
+              }
               // Refundable: 2 days before earliest fromDate from cancellationPolicy
               const policies = hotel.cancellationPolicy || [];
               if (policies.length === 0) {
@@ -1561,6 +1589,7 @@ const MakePkgBookingPageV2 = () => {
                   hotel.refundstatus === "N" ||
                   hotel.nonRefundable === true ||
                   hotel.nonRefundable === "true",
+                refundTerms: hotel.refundTerms,
                 currency: hotel.currency || "AED",
                 rate: roomRate,
                 rateWithoutMarkup: roomRateWithoutMarkup,
@@ -3004,6 +3033,12 @@ const MakePkgBookingPageV2 = () => {
                             dateRange.length > 0
                               ? hotelTotalPrice / dateRange.length
                               : hotelTotalPrice;
+                          // The Selling Price column used to repeat the Total
+                          // Price figure; it is the selling price per night.
+                          const sellingPricePerNight =
+                            dateRange.length > 0
+                              ? hotelSellingPrice / dateRange.length
+                              : hotelSellingPrice;
 
                           return (
                             <div
@@ -3421,7 +3456,7 @@ const MakePkgBookingPageV2 = () => {
                                           <tr key={dateIndex}>
                                             <td>{dateStr}</td>
                                             <td>{pricePerNight.toFixed(2)}</td>
-                                            <td>{pricePerNight.toFixed(2)}</td>
+                                            <td>{sellingPricePerNight.toFixed(2)}</td>
                                           </tr>
                                         );
                                       })}
@@ -4620,18 +4655,24 @@ const MakePkgBookingPageV2 = () => {
                             }
                             const dates = [];
                             hotelsArr.forEach((it) => {
+                              const cutoff = it.hotel?.refundTerms?.cutoff;
+                              if (cutoff) {
+                                dates.push(new Date(`${cutoff}T00:00:00`));
+                                return;
+                              }
                               const policies = it.hotel?.cancellationPolicy || [];
                               policies.forEach((p) => {
                                 if (p && p.fromDate) {
                                   const dd = new Date(p.fromDate);
-                                  if (!isNaN(dd.getTime())) dates.push(dd);
+                                  if (!isNaN(dd.getTime())) {
+                                    dd.setDate(dd.getDate() - 2);
+                                    dates.push(dd);
+                                  }
                                 }
                               });
                             });
                             if (dates.length === 0) return null;
-                            const earliest = new Date(Math.min(...dates.map((d) => d.getTime())));
-                            earliest.setDate(earliest.getDate() - 2);
-                            return earliest;
+                            return new Date(Math.min(...dates.map((d) => d.getTime())));
                           } catch {
                             return null;
                           }
@@ -4783,9 +4824,9 @@ const MakePkgBookingPageV2 = () => {
                                     fontSize: "0.76rem",
                                   }}
                                 >
-                                  <span className="fw-bold">Non-Refundable:</span> One or more selected services
-                                  are non-refundable, so the entire package is
-                                  treated as non-refundable.
+                                  <span className="fw-bold">{refundLabelText(REFUND_NON_REFUNDABLE)}:</span> One or more selected services
+                                  are Non Refundable, so the entire package is
+                                  treated as Non Refundable.
                                 </div>
                               )}
                             </div>

@@ -244,7 +244,7 @@ export default function MealPlan() {
   const handleDelete = (item) => {
     console.log("delete item :::" , item);
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.name} Meal Plan`,
+      titleText: `Are you sure? You want to delete ${item.name} Meal Plan`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

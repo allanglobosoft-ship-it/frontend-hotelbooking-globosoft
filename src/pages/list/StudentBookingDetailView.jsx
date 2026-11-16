@@ -32,6 +32,7 @@ import { useParams, useNavigate, useLocation } from "react-router-dom";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
+import { labelOfRate, refundLabelText, statusText } from "../../utils/refundLabel";
 import toast from "react-hot-toast";
 // Source of the pg-option-* classes used by the Select Payment Gateway
 // modal below — same import BookingDetailedView.jsx uses so the student
@@ -41,6 +42,7 @@ import {
   FaHistory, FaMapMarkerAlt, FaNetworkWired, FaCalendarAlt, FaClock,
   FaUserAlt, FaPlusCircle, FaCheckCircle, FaSyncAlt, FaTimesCircle,
 } from "react-icons/fa";
+import { orderIdPathSegment } from "../../utils/urlSafety";
 
 // Reverse-geocode browser coordinates to a readable address for the
 // Booking History audit trail. Tries OpenStreetMap Nominatim first
@@ -220,7 +222,7 @@ export default function StudentBookingDetailView() {
   // Role gate for admin-only actions — currently gates the "Send Email"
   // affordance inside the PDF preview modal. Matches HotelBookingPage's
   // convention.
-  const activeUserRole = localStorage.getItem("currentActiveRole");
+  const activeUserRole = sessionStorage.getItem("currentActiveRole");
   const isAdmin = String(activeUserRole || "").toUpperCase() === "ADMIN";
   const isSuperAdmin =
     String(activeUserRole || "").toUpperCase() === "SUPER_ADMIN";
@@ -237,11 +239,11 @@ export default function StudentBookingDetailView() {
   // currentActiveRole isn't set for single-role logins, so fall back to
   // userRole (same convention as HotelSearch.jsx). Visibility only — no
   // API/flow/permission change.
-  const activeRole = String(localStorage.getItem("currentActiveRole") || "")
+  const activeRole = String(sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
   const storedRoles = String(
-    localStorage.getItem("userRole") || "",
+    sessionStorage.getItem("userRole") || "",
   ).toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
@@ -413,6 +415,9 @@ export default function StudentBookingDetailView() {
     .replace(/\s+/g, "")
     .toUpperCase();
   const isCancelled = !!booking?.cancelled;
+  // Today's label for an open booking. A cancelled one keeps its stored status.
+  const refundWordsNow =
+    (!isCancelled && booking?.refundLabelText) || statusText(booking?.refundStatus);
   const isConfirmedOrLater =
     normalizedStatus === "CONFIRMED" ||
     normalizedStatus === "RECONFIRMED" ||
@@ -800,7 +805,7 @@ export default function StudentBookingDetailView() {
       try {
         setConfirmingBooking(true);
         const statusResponse = await axiosInstance.get(
-          `/api/payment/ccavenue/status/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/status/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         if (statusResponse.data?.status !== "SUCCESS") {
           toast.error(
@@ -810,7 +815,7 @@ export default function StudentBookingDetailView() {
           return;
         }
         const response = await axiosInstance.post(
-          `/api/payment/ccavenue/finalize-student-reconfirm/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/finalize-student-reconfirm/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         if (response.data?.success) {
           toast.success(
@@ -939,7 +944,6 @@ export default function StudentBookingDetailView() {
     try {
       setSavingNote(true);
       const createdBy =
-        localStorage.getItem("UserName") ||
         sessionStorage.getItem("UserName") ||
         "unknown";
       const res = await axiosInstance.post(
@@ -1298,7 +1302,7 @@ export default function StudentBookingDetailView() {
                         {booking.confirmationNumber && (
                           <InfoRow label="Confirmation No." value={booking.confirmationNumber} />
                         )}
-                        <InfoRow label="Refund Status" value={booking.refundStatus} />
+                        <InfoRow label="Refund Status" value={refundWordsNow || null} />
                         <InfoRow label="Voucher" value={booking.voucherGenerated} />
                         <InfoRow label="Payment Mode" value={booking.paymentMode} />
                         <InfoRow label="Total" value={money(booking.totalRate)} />
@@ -1376,7 +1380,7 @@ export default function StudentBookingDetailView() {
                             <td>{r.mealPlan || "-"}</td>
                             <td>{r.adults || 0}</td>
                             <td>{r.children || 0}</td>
-                            <td>{r.nonRefundable ? "Non-Refundable" : "Flexible"}</td>
+                            <td>{refundLabelText(labelOfRate(r))}</td>
                             <td className="text-end">{money(r.rate)}</td>
                           </tr>
                         ))}
@@ -1419,8 +1423,10 @@ export default function StudentBookingDetailView() {
                 <div style={card}>
                   <div style={SECTION_HEADER}>Cancellation Policy</div>
                   <div style={{ padding: "12px 16px", fontSize: "0.82rem", color: "#333" }}>
-                    {String(booking.refundStatus || "").toLowerCase().includes("non")
-                      ? "Non-Refundable — this booking cannot be cancelled for a refund once confirmed."
+                    {refundWordsNow === "Non Refundable"
+                      ? "Non Refundable — this booking cannot be cancelled for a refund once confirmed."
+                      : refundWordsNow === "Flexible - Partial"
+                        ? "Flexible - Partial — cancelling now keeps part of the booking under the hotel's refund terms."
                       : "Flexible — cancellation is allowed per the hotel's refund terms."}
                     {isCancelled && booking.cancellationReason && (
                       <div className="text-danger mt-2">Cancelled — {booking.cancellationReason}</div>
@@ -1823,8 +1829,11 @@ export default function StudentBookingDetailView() {
         </Modal.Header>
         <Modal.Body>
           <p className="text-muted small">
-            Are you sure you want to cancel this booking? Refundable bookings will have their agent
-            credit restored.
+            Are you sure you want to cancel this booking?{" "}
+            {booking?.refundAmountNow != null &&
+            Number(booking.refundAmountNow) < Number(booking.totalRate)
+              ? `Cancelling now keeps ${money(Number(booking.totalRate) - Number(booking.refundAmountNow))} as the cancellation charge.`
+              : "Refundable bookings will have their agent credit restored."}
           </p>
           {/* Informational only — booking value warning. Reuses the same
               money() helper used elsewhere on the page so the currency and

@@ -266,7 +266,7 @@ export default function ItineraryDetails() {
   const handleDelete = (item) => {
     console.log("delete item :::" , item);
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.itineraryHeading} Itinerary Details`,
+      titleText: `Are you sure? You want to delete ${item.itineraryHeading} Itinerary Details`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

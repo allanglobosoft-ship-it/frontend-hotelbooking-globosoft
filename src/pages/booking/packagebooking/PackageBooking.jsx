@@ -31,6 +31,11 @@ import {
   formatPackageAmount,
   resolvePackageBaseRate,
 } from "./packageTotal";
+import {
+  savedPackageRate,
+  savedSupplierFields,
+  toIsoDate,
+} from "./supplierHotels";
 
 import HotelsTab from "./tabs/HotelsTab";
 import CabsTab from "./tabs/CabsTab";
@@ -148,10 +153,20 @@ const PackageBooking = () => {
     isEditMode ? bookingId : null
   );
 
-  const [bookingData, setBookingData] = useState({
+  // The trip's date is the arrival picked on the search page. Today is only the
+  // fallback: no searched date, or a stored search whose date has passed. An
+  // amend loads its saved date over this.
+  const todayIso = new Date().toISOString().split("T")[0];
+  const searchedArrival = toIsoDate(searchContext.arrivalDateTime);
+  const initialTravelDate =
+    searchedArrival && searchedArrival >= todayIso ? searchedArrival : todayIso;
+
+  // stateData.bookingData is only set when coming back from Package Checkout,
+  // so the selected hotel and meal plan are still there.
+  const [bookingData, setBookingData] = useState(stateData.bookingData || {
     searchParams: {
       packageId: id,
-      travelDate: new Date().toISOString().split("T")[0],
+      travelDate: initialTravelDate,
       adultCount: Number(searchAdultCount) > 0 ? Number(searchAdultCount) : 1,
       childCount: Number(searchChildCount) >= 0 ? Number(searchChildCount) : 0,
       infantCount: 0,
@@ -224,6 +239,12 @@ const PackageBooking = () => {
   // inside the tab because the Total Price sidebar needs it before the
   // operator has picked anything.
   const [resolvedPackageRate, setResolvedPackageRate] = useState(0);
+  // Amending a booking that holds a supplier hotel: the package amount already
+  // charged on it, so the amend doesn't reprice it at today's rate. Stays 0 for
+  // every other booking, which keep using resolvedPackageRate.
+  const [chargedPackageRate, setChargedPackageRate] = useState(0);
+  const packageRateForTotal =
+    chargedPackageRate > 0 ? chargedPackageRate : resolvedPackageRate;
 
   // Total Price — derived, not state, so there is exactly one place the
   // number comes from. computePackageTotal() owns the maths: the picked
@@ -237,7 +258,7 @@ const PackageBooking = () => {
     // Hotels step the moment /hotel-details returns; searchRate (the card's
     // per-adult "from" figure) only stands in for the split second before
     // that. See resolvePackageBaseRate for why the order matters.
-    resolvePackageBaseRate(searchRate, packageData, resolvedPackageRate),
+    resolvePackageBaseRate(searchRate, packageData, packageRateForTotal),
   );
   const totalPrice = priceBreakdown.total;
 
@@ -374,6 +395,7 @@ const PackageBooking = () => {
         );
         const b = res.data;
         if (!b) return;
+        setChargedPackageRate(savedPackageRate(b));
 
         // Map back into the shape the tabs expect. Names / shapes mirror
         // what is sent in handleSubmitBooking() so a round-trip works.
@@ -406,6 +428,7 @@ const PackageBooking = () => {
               hotelName: h.hotelName,
               totalRateWithMarkup: h.selectedRate,
               currencyCode: h.currency,
+              ...savedSupplierFields(h),
             })),
             hotelPrice: (b.selections?.hotels || []).reduce(
               (sum, h) => sum + Number(h.selectedRate || 0),
@@ -742,7 +765,12 @@ const PackageBooking = () => {
     {
       title: "Pricing (AED)",
       rows: [
-        ["Accommodation", formatPackageAmount(priceBreakdown.accommodation)],
+        ...(priceBreakdown.supplierHotelSelected
+          ? [
+              ["Package rate", formatPackageAmount(priceBreakdown.packageRate)],
+              ["Hotel", formatPackageAmount(priceBreakdown.supplierHotel)],
+            ]
+          : [["Accommodation", formatPackageAmount(priceBreakdown.accommodation)]]),
         ...(priceBreakdown.mealPlan > 0
           ? [["Meal plan", formatPackageAmount(priceBreakdown.mealPlan)]]
           : []),
@@ -910,6 +938,8 @@ const PackageBooking = () => {
           hotelId: h?.hotelId ?? null,
           hotelName: h?.hotelName || null,
           hotelRate: Number(h?.totalRateWithMarkup) || 0,
+          // Lets the PDF list the package rate as its own row. Not printed.
+          ...(h?.supplier ? { supplier: h.supplier } : {}),
         }));
       const payload = {
         recipientEmail: email,
@@ -977,7 +1007,8 @@ const PackageBooking = () => {
       // did. A hotel is always selected by the time we get here (HotelsTab
       // enforces it), so the base is not normally used there — but sending it
       // keeps the two pages on identical inputs rather than relying on that.
-      resolvedPackageRate,
+      // With a supplier hotel the base IS used: it is added to the hotel price.
+      resolvedPackageRate: packageRateForTotal,
     };
     try {
       localStorage.setItem(
@@ -1000,6 +1031,11 @@ const PackageBooking = () => {
     switch (currentStep) {
       case 1: return <HotelsTab
                         searchParams={bookingData.searchParams}
+                        searchCityId={searchContext.destinationCityId}
+                        // Bookings don't save a room count, and the stored search
+                        // may be for another booking, so an amend searches 1 room.
+                        searchRoomCount={isEditMode ? null : searchContext.noOfRooms}
+                        packageRateFixed={chargedPackageRate > 0}
                         bookingData={bookingData.selections}
                         programme={bookingData.programme}
                         updateData={updateSelections}
@@ -1017,7 +1053,6 @@ const PackageBooking = () => {
                         searchParams={bookingData.searchParams}
                         bookingData={bookingData}
                         updateData={setBookingData}
-                        onPrev={() => setCurrentStep(1)}
                         onFinish={handleFinish}
                         packageData={packageData}
                         totalPrice={totalPrice}
@@ -1249,6 +1284,12 @@ const PackageBooking = () => {
                   {formatPackageAmount(totalPrice)}
                 </div>
                 <div className="price-sidebar-sub">AED</div>
+                {priceBreakdown.supplierHotelSelected && (
+                  <div className="price-sidebar-mealplan">
+                    Package rate AED {formatPackageAmount(priceBreakdown.packageRate)}
+                    {" "}+ Hotel AED {formatPackageAmount(priceBreakdown.supplierHotel)}
+                  </div>
+                )}
                 {/* Meal plan line — only shown once one is picked on the
                     Hotels tab, so the operator can see what's stacked on
                     top of the hotel rate at a glance. */}

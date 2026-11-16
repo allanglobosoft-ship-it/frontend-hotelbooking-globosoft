@@ -461,14 +461,13 @@ const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {
   const [search, setSearch] = useState("");
   const [searchTimeout, setSearchTimeout] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
-  // Column sort for the agent list. null = no explicit sort (backend keeps
-  // its historical order). First click on a sortable header sets desc
-  // (newest first for Registered Date), second click toggles to asc,
-  // subsequent clicks keep toggling. Only Registered Date is sortable
-  // today — extend `sortField` acceptance in the backend controller +
-  // wire another clickable header here to add more columns.
-  const [sortField, setSortField] = useState(null);
-  const [sortDir, setSortDir] = useState("desc");
+  // Column sort for the agent list. Defaults to Agent Name A→Z. Clicking
+  // Agent Name toggles A→Z / Z→A; clicking Registered Date starts at
+  // newest first, then toggles. To add more sortable columns, extend
+  // `sortField` acceptance in the backend controller + wire another
+  // clickable header here.
+  const [sortField, setSortField] = useState("agentName");
+  const [sortDir, setSortDir] = useState("asc");
   const [showLoginModal, setShowLoginModal] = useState(false);
   // True when /auth/checkRegisteredUserExist already returns a user for the
   // agent. In that case the modal switches to a read-only "Registered
@@ -1041,9 +1040,9 @@ const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {
         params.append("search", searchTerm.trim());
       }
 
-      // Only forward sort params when the operator has explicitly picked
-      // a sortable column, so unrelated callers of /api/agent aren't
-      // affected. Backend maps "registeredDate" → entity `createdDate`.
+      // Sort params are opt-in on /api/agent, so other callers keep their
+      // order. Backend maps "agentName" → `companyName` (case-insensitive)
+      // and "registeredDate" → `createdDate`.
       if (sortOverride) {
         params.append("sort", sortOverride);
         params.append("direction", dirOverride || "desc");
@@ -1460,7 +1459,7 @@ const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {
 
   const handleDelete = (item) => {
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.companyName}`,
+      titleText: `Are you sure? You want to delete ${item.companyName}`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",
@@ -1663,7 +1662,7 @@ const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {
       try {
         setIsLoading(true);
 
-        let activeUserRole = localStorage.getItem("currentActiveRole");
+        let activeUserRole = sessionStorage.getItem("currentActiveRole");
        // console.log("currentActiveRole::", activeUserRole);
         console.log("roleslist::", rolesList);
 
@@ -2381,7 +2380,66 @@ const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {
                 <thead>
                   <tr>
                     <th style={{ width: 100 }}>S/N</th>
-                    <th>Agent Name</th>
+                    <th
+                      role="button"
+                      tabIndex={0}
+                      aria-sort={
+                        sortField === "agentName"
+                          ? sortDir === "asc"
+                            ? "ascending"
+                            : "descending"
+                          : "none"
+                      }
+                      style={{
+                        cursor: "pointer",
+                        userSelect: "none",
+                        whiteSpace: "nowrap",
+                      }}
+                      onClick={() => {
+                        // First click sorts A→Z; subsequent clicks toggle.
+                        // Reset to page 0 so results align with the new order.
+                        const nextDir =
+                          sortField === "agentName" && sortDir === "asc"
+                            ? "desc"
+                            : "asc";
+                        setSortField("agentName");
+                        setSortDir(nextDir);
+                        fetchAgentList(0, search, "agentName", nextDir);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          e.currentTarget.click();
+                        }
+                      }}
+                      title={
+                        sortField === "agentName"
+                          ? sortDir === "asc"
+                            ? "Sorted A to Z — click to sort Z to A"
+                            : "Sorted Z to A — click to sort A to Z"
+                          : "Click to sort by Agent Name"
+                      }
+                    >
+                      <span className="d-inline-flex align-items-center gap-1">
+                        Agent Name
+                        {sortField === "agentName" ? (
+                          <span
+                            className="text-primary fw-bold"
+                            aria-hidden="true"
+                          >
+                            {sortDir === "asc" ? "▲" : "▼"}
+                          </span>
+                        ) : (
+                          <span
+                            className="text-muted"
+                            style={{ opacity: 0.55, fontSize: "0.85em" }}
+                            aria-hidden="true"
+                          >
+                            ⇅
+                          </span>
+                        )}
+                      </span>
+                    </th>
                     <th
                       role="button"
                       tabIndex={0}
@@ -2600,7 +2658,7 @@ const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {
                     <Row>
                       <Col md={3}>
                         <Form.Group className="mb-3">
-                          <Form.Label>Company Name</Form.Label>
+                          <Form.Label>Company Name <span className="text-danger">*</span></Form.Label>
                           <Form.Control
                             value={formData.companyName}
                             placeholder="Enter company name"
@@ -2668,7 +2726,7 @@ const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {
                           fields grouped, no orphan column. */}
                       <Col md={3}>
                         <Form.Group className="mb-3">
-                          <Form.Label>First Name</Form.Label>
+                          <Form.Label>First Name <span className="text-danger">*</span></Form.Label>
                           <Form.Control
                             value={formData.firstName}
                             placeholder="Enter first name"
@@ -2703,7 +2761,7 @@ const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {
                       </Col>
                       <Col md={3}>
                         <Form.Group className="mb-3">
-                          <Form.Label>Last Name</Form.Label>
+                          <Form.Label>Last Name <span className="text-danger">*</span></Form.Label>
                           <Form.Control
                             value={formData.lastName}
                             placeholder="Enter last name"
@@ -2854,7 +2912,7 @@ const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {
                       </Col>
                       <Col md={4}>
                         <Form.Group className="mb-3">
-                          <Form.Label>Company Type</Form.Label>
+                          <Form.Label>Company Type <span className="text-danger">*</span></Form.Label>
                           <Form.Select
                             value={formData.agentCategoryId}
                             onChange={isViewMode ? undefined : (e) => {
@@ -3133,7 +3191,7 @@ const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {
                         <Row>
                           <Col md={6}>
                             <Form.Group className="mb-3">
-                              <Form.Label>Agent Email</Form.Label>
+                              <Form.Label>Agent Email <span className="text-danger">*</span></Form.Label>
                               <Form.Control
                                 value={formData.personalEmail}
                                 placeholder="Enter email"
@@ -3222,7 +3280,7 @@ const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {
                         <Row>
                           <Col md={6}>
                             <Form.Group className="mb-3">
-                              <Form.Label>Mobile Number</Form.Label>
+                              <Form.Label>Mobile Number <span className="text-danger">*</span></Form.Label>
                               <Form.Control
                                 type="tel"
                                 inputMode="tel"
@@ -3305,7 +3363,7 @@ const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {
                           </Col>
                           <Col md={6}>
                             <Form.Group className="mb-3">
-                              <Form.Label>Country</Form.Label>
+                              <Form.Label>Country <span className="text-danger">*</span></Form.Label>
                               <SearchableSelect
                                 name="countryId"
                                 value={formData.countryId}
@@ -3328,7 +3386,7 @@ const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {
                         <Row>
                           <Col md={6}>
                             <Form.Group className="mb-3">
-                              <Form.Label>City</Form.Label>
+                              <Form.Label>City <span className="text-danger">*</span></Form.Label>
                               <SearchableSelect
                                 name="provinceId"
                                 value={formData.provinceId}
@@ -3359,7 +3417,7 @@ const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {
                           </Col>
                           <Col md={6}>
                             <Form.Group className="mb-3">
-                              <Form.Label>Location</Form.Label>
+                              <Form.Label>Location <span className="text-danger">*</span></Form.Label>
                               <SearchableSelect
                                 name="placeId"
                                 value={formData.placeId}
@@ -3391,7 +3449,7 @@ const AgentReg = ({ embedded = false, initialEditId = null, onClose = null } = {
                         </Row>
                         <Col md={12}>
                           <Form.Group className="mb-3">
-                            <Form.Label>Address</Form.Label>
+                            <Form.Label>Address <span className="text-danger">*</span></Form.Label>
                             <Form.Control
                               as="textarea"
                               rows={3}

@@ -45,7 +45,7 @@ import "../../styles/Ayurveda.css";
 const AYURVEDA_API = "/api/v1/ayurveda";
 
 const getUserId = () => {
-  const raw = localStorage.getItem("userId");
+  const raw = sessionStorage.getItem("userId");
   const parsed = raw && raw !== "null" ? Number(raw) : null;
   return Number.isFinite(parsed) ? parsed : 1; // fallback dev default
 };

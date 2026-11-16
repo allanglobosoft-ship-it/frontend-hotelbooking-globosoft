@@ -27,8 +27,10 @@ import { formatDateTime } from "../../utils/dateUtils";
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/TopBar";
 import { toast } from "react-hot-toast";
+import RoomCountSummary, { countRoomTypes } from "../../components/RoomCountSummary";
 import "../../styles/HotelBookingListModern.css";
 import DashboardRedirections from "../../components/DashboardRedirections";
+import { getCurrentActiveRole } from "../../utils/authSession";
 
 const PER_PAGE_OPTIONS = [10, 25, 50, 100];
 
@@ -47,6 +49,7 @@ const COLUMN_WIDTHS = {
   confirmationNo: "130px",
   bookDate: "95px",
   bookingDetails: "240px",
+  noOfRooms: "120px",
   nights: "70px",
   total: "110px",
   paymentStatus: "110px",
@@ -182,6 +185,16 @@ const statusSegColor = (part, fallback) => {
   return fallback;
 };
 
+// No. of Rooms column — `rooms[]` holds one entry per booked room, and
+// every room on a long-stay booking shares the contract room's category.
+const getRoomSummary = (booking) => {
+  const total = Array.isArray(booking?.rooms) ? booking.rooms.length : 0;
+  return {
+    total,
+    lines: countRoomTypes([booking], (b) => b.roomCategoryName, () => total),
+  };
+};
+
 const StatusPill = ({ meta, raw }) => {
   if (!meta) return <span className="text-muted">{raw || "-"}</span>;
   const parts = String(meta.label ?? "-").split("/");
@@ -275,7 +288,28 @@ export default function LongStayBookingList() {
       const res = await axiosInstance.get(
         `/api/longStayBooking?page=0&size=500`,
       );
-      setBookings(res.data.content || []);
+      const longStayRows = res.data.content || [];
+      // Supplier hotels booked from the Long Stay page live in hotel_booking, so
+      // they come from their own endpoint. If that call fails the long-stay
+      // bookings still show, exactly as before.
+      let supplierRows = [];
+      try {
+        const supplierRes = await axiosInstance.get(
+          `/api/longStayBooking/supplier-bookings`,
+        );
+        if (Array.isArray(supplierRes.data)) supplierRows = supplierRes.data;
+      } catch (err) {
+        console.warn("Could not load Long Stay supplier bookings.", err);
+      }
+      setBookings(
+        supplierRows.length === 0
+          ? longStayRows
+          : [...longStayRows, ...supplierRows].sort(
+              (a, b) =>
+                new Date(b.bookingDateTime || 0) -
+                new Date(a.bookingDateTime || 0),
+            ),
+      );
     } catch {
       toast.error("Failed to load Long Stay bookings");
     } finally {
@@ -286,6 +320,18 @@ export default function LongStayBookingList() {
   useEffect(() => {
     fetchBookings();
   }, []);
+
+  // A supplier booking opens the standard hotel booking page, which cancels with
+  // the supplier. A long-stay booking opens its own page, as always.
+  const openBookingDetails = (b) => {
+    if (b.source === "API") {
+      navigate(`/booking-details/hotel-booking/${b.hotelBookingId}`);
+      return;
+    }
+    navigate(`/booking-details/long-stay-booking/${b.longStayBookingId}`, {
+      state: { booking: b },
+    });
+  };
 
   // Apply search + status + time-period filters in one pass.
   const filteredBookings = useMemo(() => {
@@ -415,7 +461,7 @@ export default function LongStayBookingList() {
             <div className="mb-3">
               <Button
                 variant="outline-secondary"
-                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
                 className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
               >
                 <FaArrowLeft />
@@ -673,6 +719,15 @@ export default function LongStayBookingList() {
                             style={{
                               ...baseHeaderStyle,
                               textAlign: "center",
+                              width: COLUMN_WIDTHS.noOfRooms,
+                            }}
+                          >
+                            No. of Rooms
+                          </th>
+                          <th
+                            style={{
+                              ...baseHeaderStyle,
+                              textAlign: "center",
                               width: COLUMN_WIDTHS.nights,
                             }}
                           >
@@ -723,7 +778,7 @@ export default function LongStayBookingList() {
                         {pageBookings.length === 0 ? (
                           <tr>
                             <td
-                              colSpan={10}
+                              colSpan={12}
                               className="text-center py-5 text-muted"
                               style={{
                                 border: "1px solid #dee2e6",
@@ -942,6 +997,15 @@ export default function LongStayBookingList() {
                                   </div>
                                 </td>
                                 <td
+                                  style={{
+                                    ...baseCellStyle,
+                                    textAlign: "center",
+                                    width: COLUMN_WIDTHS.noOfRooms,
+                                  }}
+                                >
+                                  <RoomCountSummary {...getRoomSummary(b)} />
+                                </td>
+                                <td
                                   className="text-muted"
                                   style={{
                                     ...baseCellStyle,
@@ -1041,22 +1105,14 @@ export default function LongStayBookingList() {
                                         color: "#007bff",
                                         cursor: "pointer",
                                       }}
-                                      onClick={() =>
-                                        navigate(
-                                          `/booking-details/long-stay-booking/${b.longStayBookingId}`,
-                                          { state: { booking: b } },
-                                        )
-                                      }
+                                      onClick={() => openBookingDetails(b)}
                                       onKeyDown={(e) => {
                                         if (
                                           e.key === "Enter" ||
                                           e.key === " "
                                         ) {
                                           e.preventDefault();
-                                          navigate(
-                                            `/booking-details/long-stay-booking/${b.longStayBookingId}`,
-                                            { state: { booking: b } },
-                                          );
+                                          openBookingDetails(b);
                                         }
                                       }}
                                     />

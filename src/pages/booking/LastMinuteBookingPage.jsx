@@ -19,6 +19,7 @@ import AgentBalanceDisplay from "../../components/AgentBalanceDisplay";
 import AdvertisementCarousel from "../../components/AdvertisementCarousel";
 import AgentCreditBalance from "../../components/AgentCreditBalance";
 import DateInput from "../../components/DateInput";
+import PriceRangeSlider from "../../components/PriceRangeSlider";
 import { FaSearch, FaStar, FaMapMarkerAlt } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
 import { toast } from "react-hot-toast";
@@ -27,41 +28,69 @@ import {
   buildApiSearchPayload,
   searchApiHotels,
   apiIdForApiType,
+  fetchChannelOptions,
 } from "../../utils/lastMinuteApiHotels";
 import "../../styles/HotelSearch.css";
+import { isAgentLogin } from "../../utils/supplierDisplay";
+import {
+  NO_REFUND_POLICY,
+  isRefundPolicyActive,
+  refundPolicyMatches,
+  lastMinuteRefundFlags,
+  supplierRefundFlags,
+} from "../../utils/refundPolicyFilter";
 
 // Default placeholder when the hotel has no image.
 const DEFAULT_HOTEL_IMAGE =
   "https://details/assets/details/profilepic/hotel/hoteldefault.jpg";
 
-// Lightweight progress bar to mimic HotelSearch's polling visual.
-// Last Minute search is single-shot, so the bar just animates from 0 → 100
-// while we wait for the backend response.
-function SearchProgressBar({ active }) {
+// Progress channel for the inhouse last-minute search, counted alongside the
+// supplier keys ("iwtx", "grn", …) the hotel-search fan-out reports.
+const LAST_MINUTE_CHANNEL = "lastminute";
+
+// Search progress bar — same look and maths as HotelSearch.jsx's, copied to
+// keep this page self-contained. One channel per source still loading (the
+// inhouse last-minute search plus every supplier dispatched), so the bar keeps
+// moving while slow suppliers are still replying. The fill climbs to 90% as
+// channels finish; the last 10% waits for the whole search to complete.
+function SearchProgressBar({ pollStatus, completedChannels, channels }) {
   const [progress, setProgress] = useState(0);
+  const [visible, setVisible] = useState(false);
+  const total = Math.max(1, channels.length);
+
   useEffect(() => {
-    if (!active) {
+    if (pollStatus === "IN_PROGRESS") {
+      setVisible(true);
+      const done = completedChannels.size;
+      setProgress(done === 0 ? 12 : Math.min(90, 12 + (done / total) * 78));
+    } else if (pollStatus === "COMPLETED") {
+      setProgress(100);
+      const timer = setTimeout(() => setVisible(false), 900);
+      return () => clearTimeout(timer);
+    } else {
+      setVisible(false);
       setProgress(0);
-      return;
     }
-    setProgress(15);
-    const t1 = setTimeout(() => setProgress(55), 300);
-    const t2 = setTimeout(() => setProgress(85), 900);
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-    };
-  }, [active]);
-  if (!active && progress === 0) return null;
-  const display = active ? progress : 100;
+  }, [pollStatus, completedChannels, total]);
+
+  if (!visible) return null;
+
   return (
-    <div className="search-progress-bar-wrap mb-3">
+    <div className="search-progress-bar-wrap">
       <div className="d-flex justify-content-between align-items-center mb-2">
-        <span className="search-progress-label">Searching last minute deals...</span>
-        <span className="search-progress-percent">{display}%</span>
+        <span className="search-progress-label">
+          <span className="search-progress-dot" aria-hidden="true" />
+          Searching hotels
+          <span className="search-progress-ellipsis" aria-hidden="true">
+            <span>.</span>
+            <span>.</span>
+            <span>.</span>
+          </span>
+        </span>
+        <span className="search-progress-percent">{Math.round(progress)}%</span>
       </div>
       <div className="search-progress-track">
-        <div className="search-progress-fill" style={{ width: `${display}%` }} />
+        <div className="search-progress-fill" style={{ width: `${progress}%` }} />
       </div>
     </div>
   );
@@ -213,10 +242,10 @@ export default function LastMinuteBookingPage() {
   // agent-required validation is skipped. currentActiveRole isn't set for
   // single-role logins, so fall back to userRole; admin/super-admin/staff
   // keep the picker exactly as before.
-  const activeRole = (localStorage.getItem("currentActiveRole") || "")
+  const activeRole = (sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
     : storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN");
@@ -225,7 +254,6 @@ export default function LastMinuteBookingPage() {
   // agent themselves, so the "Booking Done By Employee" picker is hidden and
   // this name is shown instead. Empty for admin/staff.
   const loggedInAgentName =
-    localStorage.getItem("UserName") ||
     sessionStorage.getItem("UserName") ||
     "";
 
@@ -257,14 +285,17 @@ export default function LastMinuteBookingPage() {
   // closed, so a backend that predates this endpoint also leaves the page in
   // its original inhouse-only state.
   const [apiHotelsEnabled, setApiHotelsEnabled] = useState(false);
-  // Separate from `searching` on purpose — inhouse results render as soon as
-  // they land, while supplier hotels are still streaming in behind them.
-  const [apiSearching, setApiSearching] = useState(false);
+  // Channel-filter rows — only the channels this company has ENABLED on
+  // /admin/api-access (INHOUSE included). Null until loaded.
+  const [allowedChannelOptions, setAllowedChannelOptions] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     fetchApiHotelsEnabled().then((enabled) => {
       if (!cancelled) setApiHotelsEnabled(enabled);
+    });
+    fetchChannelOptions().then((options) => {
+      if (!cancelled) setAllowedChannelOptions(options);
     });
     return () => {
       cancelled = true;
@@ -321,18 +352,32 @@ export default function LastMinuteBookingPage() {
 
   // ── results state ──
   const [searching, setSearching] = useState(false);
+  // Bumped on every search. A supplier poll runs for up to 2 min, so without
+  // this an earlier search's late replies would land in a newer search.
+  const searchSeqRef = useRef(0);
+  // Progress bar (see SearchProgressBar): "IDLE" | "IN_PROGRESS" |
+  // "COMPLETED" | "TIMEOUT", the sources being waited on, and those done.
+  const [pollStatus, setPollStatus] = useState("IDLE");
+  const [progressChannels, setProgressChannels] = useState([LAST_MINUTE_CHANNEL]);
+  const [completedChannels, setCompletedChannels] = useState(() => new Set());
   const [results, setResults] = useState(null);
   // When results are on screen the big search form collapses into a sticky
   // summary strip. Clicking "Modify Search" flips this true to re-expand it.
   const [isEditingSearch, setIsEditingSearch] = useState(false);
   const resultsRef = useRef(null);
+  // Whether this search has already jumped to its results. Reset by
+  // handleSearch. `results` changes on every supplier update (every few
+  // seconds for up to 2 min), so without this the page kept snapping back
+  // to the top of the results while the user was scrolling.
+  const scrolledToResultsRef = useRef(false);
 
   // After a fresh search, jump the viewport to the results so the operator
-  // sees them without having to scroll past the search card. Fires once
-  // when results transition from null → populated.
+  // sees them without having to scroll past the search card — once per
+  // search, when the first results land.
   useEffect(() => {
-    if (!results) return;
+    if (!results || scrolledToResultsRef.current) return;
     const id = window.setTimeout(() => {
+      scrolledToResultsRef.current = true;
       if (resultsRef.current) {
         resultsRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
       }
@@ -444,10 +489,10 @@ export default function LastMinuteBookingPage() {
 
   useEffect(() => {
     if (!isAgentRole) return;
-    const cached = localStorage.getItem("userId");
+    const cached = sessionStorage.getItem("userId");
     if (cached) { setSelfAgentId(cached); return; }
     const userName =
-      localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+      sessionStorage.getItem("UserName");
     if (!userName) return;
     let cancelled = false;
     axiosInstance
@@ -455,7 +500,7 @@ export default function LastMinuteBookingPage() {
       .then((res) => {
         if (!cancelled && res?.data?.id != null) {
           const idv = String(res.data.id);
-          localStorage.setItem("userId", idv);
+          sessionStorage.setItem("userId", idv);
           setSelfAgentId(idv);
         }
       })
@@ -564,82 +609,143 @@ export default function LastMinuteBookingPage() {
       })),
     };
 
-    try {
-      setSearching(true);
-      setResults(null);
+    const seq = ++searchSeqRef.current;
+    const isCurrent = () => seq === searchSeqRef.current;
+    const stayNights = Math.max(
+      0,
+      Math.round((new Date(checkOut) - new Date(checkIn)) / 86400000)
+    );
 
-      // ── Agent search log (Unbooked Opportunities → Searches tab) ──────
-      // Fire-and-forget snapshot of the Last Minute search context so
-      // admins see it in the Unbooked Opportunities report even when the
-      // agent never picks a hotel. Shared with HotelSearch — see
-      // utils/agentSearchLog.js. Runs BEFORE the inhouse search so it
-      // gets on the wire even if the inhouse call fails.
+    setSearching(true);
+    setResults(null);
+    scrolledToResultsRef.current = false;
+    setPollStatus("IN_PROGRESS");
+    setProgressChannels([LAST_MINUTE_CHANNEL]);
+    setCompletedChannels(new Set());
+
+    // ── Agent search log (Unbooked Opportunities → Searches tab) ──────────
+    // Fire-and-forget snapshot of the Last Minute search context so admins
+    // see it in the Unbooked Opportunities report even when the agent never
+    // picks a hotel. Shared with HotelSearch — see utils/agentSearchLog.js.
+    // Runs before both searches so it gets on the wire even if they fail; it
+    // never throws.
       logAgentSearch({
         agentId: (isAgentRole ? selfAgentId : agent) || 1,
         agentName: loggedInAgentName,
         destinationId: selectedDestination?.value,
         destinationLabel: selectedDestination?.label,
         nationalityLabel: selectedNationality?.label,
+      checkIn,
+      checkOut,
+      rooms,
+      source: "last-minute-booking",
+    });
+
+    // The two sources write into the same `results`, in either order: supplier
+    // rows (source "API") and inhouse rows are always kept apart by `source`.
+    const apiRowsOf = (prev) => (prev?.hotels || []).filter((h) => h.source === "API");
+
+    // ── Source 2: supplier API hotels (opt-in) ────────────────────────────
+    // Started FIRST and not awaited yet. Suppliers take 20–40 s and the
+    // inhouse search can take 10+ s; running them one after the other made
+    // the user wait for both added together. Fired only when the backend flag
+    // is on, it searches every supplier the company has enabled on
+    // /admin/api-access (the backend applies that rule) and merges rows in as
+    // each supplier replies. searchApiHotels never throws.
+    let supplierSearch = Promise.resolve();
+    if (apiHotelsEnabled) {
+      const apiPayload = buildApiSearchPayload({
+        nationalityId: selectedNationality?.value,
+        nationalityCode: selectedNationality?.code,
+        destinationCityId: selectedDestination?.value,
+        destinationCountryId: selectedDestination?.countryId,
         checkIn,
         checkOut,
         rooms,
-        source: "last-minute-booking",
+        agentId: (isAgentRole ? selfAgentId : agent) || 1,
       });
 
-      // ── Source 1: inhouse last-minute contract rates (unchanged) ──────────
-      // Awaited first so the page paints as soon as these land. This request,
-      // its payload and its error handling are exactly as they were before
-      // supplier hotels existed.
+      // Merge helper: inhouse rows are keyed by numeric hotelId, API rows by
+      // the "API-<TYPE>-<code>" synthetic id, so the two can never collide.
+      const mergeApiRows = (apiRows) => {
+        if (!isCurrent()) return;
+        setResults((prev) => {
+          const inhouse = (prev?.hotels || []).filter((h) => h.source !== "API");
+          return { ...(prev || {}), hotels: [...inhouse, ...apiRows] };
+        });
+      };
+
+      // Progress bar: every supplier the backend dispatched becomes a
+      // channel, and counts as done once it has finished, however it ended, so a
+      // failed supplier cannot hold the bar back.
+      const onSupplierStatus = (statuses) => {
+        if (!isCurrent()) return;
+        const keys = Object.keys(statuses);
+        setProgressChannels((prev) => {
+          const added = keys.filter((k) => !prev.includes(k));
+          return added.length ? [...prev, ...added] : prev;
+        });
+        setCompletedChannels((prev) => {
+          const finished = keys.filter(
+            (k) =>
+              ["COMPLETED", "ERROR", "TIMEOUT"].includes(statuses[k]) && !prev.has(k),
+          );
+          if (!finished.length) return prev;
+          const next = new Set(prev);
+          finished.forEach((k) => next.add(k));
+          return next;
+        });
+      };
+
+      supplierSearch = searchApiHotels(apiPayload, mergeApiRows, {
+        isCancelled: () => !isCurrent(),
+        onStatus: onSupplierStatus,
+      });
+    }
+
+    // ── Source 1: inhouse last-minute contract rates ──────────────────────
+    // In its own try/catch so a failure here never touches the supplier rows
+    // — each source shows whatever it found on its own.
+    try {
       const res = await axiosInstance.post(
         "/api/last-minute-hotel-search/search",
         payload
       );
+      if (!isCurrent()) return;
       if (res.data?.success) {
-        setResults(res.data);
+        setResults((prev) => ({
+          ...res.data,
+          hotels: [...(res.data.hotels || []), ...apiRowsOf(prev)],
+        }));
       } else {
         toast.error(res.data?.message || "Search failed");
-        setResults({ ...(res.data || {}), hotels: [] });
-      }
-
-      // ── Source 2: supplier API hotels (opt-in) ────────────────────────────
-      // Fired only when the backend flag is on. Runs AFTER the inhouse render
-      // and merges rows in as each supplier replies, so a slow supplier can
-      // never delay or blank the inhouse list. searchApiHotels never throws.
-      if (apiHotelsEnabled) {
-        setApiSearching(true);
-        const apiPayload = buildApiSearchPayload({
-          nationalityId: selectedNationality?.value,
-          nationalityCode: selectedNationality?.code,
-          destinationCityId: selectedDestination?.value,
-          destinationCountryId: selectedDestination?.countryId,
-          checkIn,
-          checkOut,
-          rooms,
-          agentId: (isAgentRole ? selfAgentId : agent) || 1,
-        });
-
-        // Merge helper: inhouse rows are keyed by numeric hotelId, API rows by
-        // the "API-<TYPE>-<code>" synthetic id, so the two can never collide.
-        const mergeApiRows = (apiRows) => {
-          setResults((prev) => {
-            const inhouse = (prev?.hotels || []).filter((h) => h.source !== "API");
-            return { ...(prev || {}), hotels: [...inhouse, ...apiRows] };
-          });
-        };
-
-        try {
-          await searchApiHotels(apiPayload, mergeApiRows);
-        } finally {
-          setApiSearching(false);
-        }
+        setResults((prev) => ({
+          nights: stayNights,
+          ...(res.data || {}),
+          hotels: apiRowsOf(prev),
+        }));
       }
     } catch (err) {
+      if (!isCurrent()) return;
       const msg = err?.response?.data?.message || "Search failed";
       toast.error(msg);
-      setResults({ hotels: [] });
+      // nights is still needed by "View Rooms" on supplier hotels.
+      setResults((prev) => ({ hotels: apiRowsOf(prev), nights: stayNights }));
     } finally {
+      // Paint the inhouse rows now. Supplier hotels keep streaming in while
+      // the progress bar runs — keeping `searching` on until the slowest
+      // supplier replied would hide every result meanwhile.
+      if (isCurrent()) {
       setSearching(false);
+        setCompletedChannels((prev) => new Set(prev).add(LAST_MINUTE_CHANNEL));
+      }
     }
+
+    const supplierResult = await supplierSearch;
+    if (!isCurrent()) return;
+    // Bar fills to 100% and fades once every source finished. If a supplier
+    // never did, it is hidden instead (HotelSearch's TIMEOUT behaviour).
+    setPollStatus(!apiHotelsEnabled || supplierResult?.completed ? "COMPLETED" : "TIMEOUT");
   };
 
   // ── render ────────────────────────────────────────────────────────────────
@@ -647,6 +753,28 @@ export default function LastMinuteBookingPage() {
   // full form into the sticky summary strip then, unless the user is editing.
   const hasResultsView = searching || !!results;
   const collapseSearch = hasResultsView && !isEditingSearch;
+
+  // Track the summary bar's live height so the sticky progress bar sits just
+  // below it instead of underneath it (both are sticky; the summary bar has
+  // the higher z-index). Same approach as HotelSearch.jsx.
+  const summaryBarRef = useRef(null);
+  const [summaryBarHeight, setSummaryBarHeight] = useState(0);
+  useEffect(() => {
+    if (!collapseSearch) {
+      setSummaryBarHeight(0);
+      return;
+    }
+    const el = summaryBarRef.current;
+    if (!el) return;
+    setSummaryBarHeight(el.offsetHeight);
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      const h = el.offsetHeight;
+      setSummaryBarHeight((prev) => (prev === h ? prev : h));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [collapseSearch]);
 
   return (
     <div className="min-vh-100 bg-light d-flex flex-column">
@@ -668,7 +796,7 @@ export default function LastMinuteBookingPage() {
               Shown once results are on screen. "Modify Search" re-expands
               the full form by flipping isEditingSearch. */}
           {collapseSearch && (
-            <div className="hs-summary-bar">
+            <div className="hs-summary-bar" ref={summaryBarRef}>
               <div className="hs-summary-chips">
                 {selectedDestination?.label && (
                   <span className="hs-summary-chip hs-summary-chip-main">
@@ -1006,8 +1134,25 @@ export default function LastMinuteBookingPage() {
           </div>
           )}
 
-          {/* ── Progress Bar (mirrors HotelSearch.jsx) ── */}
-          <SearchProgressBar active={searching} />
+          {/* ── Progress Bar (mirrors HotelSearch.jsx) ──
+              Stays up while supplier hotels are still loading, not just for
+              the inhouse search. .search-progress-bar-wrap is sticky (see
+              HotelSearch.css); the --below-summary modifier drops it below
+              the collapsed summary bar so the two never overlap. */}
+          <div
+            className={
+              collapseSearch
+                ? "hs-progress-anchor hs-progress--below-summary"
+                : "hs-progress-anchor"
+            }
+            style={{ "--hs-summary-h": `${summaryBarHeight}px` }}
+          >
+            <SearchProgressBar
+              pollStatus={pollStatus}
+              completedChannels={completedChannels}
+              channels={progressChannels}
+            />
+          </div>
 
           {/* ── Results layout — left filter sidebar + right card grid ── */}
           <div ref={resultsRef}>
@@ -1022,7 +1167,7 @@ export default function LastMinuteBookingPage() {
             <ResultsWithFilters
               results={results}
               apiHotelsEnabled={apiHotelsEnabled}
-              apiSearching={apiSearching}
+              allowedChannelOptions={allowedChannelOptions}
               isAgentRole={isAgentRole}
               currencyOptions={currencyOptions}
               selectedCurrency={selectedCurrency}
@@ -1091,6 +1236,10 @@ const CHANNEL_OPTIONS = [
 
 const PAGE_SIZE = 10;
 
+// Bars in the budget slider's price chart — same count as the backend's
+// HotelSearchController.PRICE_HISTOGRAM_BARS used by /new-booking/hotel.
+const PRICE_HISTOGRAM_BARS = 40;
+
 // ─── ResultsWithFilters — full HotelSearch.jsx layout clone ────────────────
 //
 // Renders:
@@ -1105,7 +1254,7 @@ function ResultsWithFilters({
   results,
   searchContext,
   apiHotelsEnabled = false,
-  apiSearching = false,
+  allowedChannelOptions = null,
   isAgentRole = false,
   currencyOptions = [],
   selectedCurrency = null,
@@ -1125,6 +1274,48 @@ function ResultsWithFilters({
   const [starRating, setStarRating] = useState(STAR_OPTIONS[0]);
   const [sortBy, setSortBy] = useState("priceAsc");
   const [pageIndex, setPageIndex] = useState(0);
+  // Refund Policy — the same three boxes as /new-booking/hotel; ticking one
+  // clears the others. Inhouse hotels are labelled from the rooms this search
+  // already returned, the way /last-minute-room-list labels them; supplier
+  // hotels use the flags the hotel search sent (utils/refundPolicyFilter.js).
+  const [refundPolicy, setRefundPolicy] = useState(NO_REFUND_POLICY);
+
+  // Budget slider + price chart — the same control /new-booking/hotel has.
+  // All values are AED, the unit of fromRate (what each card shows, × the
+  // display-currency factor). /new-booking/hotel gets its ends and chart from
+  // the backend's priceMin / priceSliderMax / priceHistogram; Last Minute
+  // merges inhouse and supplier rows in the browser, so it computes the same
+  // numbers here, the same way: over the whole result set (before any other
+  // filter), PRICE_HISTOGRAM_BARS equal-width bars across
+  // [floor(cheapest), ceil(dearest)], at least 1 wide.
+  //   priceSlider — [lo, hi]; an end left at its edge is null ("no limit"),
+  //                 so it keeps tracking the edge as more suppliers report in
+  //                 (null = whole range). Applied straight away — filtering
+  //                 is client-side, so there is no refetch to debounce.
+  const [priceSlider, setPriceSlider] = useState(null);
+  const priceBounds = useMemo(() => {
+    const rates = (results?.hotels || [])
+      .map((h) => Number(h.fromRate))
+      .filter((r) => Number.isFinite(r) && r > 0);
+    if (rates.length === 0) return null;
+    let min = rates[0];
+    let max = rates[0];
+    rates.forEach((r) => {
+      if (r < min) min = r;
+      if (r > max) max = r;
+    });
+    const lo = Math.floor(min);
+    const hi = Math.max(Math.ceil(max), lo + 1);
+    const width = (hi - lo) / PRICE_HISTOGRAM_BARS;
+    const histogram = new Array(PRICE_HISTOGRAM_BARS).fill(0);
+    rates.forEach((r) => {
+      const i = Math.floor((r - lo) / width);
+      histogram[Math.max(0, Math.min(PRICE_HISTOGRAM_BARS - 1, i))] += 1;
+    });
+    return { min: lo, max: hi, histogram };
+  }, [results]);
+  const budgetMin = priceBounds ? priceBounds.min : 0;
+  const budgetMax = priceBounds ? priceBounds.max : 0;
 
   // Apply filters + sort
   const filteredAndSorted = useMemo(() => {
@@ -1175,13 +1366,60 @@ function ResultsWithFilters({
       }
     }
 
+    // Budget — inclusive AED bounds, an open (null) end applies no limit on
+    // that side. While a bound is set, hotels without a rate are hidden —
+    // they can't be in any budget. Same rule as /new-booking/hotel.
+    const minPrice = priceSlider?.[0] ?? null;
+    const maxPrice = priceSlider?.[1] ?? null;
+    if (minPrice !== null || maxPrice !== null) {
+      list = list.filter((h) => {
+        const p = h.fromRate == null ? NaN : Number(h.fromRate);
+        return (
+          Number.isFinite(p) &&
+          (minPrice === null || p >= minPrice) &&
+          (maxPrice === null || p <= maxPrice)
+        );
+      });
+    }
+
+    // Refund Policy — strict, as on /new-booking/hotel: only hotels known to
+    // have a rate of the ticked kind stay; unknown is hidden too.
+    if (isRefundPolicyActive(refundPolicy)) {
+      list = list.filter((h) =>
+        refundPolicyMatches(
+          refundPolicy,
+          h.source === "API"
+            ? supplierRefundFlags(h)
+            : lastMinuteRefundFlags(h, results?.checkInDate)
+        )
+      );
+    }
+
     // Sort
     const cheapest = (h) => (h.fromRate != null ? Number(h.fromRate) : Infinity);
     if (sortBy === "priceAsc") list.sort((a, b) => cheapest(a) - cheapest(b));
     else if (sortBy === "priceDesc") list.sort((a, b) => cheapest(b) - cheapest(a));
 
     return list;
-  }, [results, hotelSearchTerm, starRating, hotelType, channelType, sortBy, apiHotelsEnabled]);
+  }, [results, hotelSearchTerm, starRating, hotelType, channelType, sortBy, apiHotelsEnabled, priceSlider, refundPolicy]);
+
+  // Channel rows: only the channels the company has ENABLED on
+  // /admin/api-access — a switched-off API (INHOUSE included) is not listed.
+  // Supplier rows only while API hotels are on; until the list has loaded,
+  // just the inhouse row.
+  const channelOptions = (allowedChannelOptions || CHANNEL_OPTIONS).filter(
+    (o) => apiHotelsEnabled || o.value === "inhouse"
+  );
+
+  // Channels with at least one hotel in the current results — drives the
+  // LIVE/OFF badge, with the same meaning it has on /new-booking/hotel.
+  const channelsWithResults = useMemo(() => {
+    const set = new Set();
+    (results?.hotels || []).forEach((h) => {
+      set.add(h.source === "API" ? String(h.apiType || "").toLowerCase() : "inhouse");
+    });
+    return set;
+  }, [results]);
 
   // Pagination
   const totalElements = filteredAndSorted.length;
@@ -1190,12 +1428,44 @@ function ResultsWithFilters({
   const startEntry = totalElements === 0 ? 0 : pageIndex * PAGE_SIZE + 1;
   const endEntry = Math.min(totalElements, (pageIndex + 1) * PAGE_SIZE);
   const pageHotels = filteredAndSorted.slice(pageIndex * PAGE_SIZE, (pageIndex + 1) * PAGE_SIZE);
+  // Page buttons, same rule as /new-booking/hotel: always the first 3 and
+  // last 3 pages, plus the current page and its neighbours (so the window
+  // slides as you page through the middle); "…" fills each gap. A gap of a
+  // single page shows that page instead — an ellipsis there would hide nothing.
   const pageNumbers = useMemo(() => {
     if (totalPages <= 1) return [];
-    const pages = [];
-    for (let i = 1; i <= totalPages; i++) pages.push(i);
-    return pages;
-  }, [totalPages]);
+    const EDGE_PAGES = 3;
+    const current = pageIndex + 1;
+    const shown = new Set();
+    for (let i = 1; i <= Math.min(EDGE_PAGES, totalPages); i++) shown.add(i);
+    for (let i = Math.max(1, totalPages - EDGE_PAGES + 1); i <= totalPages; i++) shown.add(i);
+    for (let i = Math.max(1, current - 1); i <= Math.min(totalPages, current + 1); i++) {
+      shown.add(i);
+    }
+    const sorted = Array.from(shown).sort((a, b) => a - b);
+    const nums = [];
+    sorted.forEach((n, idx) => {
+      const prev = sorted[idx - 1];
+      if (prev !== undefined && n - prev === 2) nums.push(prev + 1);
+      else if (prev !== undefined && n - prev > 2) nums.push(`ellipsis-${prev}`);
+      nums.push(n);
+    });
+    return nums;
+  }, [pageIndex, totalPages]);
+
+  // Change page and bring the top of the results back into view — same as
+  // /new-booking/hotel, so paging from the bottom of the list does not leave
+  // the user staring at the bottom of the next page.
+  const resultsTopRef = useRef(null);
+  const goToPage = (idx) => {
+    if (idx < 0 || idx >= totalPages) return;
+    setPageIndex(idx);
+    setTimeout(() => {
+      if (resultsTopRef.current) {
+        resultsTopRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }, 0);
+  };
 
   // View Rooms handler.
   //
@@ -1217,9 +1487,13 @@ function ResultsWithFilters({
   // Last Minute booking list picks it up.
   const handleViewRooms = (hotel) => {
     if (hotel?.source === "API") {
-      const apiId = apiIdForApiType(hotel.apiType);
+      const apiId = hotel.apiId || apiIdForApiType(hotel.apiType);
       if (!apiId) {
-        toast.error(`Unknown supplier "${hotel.apiType || ""}" — cannot open rooms.`);
+        toast.error(
+          isAgentLogin()
+            ? "Unable to open rooms for this hotel."
+            : `Unknown supplier "${hotel.apiType || ""}" — cannot open rooms.`,
+        );
         return;
       }
 
@@ -1293,12 +1567,14 @@ function ResultsWithFilters({
     setStarRating(STAR_OPTIONS[0]);
     setHotelType([]);
     setChannelType([]);
+    setPriceSlider(null);
+    setRefundPolicy(NO_REFUND_POLICY);
     setSortBy("priceAsc");
     setHotelSearchTerm("");
   };
 
   return (
-    <div className="search-layout">
+    <div className="search-layout" ref={resultsTopRef}>
       <Row className="g-4">
         {/* ─── Left sidebar — same structure as HotelSearch.jsx ─── */}
         <Col lg={3} className="leftside d-none d-lg-block">
@@ -1311,14 +1587,8 @@ function ResultsWithFilters({
                   <button className="map-overlay-btn">EXPLORE ON MAP 📍</button>
                 </div>
 
-                {/* Name search */}
-                <Form.Control
-                  type="text"
-                  placeholder="Search Hotel Name"
-                  className="ps-3 mb-2"
-                  value={hotelSearchTerm}
-                  onChange={(e) => { setHotelSearchTerm(e.target.value); setPageIndex(0); }}
-                />
+                {/* Hotel-name search moved to the top filter row, next to
+                    Clear — same placement as /new-booking/hotel. */}
 
                 {/* Currency — converts the AED rates shown below.
                     Hidden for AGENT logins (their currency is auto-locked
@@ -1352,6 +1622,86 @@ function ResultsWithFilters({
                   </>
                 )}
 
+                {/* Budget — a bar chart of how many hotels sit at each price,
+                    with a two-handle slider under it to narrow the list. Same
+                    control and placement as /new-booking/hotel. Ends come from
+                    the whole result set (AED); labels are in the display
+                    currency. Shown once any hotel has a price. */}
+                {priceBounds && (
+                  <>
+                    <Form.Group className="mb-2">
+                      <Form.Label className="fw-semibold small">Budget</Form.Label>
+                      <PriceRangeSlider
+                        min={budgetMin}
+                        max={budgetMax}
+                        value={[
+                          priceSlider?.[0] ?? budgetMin,
+                          priceSlider?.[1] ?? budgetMax,
+                        ]}
+                        // An end dragged back to its edge means "no limit" on
+                        // that side — stored as null.
+                        onChange={([lo, hi]) => {
+                          setPriceSlider(
+                            lo <= budgetMin && hi >= budgetMax
+                              ? null
+                              : [lo <= budgetMin ? null : lo, hi >= budgetMax ? null : hi]
+                          );
+                          setPageIndex(0);
+                        }}
+                        histogram={priceBounds.histogram}
+                        format={(aed) =>
+                          `${curCode} ${Math.round(aed * curFactor).toLocaleString()}`
+                        }
+                        ariaLabel="Budget"
+                      />
+                    </Form.Group>
+
+                    <hr />
+                  </>
+                )}
+
+                {/* Refund Policy — same boxes and placement as
+                    /new-booking/hotel. The boxes are mutually exclusive:
+                    ticking one clears the others, and unticking shows every
+                    hotel again. */}
+                <Form.Group className="mb-2">
+                  <Form.Label className="fw-semibold small">Refund Policy</Form.Label>
+                  <div className="filter-checkbox-list">
+                    <Form.Check
+                      type="checkbox"
+                      id="lm-refund-policy-refundable"
+                      label="Flexible"
+                      checked={refundPolicy.refundable}
+                      onChange={(e) => {
+                        setRefundPolicy({ ...NO_REFUND_POLICY, refundable: e.target.checked });
+                        setPageIndex(0);
+                      }}
+                    />
+                    <Form.Check
+                      type="checkbox"
+                      id="lm-refund-policy-partial"
+                      label="Flexible - Partial"
+                      checked={refundPolicy.partial}
+                      onChange={(e) => {
+                        setRefundPolicy({ ...NO_REFUND_POLICY, partial: e.target.checked });
+                        setPageIndex(0);
+                      }}
+                    />
+                    <Form.Check
+                      type="checkbox"
+                      id="lm-refund-policy-non-refundable"
+                      label="Non Refundable"
+                      checked={refundPolicy.nonRefundable}
+                      onChange={(e) => {
+                        setRefundPolicy({ ...NO_REFUND_POLICY, nonRefundable: e.target.checked });
+                        setPageIndex(0);
+                      }}
+                    />
+                  </div>
+                </Form.Group>
+
+                <hr />
+
                 {/* Hotel type */}
                 <Form.Group className="mb-2">
                   <Form.Label className="fw-semibold small">Hotel Type</Form.Label>
@@ -1374,18 +1724,25 @@ function ResultsWithFilters({
                 </Form.Group>
 
                 {/* Channel — supplier/channel checkbox filter.
-                    Hidden for AGENT logins (agents book only through their
-                    contracted channel and the backend already scopes results). */}
-                {!isAgentRole && (
+                    Hidden for agent-side logins, sub-accounts included (agents
+                    book only through their contracted channel and the backend
+                    already scopes results), and when no channel is enabled on
+                    /admin/api-access. */}
+                {!isAgentLogin() && channelOptions.length > 0 && (
                   <>
                     <hr />
 
                     <Form.Group>
                       <Form.Label className="fw-semibold small">Channel</Form.Label>
                       <div className="filter-checkbox-list">
-                        {CHANNEL_OPTIONS.map((item) => (
-                          <Form.Check
+                        {channelOptions.map((item) => {
+                          const isLive = channelsWithResults.has(item.value);
+                          return (
+                            <div
                             key={item.value}
+                              className="d-flex align-items-center justify-content-between gap-2"
+                            >
+                          <Form.Check
                             type="checkbox"
                             id={`lm-channel-${item.value}`}
                             label={item.label}
@@ -1396,7 +1753,22 @@ function ResultsWithFilters({
                               setPageIndex(0);
                             }}
                           />
-                        ))}
+                              {/* Only meaningful once there are several channels. */}
+                              {apiHotelsEnabled && (
+                                <Badge
+                                  bg={isLive ? "success" : "danger"}
+                                  title={
+                                    isLive
+                                      ? "Hotels from this channel are in the results"
+                                      : "No hotels from this channel in the results"
+                                  }
+                                >
+                                  {isLive ? "LIVE" : "OFF"}
+                                </Badge>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     </Form.Group>
                   </>
@@ -1452,6 +1824,18 @@ function ResultsWithFilters({
                 >
                   Clear
                 </Button>
+
+                {/* Hotel-name search — same spot and size as on
+                    /new-booking/hotel. ms-auto keeps it at the right edge;
+                    on narrow screens it wraps below the sort pills. */}
+                <Form.Control
+                  type="text"
+                  placeholder="Search Hotel Name"
+                  value={hotelSearchTerm}
+                  onChange={(e) => { setHotelSearchTerm(e.target.value); setPageIndex(0); }}
+                  className="ms-auto ps-3"
+                  style={{ height: "36px", maxWidth: "260px", minWidth: "180px" }}
+                />
               </div>
             </Card.Body>
           </Card>
@@ -1460,15 +1844,6 @@ function ResultsWithFilters({
             <small className="text-muted fw-semibold">
               Showing {startEntry} to {endEntry} of {totalElements} entries
             </small>
-            {/* Supplier hotels stream in after the inhouse list has already
-                painted, so the count above grows while this is showing.
-                Without it the list appears to change on its own. */}
-            {apiSearching && (
-              <small className="text-muted d-flex align-items-center gap-2">
-                <Spinner animation="border" size="sm" />
-                Loading supplier hotels…
-              </small>
-            )}
           </div>
 
           <Row className="g-4">
@@ -1500,24 +1875,28 @@ function ResultsWithFilters({
           </Row>
 
           {totalElements > 0 && totalPages > 1 && (
-            <div className="d-flex justify-content-end align-items-center mt-3 mb-4">
+            <div className="d-flex justify-content-end align-items-center flex-wrap gap-2 mt-3 mb-4">
               <Pagination className="mb-0 pagination-modern">
                 <Pagination.Prev
                   disabled={pageIndex === 0}
-                  onClick={() => setPageIndex(pageIndex - 1)}
+                  onClick={() => goToPage(pageIndex - 1)}
                 />
-                {pageNumbers.map((n) => (
+                {pageNumbers.map((n) =>
+                  typeof n === "number" ? (
                   <Pagination.Item
                     key={n}
                     active={n === pageIndex + 1}
-                    onClick={() => setPageIndex(n - 1)}
+                      onClick={() => goToPage(n - 1)}
                   >
                     {n}
                   </Pagination.Item>
-                ))}
+                  ) : (
+                    <Pagination.Ellipsis key={n} disabled />
+                  )
+                )}
                 <Pagination.Next
                   disabled={pageIndex >= totalPages - 1}
-                  onClick={() => setPageIndex(pageIndex + 1)}
+                  onClick={() => goToPage(pageIndex + 1)}
                 />
               </Pagination>
             </div>
@@ -1598,16 +1977,23 @@ function HotelCard({ hotel: h, onViewRooms, currencyCode = "AED", currencyFactor
                   single-source; now that contract rates and live supplier
                   rates can appear in one list, the operator has to be able to
                   tell them apart at a glance. Inhouse rows are unchanged. */}
+              {/* Same grey pill as the /new-booking/hotel result card, for
+                  supplier and inhouse rows alike, and like that page it is
+                  hidden for every agent-side login. */}
+              {!isAgentLogin() && (
               <span
                 style={{
                   marginLeft: "5px",
-                  backgroundColor: h.source === "API" ? "#0d6efd" : "#6c757d",
+                    backgroundColor: "#6c757d",
                   padding: "2px 6px",
                   borderRadius: "10px",
                 }}
               >
-                {h.source === "API" ? h.apiType || "API" : "INHOUSE"}
+                  {h.source === "API"
+                    ? String(h.apiType || "API").toUpperCase()
+                    : "INHOUSE"}
               </span>
+              )}
             </div>
           </div>
         </Col>

@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useNavigate, useLocation } from "react-router-dom";
+import { isAbsoluteHttpUrl } from "../utils/urlSafety";
 
 // ───────────────────────────────────────────────────────────────────────
 // Date-time picker with explicit OK / Cancel — ported from
@@ -789,6 +790,10 @@ export default function Advertisements() {
     // Display Position is hidden from the form (backend treats it as
     // optional), so it's no longer validated as required here.
     if (!form.countryId) errors.countryId = "Country is required";
+    // Ads link out to web pages only; javascript:/data: links are refused.
+    if (form.targetUrl && form.targetUrl.trim() && !isAbsoluteHttpUrl(form.targetUrl)) {
+      errors.targetUrl = "Target URL must start with http:// or https://";
+    }
     if (form.startDateTime && form.endDateTime) {
       if (
         parseLocalDateTime(form.endDateTime) <=
@@ -1201,7 +1206,11 @@ export default function Advertisements() {
                       readOnly={ro}
                       onChange={(e) => setField("targetUrl", e.target.value)}
                       placeholder="Where the ad links to"
+                      isInvalid={!!validationErrors.targetUrl}
                     />
+                    <Form.Control.Feedback type="invalid">
+                      {validationErrors.targetUrl}
+                    </Form.Control.Feedback>
                   </Col>
                 </Row>
 

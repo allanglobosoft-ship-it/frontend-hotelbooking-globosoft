@@ -1,3 +1,4 @@
+import { getAuthToken, getCurrentActiveRole, getUserRole } from "./authSession";
 // User activity trail → backend user-activity.log.
 //
 // Records what the user does in the browser (page views, clicks on
@@ -69,7 +70,7 @@ let fallbackTabId = null;
 
 function readToken() {
   try {
-    return localStorage.getItem("authToken");
+    return getAuthToken();
   } catch {
     return null;
   }
@@ -78,8 +79,8 @@ function readToken() {
 function readActiveRole() {
   try {
     return (
-      localStorage.getItem("currentActiveRole") ||
-      (localStorage.getItem("userRole") || "").split(",")[0] ||
+      getCurrentActiveRole() ||
+      (getUserRole() || "").split(",")[0] ||
       null
     );
   } catch {

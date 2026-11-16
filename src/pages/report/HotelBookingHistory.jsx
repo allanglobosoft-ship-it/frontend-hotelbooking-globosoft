@@ -10,6 +10,8 @@ import Supplier from "../../components/filters/Supplier";
 import DestinationCity from "../../components/filters/DestinationCity";
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { escapeHtml } from "../../utils/safeHtml";
+import { csvCell } from "../../utils/csvSafe";
 
 /**
  * Report → Hotel Booking History (admin only).
@@ -198,13 +200,13 @@ export default function HotelBookingHistory() {
           <table>
             <thead>
               <tr>
-                ${exportHeaders.map((h) => `<th>${h}</th>`).join('')}
+                ${exportHeaders.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}
               </tr>
             </thead>
             <tbody>
               ${currentRows.map((h, index) => `
                 <tr>
-                  ${exportRow(h, index).map((cell) => `<td>${cell}</td>`).join('')}
+                  ${exportRow(h, index).map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}
                 </tr>
               `).join('')}
             </tbody>
@@ -234,15 +236,8 @@ export default function HotelBookingHistory() {
 
   const handleExcel = () => {
     // Create CSV content with proper escaping
-    const escapeCSV = (value) => {
-      if (value === null || value === undefined) return '';
-      const stringValue = String(value);
-      // If value contains comma, newline, or quote, wrap it in quotes and escape quotes
-      if (stringValue.includes(',') || stringValue.includes('\n') || stringValue.includes('"')) {
-        return `"${stringValue.replace(/"/g, '""')}"`;
-      }
-      return stringValue;
-    };
+    // csvCell neutralises text a spreadsheet would run as a formula.
+    const escapeCSV = (value) => csvCell(value);
 
     const csvContent = [
       exportHeaders.map(escapeCSV).join(','),

@@ -235,7 +235,7 @@ export default function RoomCategory() {
   const handleDelete = (item) => {
     console.log("delete item :::" , item);
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.roomCategory} Room Category`,
+      titleText: `Are you sure? You want to delete ${item.roomCategory} Room Category`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

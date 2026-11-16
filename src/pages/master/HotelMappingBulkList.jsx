@@ -93,13 +93,33 @@ const HotelMappingBulkList = () => {
       );
 
       if (response.status === 200) {
-        toast.success(
-          `Successfully mapped ${unmappedGroupsToMap.length} groups!`,
+        // One result per group: count real failures and the targets left on
+        // another master hotel instead of always claiming full success.
+        const results = Array.isArray(response.data) ? response.data : [];
+        const failed = results.filter((r) => r && r.success === false).length;
+        const skipped = results.reduce(
+          (n, r) => n + (Array.isArray(r?.skipped) ? r.skipped.length : 0),
+          0,
         );
+        const mappedGroups = unmappedGroupsToMap.length - failed;
+        if (failed > 0 || skipped > 0) {
+          toast(
+            `Mapped ${mappedGroups} of ${unmappedGroupsToMap.length} groups.` +
+              (failed > 0 ? ` ${failed} failed.` : "") +
+              (skipped > 0
+                ? ` ${skipped} hotel(s) skipped: already mapped to another master hotel.`
+                : ""),
+            { icon: "⚠️", duration: 10000 },
+          );
+        } else {
+          toast.success(
+            `Successfully mapped ${unmappedGroupsToMap.length} groups!`,
+          );
+        }
         // Navigate back to the mapping page after a short delay to let the toast be seen
         setTimeout(() => {
           navigate("/masters/hotel-mapping");
-        }, 1500);
+        }, failed > 0 || skipped > 0 ? 4000 : 1500);
       } else {
         toast.error("Failed to map bulk data.");
       }

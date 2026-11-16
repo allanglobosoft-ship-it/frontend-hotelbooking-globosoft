@@ -8,6 +8,7 @@ import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
 import DashboardRedirections from "../../components/DashboardRedirections";
+import { getCurrentActiveRole } from "../../utils/authSession";
 
 /**
  * Admin master for MYOP add-ons. Lists every add-on, lets admin create / edit
@@ -120,7 +121,7 @@ export default function PackageAddOnReg() {
 
   const handleDelete = async (row) => {
     const res = await Swal.fire({
-      title: `Delete "${row.name}"?`,
+      titleText: `Delete "${row.name}"?`,
       text: "This will remove the master record and all its rates.",
       icon: "warning",
       showCancelButton: true,
@@ -149,7 +150,7 @@ export default function PackageAddOnReg() {
             <div className="mb-3">
               <Button
                 variant="outline-secondary"
-                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
                 className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
               >
                 <FaArrowLeft />

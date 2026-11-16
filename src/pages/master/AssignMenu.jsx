@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, Row, Col, Form, Button, Spinner, Badge } from "react-bootstrap";
 import { toast } from "react-hot-toast";
-import Sidebar from "../../components/Sidebar";
+import Sidebar, { sidebarMenuCodesForRole } from "../../components/Sidebar";
 import Topbar from "../../components/TopBar";
 import BackButton from "../../components/BackButton";
 import axiosInstance from "../../components/AxiosInstance";
@@ -22,14 +22,24 @@ import axiosInstance from "../../components/AxiosInstance";
  */
 const BASE = "/api/super-admin/menu-assignment";
 
+// Roles whose menu comes from the shared Sidebar.jsx — the only menu this
+// screen can hide entries from. Restaurant Extranet is not listed: its
+// portal renders its own layout (RestaurantExtranetLayout) and never reads
+// the hidden-menu list, so toggles saved for it had no effect. Keep in sync
+// with MenuAssignmentService.ASSIGNABLE_ROLES on the backend.
 const ROLES = [
   { slug: "admin",               label: "Admin" },
   { slug: "agent",               label: "Agent" },
   { slug: "staff",               label: "Staff" },
   { slug: "extranet",            label: "Extranet (Hotel)" },
-  { slug: "restaurant_extranet", label: "Restaurant Extranet" },
   { slug: "super_admin",         label: "Super Admin" },
 ];
+
+// Tells a mounted <Sidebar /> to re-read its hidden-menu list, so a change
+// saved here shows up in the current sidebar without a page change.
+const notifySidebar = () => {
+  window.dispatchEvent(new CustomEvent("sidebarHiddenMenusChanged"));
+};
 
 export default function AssignMenu() {
   const [role, setRole] = useState("admin");
@@ -44,6 +54,20 @@ export default function AssignMenu() {
   // Optional client-side search across labels/codes — filters what's
   // rendered without touching the underlying rows / dirty state.
   const [query, setQuery] = useState("");
+
+  // Codes of the sidebar entries the selected role can actually see, read
+  // from Sidebar.jsx's own menu and role rules. Entries outside this set are
+  // left off the tree: hiding them for this role would change nothing.
+  const roleCodes = useMemo(() => sidebarMenuCodesForRole(role), [role]);
+  const roleRows = useMemo(
+    () => rows.filter((r) => roleCodes.has(r.code)),
+    [rows, roleCodes],
+  );
+  // Settings saved earlier for entries this role can't see. They have no
+  // effect; Reset removes them along with the rest.
+  const strayOverrideCount = rows.filter(
+    (r) => !roleCodes.has(r.code) && r.isVisible != null,
+  ).length;
 
   const fetchRows = useCallback(async (targetRole) => {
     setLoading(true);
@@ -78,18 +102,43 @@ export default function AssignMenu() {
     });
   };
 
-  // Effective visibility for a row: dirty override wins, else DB value,
-  // else "inherit" (treated as VISIBLE in the checkbox UI because the
-  // hardcoded config would show it).
+  // Saved visibility for a row: the DB value, or "inherit" (no row), which
+  // counts as VISIBLE because the hardcoded config would show it.
+  const savedVisible = (row) => row.isVisible !== false;
+
+  // Effective visibility for a row: dirty override wins, else saved value.
   const effectiveVisible = (row) => {
     if (Object.prototype.hasOwnProperty.call(dirty, row.code)) return dirty[row.code];
-    if (row.isVisible === false) return false;
-    return true;
+    return savedVisible(row);
   };
 
   const toggle = (row) => {
     const next = !effectiveVisible(row);
-    setDirty((d) => ({ ...d, [row.code]: next }));
+    setDirty((d) => {
+      const copy = { ...d };
+      // Flipping a row back to its saved value is not a change — drop it so
+      // the "unsaved" badge and the Save button count real edits only.
+      if (next === savedVisible(row)) delete copy[row.code];
+      else copy[row.code] = next;
+      return copy;
+    });
+  };
+
+  const dirtyCount = Object.keys(dirty).length;
+
+  // Switching role reloads the tree and clears the pending edits, so ask
+  // first instead of silently dropping them.
+  const selectRole = (slug) => {
+    if (slug === role) return;
+    if (
+      dirtyCount > 0 &&
+      !window.confirm(
+        `Discard ${dirtyCount} unsaved change(s) for ${roleLabel(role)}?`,
+      )
+    ) {
+      return;
+    }
+    setRole(slug);
   };
 
   const save = async () => {
@@ -102,31 +151,41 @@ export default function AssignMenu() {
     if (items.length === 0) return;
     setSaving(true);
     try {
-      await axiosInstance.put(`${BASE}/roles/${role}`, { items });
-      toast.success(`Saved ${items.length} change(s) for ${roleLabel(role)}`);
+      const res = await axiosInstance.put(`${BASE}/roles/${role}`, { items });
+      // The backend skips codes it no longer knows, so report what it applied.
+      const saved = res?.data?.saved ?? items.length;
+      toast.success(`Saved ${saved} change(s) for ${roleLabel(role)}`);
+      notifySidebar();
       await fetchRows(role);
     } catch (e) {
-      toast.error("Save failed");
+      toast.error(e?.response?.data?.message || "Save failed");
     } finally {
       setSaving(false);
     }
   };
 
   const resetRole = async () => {
-    if (!window.confirm(`Reset ${roleLabel(role)} to default (delete all overrides)?`)) return;
+    const discardNote =
+      dirtyCount > 0 ? ` Your ${dirtyCount} unsaved change(s) will be discarded.` : "";
+    if (
+      !window.confirm(
+        `Reset ${roleLabel(role)} to default (delete all overrides)?${discardNote}`,
+      )
+    ) {
+      return;
+    }
     setSaving(true);
     try {
       const res = await axiosInstance.delete(`${BASE}/roles/${role}`);
       toast.success(`Reset — removed ${res?.data?.removed ?? 0} override(s)`);
+      notifySidebar();
       await fetchRows(role);
     } catch (e) {
-      toast.error("Reset failed");
+      toast.error(e?.response?.data?.message || "Reset failed");
     } finally {
       setSaving(false);
     }
   };
-
-  const dirtyCount = Object.keys(dirty).length;
 
   return (
     <div className="min-vh-100 bg-light d-flex flex-column">
@@ -247,6 +306,11 @@ export default function AssignMenu() {
         .am-leaf:hover { background: #f9fafb; }
         .am-leaf .form-check { margin: 0; }
         .am-leaf .form-check-input { margin-top: 0; cursor: pointer; }
+        .am-leaves-muted .am-leaf { opacity: .55; }
+        .am-muted-note {
+          font-size: 11.5px; color: #6b7280;
+          padding: 4px 10px 8px; line-height: 1.5;
+        }
 
         .am-code {
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -277,8 +341,9 @@ export default function AssignMenu() {
               <div className="flex-grow-1">
                 <div className="am-title">Assign Menu</div>
                 <div className="am-sub">
-                  Hide sidebar entries per role. Subtractive only — you can't grant a role
-                  more than the code allows. Reset returns a role to the default (inherit).
+                  Hide sidebar entries per role. Only the entries the selected role can see
+                  are listed — you can't grant a role more than the code allows. Reset
+                  returns a role to the default (inherit).
                 </div>
               </div>
               <div className="d-flex align-items-center gap-2">
@@ -311,11 +376,11 @@ export default function AssignMenu() {
                   <div className="am-role-rail-title">Select role</div>
                   {ROLES.map((r) => {
                     const isOn = role === r.slug;
-                    // Count of visible top-level nodes for this role, from
-                    // the currently loaded tree — non-zero only when a role
-                    // is already loaded (i.e., the one the picker just chose).
-                    const parentCount = isOn
-                      ? rows.filter((x) => !x.parentCode).length
+                    // Number of entries currently switched off (saved +
+                    // unsaved) for the selected role. Only the selected
+                    // role's tree is loaded, so other roles show no count.
+                    const hiddenCount = isOn && !loading
+                      ? roleRows.filter((x) => !effectiveVisible(x)).length
                       : null;
                     return (
                       <label
@@ -330,12 +395,17 @@ export default function AssignMenu() {
                           name="am-role"
                           value={r.slug}
                           checked={isOn}
-                          onChange={() => setRole(r.slug)}
+                          onChange={() => selectRole(r.slug)}
                           disabled={saving || loading}
                         />
                         <span>{r.label}</span>
-                        {parentCount !== null && (
-                          <span className="am-role-count">{parentCount}</span>
+                        {hiddenCount !== null && (
+                          <span
+                            className="am-role-count"
+                            title={`${hiddenCount} menu item(s) hidden for ${r.label}`}
+                          >
+                            {hiddenCount} hidden
+                          </span>
                         )}
                       </label>
                     );
@@ -351,10 +421,14 @@ export default function AssignMenu() {
                     <div className="am-empty">
                       No menu items registered yet.
                     </div>
+                  ) : roleRows.length === 0 ? (
+                    <div className="am-empty">
+                      {roleLabel(role)} has no sidebar entries that can be hidden here.
+                    </div>
                   ) : (() => {
                     // Group rows into { parent, leaves[] } tuples once per render.
                     const byParent = new Map();
-                    rows.forEach((r) => {
+                    roleRows.forEach((r) => {
                       const key = r.parentCode || "__root__";
                       if (!byParent.has(key)) byParent.set(key, []);
                       byParent.get(key).push(r);
@@ -400,7 +474,7 @@ export default function AssignMenu() {
                               type="text"
                               value={query}
                               onChange={(e) => setQuery(e.target.value)}
-                              placeholder={`Search ${rows.length} menu items…`}
+                              placeholder={`Search ${roleRows.length} menu items…`}
                               disabled={saving}
                             />
                           </div>
@@ -415,6 +489,12 @@ export default function AssignMenu() {
                         </div>
 
                         <div className="am-tree">
+                          {strayOverrideCount > 0 && (
+                            <div className="am-muted-note">
+                              {strayOverrideCount} saved setting(s) for entries{" "}
+                              {roleLabel(role)} can't see have no effect. Reset removes them.
+                            </div>
+                          )}
                           {groups.length === 0 && (
                             <div className="am-empty">
                               No menu items match “{query}”.
@@ -457,7 +537,13 @@ export default function AssignMenu() {
                                   </span>
                                 </div>
                                 {isOpen && visibleLeaves.length > 0 && (
-                                  <div className="am-leaves">
+                                  <div className={`am-leaves ${parentVisible ? "" : "am-leaves-muted"}`}>
+                                    {!parentVisible && (
+                                      <div className="am-muted-note">
+                                        The whole group is hidden for this role, so none of these
+                                        show. The ticks below apply once the group is shown again.
+                                      </div>
+                                    )}
                                     {visibleLeaves.map((leaf) => {
                                       const leafDirty = Object.prototype.hasOwnProperty.call(dirty, leaf.code);
                                       const leafVisible = effectiveVisible(leaf);

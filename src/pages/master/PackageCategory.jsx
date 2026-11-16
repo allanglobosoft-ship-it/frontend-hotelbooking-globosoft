@@ -264,7 +264,7 @@ export default function PackageCategory() {
   const handleDelete = (item) => {
     console.log("delete item :::" , item);
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.name} Package Category`,
+      titleText: `Are you sure? You want to delete ${item.name} Package Category`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

@@ -15,8 +15,9 @@ import {
   FaSuitcase,
   FaBed,
 } from "react-icons/fa";
+import { selectedSupplierHotel } from "../supplierHotels";
 
-const HotelsTab = ({ searchParams, bookingData, programme, updateData, updateProgramme, packageRate, onPackageRateResolved, onPrev, onNext }) => {
+const HotelsTab = ({ searchParams, searchCityId, searchRoomCount, packageRateFixed, bookingData, programme, updateData, updateProgramme, packageRate, onPackageRateResolved, onPrev, onNext }) => {
   const [hotels, setHotels] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
@@ -212,13 +213,34 @@ const HotelsTab = ({ searchParams, bookingData, programme, updateData, updatePro
     });
   };
 
+  // Live supplier hotels are no longer offered on this page. This only
+  // recognises one already saved on an older booking that is being amended
+  // (a supplier hotel has no hotelId, so it is read from the selections);
+  // picking an own hotel replaces selectedHotels, which clears it.
+  const selectedSupplier = selectedSupplierHotel(bookingData);
+
+  // A supplier hotel's price is added to the package rate, so that rate has to
+  // be known first. Otherwise the total would fall back to the search card's
+  // per-adult "from" price and undercharge a group. An amend already holds the
+  // amount charged (packageRateFixed).
+  const packageRateKnown =
+    packageRateFixed ||
+    (!isLoading && hotels.some((h) => Number(h.totalRateWithMarkup) > 0));
+  const packageRateMessage = isLoading
+    ? "Please wait, the package rate is still loading."
+    : "The package rate isn't available for these dates, so a live hotel can't be added.";
+
   // On Next: a hotel MUST be selected before proceeding to checkout — no
   // "proceed anyway" escape hatch per product spec. Toast the operator and
   // stop; onNext (which navigates to the checkout tab) only fires when
-  // selectedHotelId is set.
+  // a hotel (own or supplier) is selected.
   const handleNext = () => {
-    if (!selectedHotelId) {
+    if (!selectedHotelId && !selectedSupplier) {
       toast.error("Please select a hotel to continue.");
+      return;
+    }
+    if (selectedSupplier && !packageRateKnown) {
+      toast.error(packageRateMessage);
       return;
     }
     onNext();
@@ -390,7 +412,7 @@ const HotelsTab = ({ searchParams, bookingData, programme, updateData, updatePro
           <div className="room-categories-section">
             <div className="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
               <h4 className="mb-0">
-                Hotels included in this package
+                Select Your Preferred Hotel
               </h4>
               {hotels.length > 0 && (
                 <span className="prg-section-pill">
@@ -405,7 +427,7 @@ const HotelsTab = ({ searchParams, bookingData, programme, updateData, updatePro
                 as a popup when the user presses Next (see the Modal below). */}
             {hotels.length > 0 && (
               <div className="prg-hotel-select-hint mb-3">
-                Select a hotel to continue.
+                Choose your preferred hotel to continue.
               </div>
             )}
 
@@ -583,6 +605,10 @@ const HotelsTab = ({ searchParams, bookingData, programme, updateData, updatePro
               </div>
             )}
           </div>
+
+          {/* The "More hotels with live rates" (supplier hotels) section was
+              removed: the booking page offers only the package's own hotels,
+              for every login. */}
       </div>
 
       {/* Cancellation Policy card removed per product spec — the same

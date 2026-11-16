@@ -86,7 +86,6 @@ export default function CustomBookingNotesPage() {
     try {
       setSaving(true);
       const createdBy =
-        localStorage.getItem("UserName") ||
         sessionStorage.getItem("UserName") ||
         "unknown";
       const res = await axiosInstance.post(

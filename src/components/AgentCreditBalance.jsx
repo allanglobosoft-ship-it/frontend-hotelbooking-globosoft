@@ -18,10 +18,10 @@ export default function AgentCreditBalance() {
   // Same agent-login detection the search pages already use for hiding
   // the manual Agent picker: prefer the multi-role currentActiveRole,
   // fall back to userRole for single-role logins.
-  const activeRole = (localStorage.getItem("currentActiveRole") || "")
+  const activeRole = (sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
     : storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN");

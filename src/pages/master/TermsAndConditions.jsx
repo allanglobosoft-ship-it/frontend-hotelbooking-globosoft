@@ -632,7 +632,7 @@ export default function TermsAndConditions() {
   const handleDelete = (item) => {
     console.log("delete item :::" , item);
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.termsCode} Terms and Conditions`,
+      titleText: `Are you sure? You want to delete ${item.termsCode} Terms and Conditions`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

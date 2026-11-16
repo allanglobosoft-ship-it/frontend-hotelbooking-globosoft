@@ -13,7 +13,13 @@ import TopBar from "../../components/TopBar";
 import Select from "react-select";
 import axiosInstance from "../../components/AxiosInstance";
 import AgentBalanceDisplay from "../../components/AgentBalanceDisplay";
+import AgentSelect from "../../components/AgentSelect";
 import AdvertisementCarousel from "../../components/AdvertisementCarousel";
+import { getUserId, getUserName, setUserId } from "../../utils/authSession";
+import {
+  packageHotelLegs,
+  startPackageHotelSearches,
+} from "../../utils/packageHotelSearch";
 import {
   FaSearch,
   FaGlobe,
@@ -64,16 +70,6 @@ const computeCriteriaKey = (c) => {
   } catch {
     return String(Date.now());
   }
-};
-
-const ensureHotelImage = (imageUrl) => {
-  if (!imageUrl) return "https://b2b.choosenfly.com/assets/details/profilepic/hotel/hoteldefault.jpg";
-  if (/^https?:\/\//i.test(imageUrl)) return imageUrl;
-  if (typeof imageUrl === "string") {
-    const fileName = imageUrl.split(/[/\\]/).pop();
-    if (fileName) return `https://b2b.choosenfly.com/assets/details/profilepic/hotel/${fileName}`;
-  }
-  return "https://b2b.choosenfly.com/assets/details/profilepic/hotel/hoteldefault.jpg";
 };
 
 const ensureTransferImage = (imageUrl) => {
@@ -166,28 +162,6 @@ const prefetchCombinedResults = (criteria) => {
         ? Array(children).fill(0)
         : [];
 
-  const hotelPayload = {
-    nationalityId,
-    nationalityCode,
-    destinationCityId,
-    destinationCityIds,
-    destinationCountryId,
-    checkIn,
-    checkOut,
-    noOfRooms: "1",
-    roomConfigurations: [
-      {
-        roomNo: 1,
-        adultCount: String(adults || 1),
-        childCount: String(children || 0),
-        childAges: childAgeNums.length > 0 ? childAgeNums : [0],
-        adultAges: [25],
-      },
-    ],
-    agentId: agentIdFinal,
-    apiType: ["INHOUSE"],
-  };
-
   const transferPayload = {
     checkIn,
     checkOut,
@@ -220,31 +194,35 @@ const prefetchCombinedResults = (criteria) => {
     child: String(children || 0),
   };
 
-  axiosInstance
-    .post("/api/makeYourOwnPackageV2/hotel/search", hotelPayload)
-    .then((res) => {
-      const data = Array.isArray(res.data) ? res.data : [];
-      const mapped = data.map((hotel, index) => ({
-        id: hotel.hotelCode ? `local-${hotel.hotelCode}` : `local-h${index + 1}`,
-        searchId: "local",
-        hotelCode: hotel.hotelCode || null,
-        name: hotel.hotelName || "Unknown Hotel",
-        address: hotel.hotelAddress || "",
-        cityId: hotel.cityId != null ? String(hotel.cityId) : "",
-        city:
-          hotel.cityName ||
-          (hotel.hotelAddress
-            ? hotel.hotelAddress.split(", ").pop() || "Unknown City"
-            : "Unknown City"),
-        price: hotel.baseRate ?? null,
-        badge: hotel.baseRate ? "Rate Available" : "Rate Unavailable",
-        image: ensureHotelImage(hotel.hotelImage),
-        rating: hotel.starRating || 0,
-        hotelType: "hotel",
-        channelType: hotel.apiType?.toLowerCase() || "inhouse",
-      }));
+  // Hotels: one supplier search per destination city — the same search
+  // /new-booking/hotel runs (utils/packageHotelSearch), so in-house AND every
+  // supplier switched on for this agent and company is asked, and each rate
+  // carries this agent's markup. Suppliers take up to ~90 s, so only the
+  // started searches are stored here; the search page reads their hotels as
+  // they arrive.
+  startPackageHotelSearches({
+    legs: packageHotelLegs({ itinerary, destination }),
+    nationalityId,
+    nationalityCode,
+    checkIn,
+    checkOut,
+    rooms: [
+      {
+        adults: adults || 1,
+        children: children || 0,
+        childAges: childAgeNums,
+        adultAges: [25],
+      },
+    ],
+    agentId: agentIdFinal,
+  })
+    .then((handle) => {
+      if (handle.searches.length === 0) {
+        setPrefetchStatus({ hotel: "error" });
+        return;
+      }
       try {
-        sessionStorage.setItem(PREFETCH_KEYS.hotel, JSON.stringify(mapped));
+        sessionStorage.setItem(PREFETCH_KEYS.hotel, JSON.stringify(handle));
       } catch {
         /* ignore */
       }
@@ -330,10 +308,10 @@ export default function MakeUrOwnPackageV2() {
   // agent-required validation is skipped. currentActiveRole isn't set for
   // single-role logins, so fall back to userRole; admin/super-admin/staff
   // keep the picker exactly as before.
-  const activeRole = (localStorage.getItem("currentActiveRole") || "")
+  const activeRole = (sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
     : storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN");
@@ -564,9 +542,31 @@ export default function MakeUrOwnPackageV2() {
       return;
     }
 
-    if (agent) {
-      sessionStorage.setItem("makeYourOwnPackageAgentId", agent);
-      localStorage.setItem("makeYourOwnPackageAgentId", agent);
+    // Agent logins are priced and book as themselves: their own agent id
+    // (primed into the session at login, the same id /new-booking/hotel
+    // uses) drives the hotel markup, the cart and the booking. Without it
+    // every search here ran under agent 1's markup and suppliers.
+    let selectedAgent = agent;
+    if (isAgentRole) {
+      selectedAgent = getUserId() || "";
+      if (!selectedAgent && getUserName()) {
+        try {
+          const profile = await axiosInstance.get(
+            `/api/personalProfile/${getUserName()}`
+          );
+          if (profile?.data?.id != null) {
+            selectedAgent = String(profile.data.id);
+            setUserId(selectedAgent);
+          }
+        } catch {
+          /* the search falls back exactly as before */
+        }
+      }
+    }
+
+    if (selectedAgent) {
+      sessionStorage.setItem("makeYourOwnPackageAgentId", selectedAgent);
+      localStorage.setItem("makeYourOwnPackageAgentId", selectedAgent);
     }
 
     // Store travel date in sessionStorage for use in booking page
@@ -586,7 +586,7 @@ export default function MakeUrOwnPackageV2() {
     // nationality.
     const criteriaPayload = {
       travelDate,
-      agent,
+      agent: selectedAgent,
       nationality: selectedNationality,
       itinerary,
       adults,
@@ -792,22 +792,19 @@ export default function MakeUrOwnPackageV2() {
                           <FaUser className="me-2" />
                           Agent <span className="text-danger">*</span>
                         </Form.Label>
-                        <Form.Select
+                        {/* Type to search: the shared agent picker the hotel
+                            search page uses, filtering the list as the user
+                            types (agent name, city or country). */}
+                        <AgentSelect
+                          agents={agents}
                           value={agent}
-                          onChange={(e) => {
-                            setAgent(e.target.value);
-                            if (e.target.value) clearError("agent");
-                          }}
-                          className="form-control-modern"
+                          placeholder="SELECT"
                           isInvalid={!!errors.agent}
-                        >
-                          <option value="">SELECT</option>
-                          {agents.map((agentItem) => (
-                            <option key={agentItem.id} value={agentItem.id}>
-                              {agentItem.companyName}
-                            </option>
-                          ))}
-                        </Form.Select>
+                          onChange={(v) => {
+                            setAgent(v);
+                            if (v) clearError("agent");
+                          }}
+                        />
                         {errors.agent && (
                           <div className="text-danger small mt-1">
                             {errors.agent}

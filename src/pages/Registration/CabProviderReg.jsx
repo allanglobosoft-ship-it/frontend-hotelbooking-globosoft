@@ -29,6 +29,7 @@ import {
   FaArrowLeft,
 } from "react-icons/fa";
 import DashboardRedirections from "../../components/DashboardRedirections";
+import { getCurrentActiveRole } from "../../utils/authSession";
 
 // Enhanced SearchableSelect Component with loading support
 const SearchableSelect = ({
@@ -1560,7 +1561,7 @@ const CabProviderReg = () => {
 
   const handleDelete = (item) => {
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.providername}`,
+      titleText: `Are you sure? You want to delete ${item.providername}`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",
@@ -1610,7 +1611,7 @@ const CabProviderReg = () => {
           <div className="mb-3">
             <Button
               variant="outline-secondary"
-              onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+              onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
               className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
             >
               <FaArrowLeft />

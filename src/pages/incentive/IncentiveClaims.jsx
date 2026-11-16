@@ -14,9 +14,9 @@ const emptyBank = {
 };
 
 export default function IncentiveClaims() {
-  const role = (localStorage.getItem("currentActiveRole") || "").toLowerCase();
+  const role = (sessionStorage.getItem("currentActiveRole") || "").toLowerCase();
   const isAdmin = role === "admin";
-  const storedId = localStorage.getItem("userId");
+  const storedId = sessionStorage.getItem("userId");
   const myAgentId = storedId && /^\d+$/.test(storedId) ? Number(storedId) : null;
 
   const [claims, setClaims] = useState([]);
@@ -26,7 +26,7 @@ export default function IncentiveClaims() {
   const [reviewAction, setReviewAction] = useState("approve");
   const [adminRemarks, setAdminRemarks] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const reviewer = localStorage.getItem("UserName") || "admin";
+  const reviewer = sessionStorage.getItem("UserName") || "admin";
 
   // Reclaim modal state (agent side)
   const [reclaimOpen, setReclaimOpen] = useState(false);

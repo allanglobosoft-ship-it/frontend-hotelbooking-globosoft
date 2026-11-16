@@ -284,6 +284,7 @@ const QuotationBookingPage = () => {
               nationality: hotelRequest.primaryGuest?.nativeCountry || "",
               refundstatus: hotelRequest.rooms?.[0]?.nonRefundable ? "N" : "Y",
               nonRefundable: hotelRequest.rooms?.[0]?.nonRefundable || false,
+              refundTerms: hotelRequest.rooms?.[0]?.refundTerms,
               cancellationPolicy: hotelRequest.cancellationPolicy || [],
               searchRoomDTOs: hotelRequest.rooms?.map((room, idx) => ({
                 roomCount: 1,
@@ -1100,6 +1101,7 @@ const QuotationBookingPage = () => {
               roomCategory: hotel.roomCategory || "",
               mealPlan: hotel.roomType || "",
               nonRefundable: hotel.refundstatus === "N" || hotel.nonRefundable === true || hotel.nonRefundable === "true",
+              refundTerms: hotel.refundTerms,
               currency: hotel.currency || "AED",
               rate: roomRate,
               rateWithoutMarkup: roomRateWithoutMarkup,

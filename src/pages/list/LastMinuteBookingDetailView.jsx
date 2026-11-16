@@ -37,6 +37,7 @@ import Swal from "sweetalert2";
 import axiosInstance from "../../components/AxiosInstance";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
+import RefundBadge from "../../components/RefundBadge";
 
 const BUTTON_STYLE = {
   color: "#fff",
@@ -273,11 +274,7 @@ function BookingDetailBody({ booking: b }) {
                           : "—"}
                       </td>
                       <td>
-                        {r.nonRefundable ? (
-                          <Badge bg="danger">Non-Refundable</Badge>
-                        ) : (
-                          <Badge bg="success">Flexible</Badge>
-                        )}
+                        <RefundBadge rate={r} />
                       </td>
                     </tr>
                   </tbody>

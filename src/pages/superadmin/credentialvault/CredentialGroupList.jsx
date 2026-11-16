@@ -91,7 +91,7 @@ export default function CredentialGroupList() {
 
   const confirmDelete = (row) => {
     Swal.fire({
-      title: `Delete ${row.groupName}?`,
+      titleText: `Delete ${row.groupName}?`,
       html: "All encrypted entries in this group will be <b>permanently removed</b>. This cannot be undone.",
       icon: "warning",
       showCancelButton: true,

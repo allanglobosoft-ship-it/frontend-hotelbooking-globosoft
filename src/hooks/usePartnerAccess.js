@@ -20,7 +20,7 @@ let cached = null;
 // The snapshot is only valid for the login that produced it — a logout and
 // re-login inside the same SPA session must never reuse another user's set.
 const currentUsername = () =>
-  localStorage.getItem("UserName") || sessionStorage.getItem("UserName") || "";
+  sessionStorage.getItem("UserName") || "";
 
 const isCurrent = (snap) => !!snap && snap.username === currentUsername();
 

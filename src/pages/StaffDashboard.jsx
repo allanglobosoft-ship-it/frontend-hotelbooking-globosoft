@@ -34,7 +34,7 @@ export default function StaffDashboard() {
   useEffect(() => {
     const fetchProfile = async () => {
       try {
-        const userName = localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+        const userName = sessionStorage.getItem("UserName");
         if (userName) {
           const response = await axiosInstance.get(`/api/personalProfile/${userName}`);
           console.log("Profile Data:", response.data);
@@ -62,9 +62,8 @@ export default function StaffDashboard() {
           <Sidebar />
           <main className="dash-main">
 
-            {/* Regional date+time chip — staff users typically don't have a
-                country on their profile, so this falls back to the browser
-                timezone. */}
+            {/* Regional date+time chip — United Arab Emirates time from
+                the server (/api/dashboard/regional-time). */}
             <DashboardHeader title="Staff Dashboard" />
 
             {/* ── Quick Actions ── */}
@@ -83,23 +82,13 @@ export default function StaffDashboard() {
               </div>
             </section>
 
-            {/* ── Charts ── */}
-            <section>
-              <p className="qa-label">Analytics</p>
-              <div className="chart-grid">
-                <ChartCard title="Bookings Over Time" dotColor="var(--color-primary)">
-                  <LineChart labels={bookingsLabels} data={bookingsData} />
-                </ChartCard>
-                <ChartCard title="Revenue Trends" dotColor="var(--color-secondary)">
-                  <BarChart labels={bookingsLabels} data={revenueData} />
-                </ChartCard>
-              </div>
-            </section>
+            {/* Analytics section hidden by request. Code retained via git
+                history — restore this block to bring it back. */}
 
           </main>
         </div>
 
-        <DashboardFooter label="Staff Dashboard" />
+        <DashboardFooter />
       </div>
     </>
   );

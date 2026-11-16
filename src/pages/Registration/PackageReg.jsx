@@ -37,6 +37,11 @@ import DateTimeApplyPicker, {
   parseLocalDateTime,
 } from "../../components/DateTimeApplyPicker";
 import DashboardRedirections from "../../components/DashboardRedirections";
+import {
+  canSeeSupplierNames,
+  parseSupplierProviders,
+} from "../booking/packagebooking/supplierHotels";
+import { getCurrentActiveRole } from "../../utils/authSession";
 
 // Enhanced SearchableSelect Component with loading support
 const SearchableSelect = ({
@@ -54,6 +59,10 @@ const SearchableSelect = ({
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [filteredOptions, setFilteredOptions] = useState(options || []);
+  // The option list is server-searched, so it is replaced after every
+  // keystroke (and reset once a pick clears the search). Keep the picked
+  // option so its label still shows when it is no longer in `options`.
+  const [pickedOption, setPickedOption] = useState(null);
 
   useEffect(() => {
     if (!options || !Array.isArray(options)) {
@@ -78,6 +87,7 @@ const SearchableSelect = ({
       console.log("Selecting option:", option);
       // Ensure we pass a proper value
       const value = option.id !== undefined ? option.id : option;
+      setPickedOption(option);
       onChange({
         target: {
           name: name,
@@ -92,9 +102,11 @@ const SearchableSelect = ({
     }
   };
 
-  const selectedOption = options?.find(
-    (option) => String(option.id) === String(value)
-  );
+  const selectedOption =
+    options?.find((option) => String(option.id) === String(value)) ||
+    (pickedOption && String(pickedOption.id) === String(value)
+      ? pickedOption
+      : undefined);
 
   return (
     <div className="position-relative">
@@ -229,7 +241,13 @@ const PackageReg = () => {
     // Free-text notes captured on the "Information on Package" tab.
     // Persisted as packages.package_information (TEXT) on the backend.
     packageInformation: "",
+    supplierHotelsEnabled: false,
+    supplierHotelProviders: [],
   });
+  // Only admin logins see this option or post its fields, so an edit by anyone
+  // else leaves the package's existing setting alone (the backend keeps it when
+  // the field is absent).
+  const canManageSupplierHotels = canSeeSupplierNames();
 
   // Additional state for itinerary and others
   const [packageItinearyDTOList, setPackageItinearyDTOList] = useState([
@@ -260,6 +278,10 @@ const PackageReg = () => {
   // because the Arrive City search narrows that list, which used to blank
   // the Place already picked on other days.
   const [itineraryPlaces, setItineraryPlaces] = useState([]);
+  // Cities already saved on the package being edited. `places` only holds
+  // the first 50 (or the current search), so these are fetched by id and
+  // merged in to keep the saved Arrive City / day places labelled.
+  const [pinnedPlaces, setPinnedPlaces] = useState([]);
   const [isLoadingPlaces, setIsLoadingPlaces] = useState(false);
   const [allDestinations, setAllDestinations] = useState([]);
   const [isLoadingDestinations, setIsLoadingDestinations] = useState(false);
@@ -273,6 +295,68 @@ const PackageReg = () => {
   const [isCountryLoading, setIsCountryLoading] = useState(false);
   const countryDebounceRef = useRef(null);
   const placeDebounceRef = useRef(null);
+  const itineraryPlaceDebounceRef = useRef(null);
+
+  // ── Selected-place name cache ────────────────────────────────────────
+  // `places` is ONE list shared by Arrive City and every itinerary day's
+  // Place dropdown, and it is replaced on every search (max 50 rows). The
+  // dropdown resolves the visible label by looking the selected id up in its
+  // options, so as soon as the list reloaded without the picked city (e.g.
+  // the empty-search reload fired right after selecting "Moscow") the field
+  // went blank even though the id was still selected. Remember the name of
+  // every place we have ever loaded and always include the selected one in
+  // that dropdown's options.
+  const [placeNameCache, setPlaceNameCache] = useState({});
+  const requestedPlaceIdsRef = useRef(new Set());
+
+  useEffect(() => {
+    if (!Array.isArray(places) || places.length === 0) return;
+    setPlaceNameCache((prev) => {
+      let next = prev;
+      places.forEach((place) => {
+        const label = place?.name || place?.stateName;
+        if (place?.id == null || !label || prev[place.id] === label) return;
+        if (next === prev) next = { ...prev };
+        next[place.id] = label;
+      });
+      return next;
+    });
+  }, [places]);
+
+  // Edit / view mode: ids loaded from a saved package may not be in the
+  // current 50-row list at all — fetch their names once.
+  useEffect(() => {
+    const selectedIds = [
+      formData.placeId,
+      ...packageItinearyDTOList.map((day) => day.placeId),
+    ].filter((id) => id !== "" && id !== null && id !== undefined);
+    selectedIds.forEach((id) => {
+      const key = String(id);
+      if (placeNameCache[key] !== undefined || requestedPlaceIdsRef.current.has(key)) return;
+      requestedPlaceIdsRef.current.add(key);
+      axiosInstance
+        .get(`/api/province/${encodeURIComponent(key)}`)
+        .then((res) => {
+          const label = res?.data?.name || res?.data?.stateName;
+          if (label) setPlaceNameCache((prev) => ({ ...prev, [key]: label }));
+        })
+        .catch(() => {
+          /* name stays unresolved — dropdown just shows its placeholder */
+        });
+    });
+  }, [formData.placeId, packageItinearyDTOList, placeNameCache]);
+
+  // Options for one place dropdown: the current search list, plus the
+  // dropdown's own selected place when the list doesn't contain it.
+  const placeOptionsFor = (selectedId) => {
+    // placeOptions (defined below) = current search results + the saved
+    // cities pinned when a package is opened for edit/view.
+    const base = placeOptions;
+    if (selectedId === "" || selectedId === null || selectedId === undefined) return base;
+    if (base.some((opt) => String(opt.id) === String(selectedId))) return base;
+    const cached = placeNameCache[String(selectedId)];
+    return cached ? [{ id: selectedId, name: cached }, ...base] : base;
+  };
   const [selectedCountryOption, setSelectedCountryOption] = useState(null);
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [selectedPackage, setSelectedPackage] = useState(null);
@@ -427,6 +511,10 @@ const PackageReg = () => {
         "Please select or enter at least one item in Inclusion, Exclusion, or Terms & Conditions";
     }
 
+    // (The "select at least one supplier" check went with the removed
+    // "Allow supplier hotels" option: there is nothing left on the form to fix
+    // it with, so it could only block a save without a visible reason.)
+
     return errors;
   };
 
@@ -449,6 +537,8 @@ const PackageReg = () => {
       overview: "",
       noOfNights: "1",
       packageInformation: "",
+      supplierHotelsEnabled: false,
+      supplierHotelProviders: [],
     });
     setPackageItinearyDTOList([
       {
@@ -462,6 +552,7 @@ const PackageReg = () => {
     setSelectedOthers([]);
     setPlaces([]);
     setItineraryPlaces([]);
+    setPinnedPlaces([]);
     setPackageValidityDTOList([{ validityFrom: "", validityTo: "" }]);
     setPackageCancellationPolicyDTOList([
       { cancellationFee: "", cancellationFeeType: "PERCENT", noOfNights: "" },
@@ -571,6 +662,26 @@ const PackageReg = () => {
     formDataPayload.append("containHotel", formData.containHotel ? 1 : 0);
     formDataPayload.append("containCab", formData.containCab ? 1 : 0);
     formDataPayload.append("containActivity", formData.containActivity ? 1 : 0);
+
+    // Only sent when the option is on, or was on and is being switched off, so
+    // a package that never used it posts exactly the form it always did.
+    const supplierHotelsWereOn = Number(editing?.supplierHotelsEnabled) === 1;
+    if (
+      canManageSupplierHotels &&
+      formData.containHotel &&
+      (formData.supplierHotelsEnabled || supplierHotelsWereOn)
+    ) {
+      formDataPayload.append(
+        "supplierHotelsEnabled",
+        formData.supplierHotelsEnabled ? 1 : 0
+      );
+      if (formData.supplierHotelsEnabled) {
+        formDataPayload.append(
+          "supplierHotelProviders",
+          formData.supplierHotelProviders.join(",")
+        );
+      }
+    }
 
     formData.packageCategory.forEach((category, index) => {
       formDataPayload.append(`packageCategory[${index}]`, String(category));
@@ -786,7 +897,7 @@ const PackageReg = () => {
       "packageName", "packageCode", "packageType", "packageCategory",
       "countryId", "placeId", "noOfNights",
     ];
-    if (basicKeys.some((k) => errors[k])) { setActiveTab("basic"); return; }
+    if (basicKeys.some((k) => errors[k]) || errors.supplierHotelProviders) { setActiveTab("basic"); return; }
     if (errors.itinerary) { setActiveTab("itinerary"); return; }
     if (errors.others) { setActiveTab("inclusions"); return; }
   };
@@ -820,16 +931,26 @@ const PackageReg = () => {
   const cityList = async (countryId, searchTerm = "") => {
     try {
       setIsLoadingPlaces(true);
+      // Only the arriving country's cities. The plain /api/province list (used
+      // before) ignores countryId and returned the first 50 cities of every
+      // country, so the chosen country's cities were missing. getByCountryId
+      // always filters by country (and by name / code when a search is typed);
+      // the dropdown keeps showing at most 50, A to Z, as before.
       const response = await axiosInstance.get(
-        `/api/province/getByCountryId/${countryId}?search=${encodeURIComponent(searchTerm)}`
+        `/api/province/getByCountryId/${encodeURIComponent(countryId)}?search=${encodeURIComponent(searchTerm)}`
       );
-      const cities = Array.isArray(response.data)
+      const list = Array.isArray(response.data)
         ? response.data.filter((city) => !city.isDeleted)
         : [];
-      setPlaces(cities);
+      const byName = (p) => String(p?.name || p?.stateName || "");
+      setPlaces(
+        [...list]
+          .sort((a, b) => byName(a).localeCompare(byName(b)))
+          .slice(0, 50)
+      );
       // An unfiltered load is the country's full City list — that is what
       // the Itinerary Place dropdowns search through (client-side).
-      if (!searchTerm) setItineraryPlaces(cities);
+      if (!searchTerm) setItineraryPlaces(list);
     } catch (error) {
       console.log("axios call error for city list : ", error);
       setPlaces([]);
@@ -838,6 +959,28 @@ const PackageReg = () => {
       setIsLoadingPlaces(false);
     }
   };
+
+  const loadPinnedPlaces = async (ids) => {
+    const unique = [...new Set(ids.filter((id) => id !== null && id !== undefined && id !== "").map(String))];
+    const results = await Promise.all(
+      unique.map((id) =>
+        axiosInstance
+          .get(`/api/province/${id}`)
+          .then((res) => ({ id: res.data.id, name: res.data.name || res.data.stateName }))
+          .catch(() => null)
+      )
+    );
+    setPinnedPlaces(results.filter(Boolean));
+  };
+
+  // Dropdown options for Arrive City and the itinerary day places: the
+  // current search results plus any saved city that is not among them.
+  const placeOptions = [
+    ...pinnedPlaces.filter((p) => !places.some((pl) => String(pl.id) === String(p.id))),
+    ...(Array.isArray(places)
+      ? places.map((place) => ({ id: place.id, name: place.name || place.stateName }))
+      : []),
+  ];
 
   const loadCurrencies = async () => {
     try {
@@ -947,6 +1090,7 @@ const PackageReg = () => {
       // Clear places and place selection when country changes
       setPlaces([]);
       setItineraryPlaces([]);
+      setPinnedPlaces([]);
       setIsLoadingPlaces(false);
 
       setFormData((prev) => ({
@@ -1092,6 +1236,8 @@ const PackageReg = () => {
         overview: data.overview || "",
         noOfNights: data.noOfNights || "1",
         packageInformation: data.packageInformation || "",
+        supplierHotelsEnabled: Number(data.supplierHotelsEnabled) === 1,
+        supplierHotelProviders: parseSupplierProviders(data.supplierHotelProviders),
       });
 
       // Preload admin-defined "Standard Package Details" for the
@@ -1113,6 +1259,13 @@ const PackageReg = () => {
       } else {
         setSelectedCountryOption(null);
       }
+
+      loadPinnedPlaces([
+        ...(Array.isArray(data.arrivePlace) ? data.arrivePlace : [data.placeId]),
+        ...(Array.isArray(data.packageItinearyDTOList)
+          ? data.packageItinearyDTOList.map((it) => it.placeId)
+          : []),
+      ]);
 
       // Load itinerary data
       if (data.packageItinearyDTOList && Array.isArray(data.packageItinearyDTOList)) {
@@ -1300,6 +1453,17 @@ const PackageReg = () => {
         "containActivity",
         item.containActivity === 1 || item.containActivity === true ? 1 : 0
       );
+      if (
+        canManageSupplierHotels &&
+        Number(item.supplierHotelsEnabled) === 1 &&
+        item.supplierHotelProviders
+      ) {
+        formDataPayload.append("supplierHotelsEnabled", 1);
+        formDataPayload.append(
+          "supplierHotelProviders",
+          item.supplierHotelProviders
+        );
+      }
 
       // Package categories as array with proper indexing
       if (item.packageCategory && Array.isArray(item.packageCategory)) {
@@ -1742,11 +1906,13 @@ const PackageReg = () => {
   const goPrevTab = () => {
     if (!isFirstTab) setActiveTab(TAB_ORDER[currentTabIdx - 1]);
   };
-  const goNextTab = () => {
-    // Light per-tab guardrails: on Basic Details, warn if the required
-    // fields aren't filled but still let the user proceed (final submit
-    // enforces). On other tabs just advance.
-    if (activeTab === "basic") {
+  // Can the user leave `tab` going forward? Basic Details needs its
+  // required fields; Itinerary needs at least one day with a heading, place
+  // or activities. Shows the errors and a toast when not. View mode is never
+  // blocked — there is nothing to fix there.
+  const passesTabCheck = (tab) => {
+    if (isViewMode) return true;
+    if (tab === "basic") {
       const errs = validateForm(formData);
       const basicKeys = [
         "packageName", "packageCode", "packageType", "packageCategory",
@@ -1758,10 +1924,41 @@ const PackageReg = () => {
       if (Object.keys(basicErrs).length > 0) {
         setValidationErrors((prev) => ({ ...prev, ...basicErrs }));
         toast.error("Please fill required fields in Basic Details before continuing.");
-        return;
+        return false;
       }
     }
+    if (tab === "itinerary") {
+      const errs = validateForm(formData);
+      if (errs.itinerary) {
+        setValidationErrors((prev) => ({ ...prev, itinerary: errs.itinerary }));
+        toast.error(errs.itinerary);
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const goNextTab = () => {
+    if (!passesTabCheck(activeTab)) return;
     if (!isLastTab) setActiveTab(TAB_ORDER[currentTabIdx + 1]);
+  };
+
+  // Clicking a tab name: going back is always allowed. Going forward runs
+  // the same checks as Next for every tab being skipped, and stops on the
+  // first one that fails so its message is on screen.
+  const handleTabSelect = (key) => {
+    if (!key) return;
+    const targetIdx = TAB_ORDER.indexOf(key);
+    if (targetIdx > currentTabIdx && currentTabIdx >= 0) {
+      for (let i = currentTabIdx; i < targetIdx; i++) {
+        const tab = TAB_ORDER[i];
+        if (!passesTabCheck(tab)) {
+          if (tab !== activeTab) setActiveTab(tab);
+          return;
+        }
+      }
+    }
+    setActiveTab(key);
   };
 
   return (
@@ -1774,7 +1971,7 @@ const PackageReg = () => {
           <div className="mb-3">
             <Button
               variant="outline-secondary"
-              onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+              onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
               className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
             >
               <FaArrowLeft />
@@ -2018,7 +2215,7 @@ const PackageReg = () => {
               )} */}
               <Tabs
                 activeKey={activeTab}
-                onSelect={(k) => k && setActiveTab(k)}
+                onSelect={handleTabSelect}
                 id="package-tabs"
                 className="mb-3"
               >
@@ -2049,6 +2246,8 @@ const PackageReg = () => {
                           <Form.Control
                             type="text"
                             placeholder="Enter package name"
+                            // packages.package_name is VARCHAR(255)
+                            maxLength={255}
                             value={formData.packageName}
                             isInvalid={!!validationErrors.packageName}
                             {...getFormControlProps(
@@ -2087,6 +2286,8 @@ const PackageReg = () => {
                           <Form.Control
                             type="text"
                             placeholder="Enter package code"
+                            // packages.package_code is VARCHAR(255)
+                            maxLength={255}
                             value={formData.packageCode}
                             onChange={(e) => {
                               setFormData((prev) => ({
@@ -2283,8 +2484,10 @@ const PackageReg = () => {
                               />
                             )} 
                           </div>
+                          {/* d-block: the message is not a direct sibling of
+                              the red input, so Bootstrap would keep it hidden. */}
                           {validationErrors.packageCategory && (
-                            <Form.Control.Feedback type="invalid">
+                            <Form.Control.Feedback type="invalid" className="d-block">
                               {validationErrors.packageCategory}
                             </Form.Control.Feedback>
                           )}
@@ -2328,6 +2531,11 @@ const PackageReg = () => {
                             </div>
                           )}
                         </Form.Group>
+                        {/* "Allow supplier hotels" was removed from this form:
+                            supplier hotels are no longer set per package. A
+                            package that already has it keeps its saved value
+                            (it is still loaded and posted back unchanged on
+                            save); a new package never gets it. */}
                       </Col>
                       <Col md={6}>
                         <Form.Group className="mb-3">
@@ -2478,6 +2686,14 @@ const PackageReg = () => {
                             isDisabled={isViewMode}
                             className={`react-select-container ${validationErrors.countryId ? "is-invalid" : ""}`}
                             classNamePrefix="react-select"
+                            // Red border on error: the global
+                            // .react-select__control.is-invalid rule
+                            // (custom.scss) needs the class on the control
+                            // itself, not on the outer container.
+                            classNames={{
+                              control: () =>
+                                validationErrors.countryId ? "is-invalid" : "",
+                            }}
                           />
                           {validationErrors.countryId && (
                             <div className="text-danger small mt-1">
@@ -2509,24 +2725,18 @@ const PackageReg = () => {
                                   ? "Loading places..."
                                   : "Search and select place"
                               }
-                              options={
-                                Array.isArray(places)
-                                  ? places.map((place) => ({
-                                    id: place.id,
-                                    name: place.name || place.stateName,
-                                  }))
-                                  : []
-                              }
+                              options={placeOptionsFor(formData.placeId)}
                               isInvalid={!!validationErrors.placeId}
-                              disabled={
-                                isViewMode ||
-                                !formData.countryId ||
-                                isLoadingPlaces
-                              }
+                              // Not disabled while a search is loading: that
+                              // dropped focus mid-typing. The dropdown shows
+                              // its own spinner instead.
+                              disabled={isViewMode || !formData.countryId}
                               isLoading={isLoadingPlaces}
                             />
+                            {/* d-block: SearchableSelect wraps the red input,
+                                so Bootstrap would keep this message hidden. */}
                             {validationErrors.placeId && (
-                              <Form.Control.Feedback type="invalid">
+                              <Form.Control.Feedback type="invalid" className="d-block">
                                 {validationErrors.placeId}
                               </Form.Control.Feedback>
                             )}
@@ -2580,7 +2790,7 @@ const PackageReg = () => {
                         </Form.Group>
                         <Form.Group className="mb-3">
                           <Form.Label>
-                            No of nights <span className="text-danger">*</span>
+                            No of nights 
                           </Form.Label>
                           <Form.Select
                             value={formData.noOfNights}
@@ -2652,6 +2862,14 @@ const PackageReg = () => {
                     )}
                   </div>
                   {console.log("packageItinearyDTOList::" , packageItinearyDTOList)}
+                  {/* Itinerary error — set by Next or the final save; it
+                      clears as soon as a day gets a heading, place or
+                      activities (see updateItineraryDay). */}
+                  {validationErrors.itinerary && (
+                    <div className="alert alert-danger py-2 small mb-3" role="alert">
+                      {validationErrors.itinerary}
+                    </div>
+                  )}
                   {packageItinearyDTOList.map((day, index) => (
                     <Card key={index} className="mb-3">
                       <Card.Header className="d-flex justify-content-between align-items-center">

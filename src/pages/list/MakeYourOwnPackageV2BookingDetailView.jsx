@@ -553,7 +553,7 @@ export default function MakeYourOwnPackageV2BookingDetailView() {
         <Sidebar />
         <main className="flex-grow-1 p-4" style={{ overflow: "auto" }}>
           <Container fluid style={{ maxWidth: "1100px" }}>
-            {/* ── Header (Back + title + booking code + StatusBadge) ── */}
+            {/* ── Header (Back + title) ── */}
             <div className="mb-3 d-flex align-items-center flex-wrap gap-2">
               <button
                 style={BTN_NEUTRAL}
@@ -571,27 +571,6 @@ export default function MakeYourOwnPackageV2BookingDetailView() {
               >
                 Booking Details
               </span>
-              {details?.bookingCode && (
-                <span
-                  style={{
-                    marginLeft: "10px",
-                    fontWeight: "700",
-                    fontSize: "0.9rem",
-                    color: "#c0392b",
-                    border: "1px solid #ddd",
-                    borderRadius: "3px",
-                    padding: "2px 10px",
-                    backgroundColor: "#fff",
-                  }}
-                >
-                  {details.bookingCode}
-                </span>
-              )}
-              {details && (
-                <span style={{ marginLeft: "10px" }}>
-                  <StatusBadge status={displayStatus} />
-                </span>
-              )}
             </div>
 
             {loadingDetails && !details ? (
@@ -692,6 +671,10 @@ export default function MakeYourOwnPackageV2BookingDetailView() {
                   <div style={{ padding: "12px 16px" }}>
                     <Row>
                       <Col md={6}>
+                        <InfoRow
+                          label="Booking Code"
+                          value={details.bookingCode}
+                        />
                         <InfoRow
                           label="Booking Date"
                           value={

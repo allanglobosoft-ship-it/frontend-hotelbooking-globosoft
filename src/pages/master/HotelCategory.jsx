@@ -248,7 +248,7 @@ export default function HotelCategory() {
 
     console.log("delete item :::" , item);
       Swal.fire({
-      title: `Are you sure? You want to delete ${item.tagLine} Star Hotel Category`,
+      titleText: `Are you sure? You want to delete ${item.tagLine} Star Hotel Category`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

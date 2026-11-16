@@ -12,6 +12,8 @@ import RoomCategory from "../../components/filters/RoomCategory";
 import HotelFilter from "../../components/filters/Hotelfilters";
 import Supplier from "../../components/filters/Supplier";
 import DestinationCity from "../../components/filters/DestinationCity";
+import { escapeHtml } from "../../utils/safeHtml";
+import { csvCell } from "../../utils/csvSafe";
 
 
 function DayWise() {
@@ -191,7 +193,7 @@ const handlePrint = () => {
   printWindow.document.write(`
     <html>
       <head>
-        <title>Day Wise Report - ${reportType === 'inhouse' ? 'Inhouse' : 'API'}</title>
+        <title>Day Wise Report - ${escapeHtml(reportType === 'inhouse' ? 'Inhouse' : 'API')}</title>
         <style>
           body { font-family: Arial, sans-serif; margin: 20px; }
           table { width: 100%; border-collapse: collapse; }
@@ -201,11 +203,11 @@ const handlePrint = () => {
         </style>
       </head>
       <body>
-        <h1>Day Wise Report - ${reportType === 'inhouse' ? 'Inhouse' : 'API'}</h1>
+        <h1>Day Wise Report - ${escapeHtml(reportType === 'inhouse' ? 'Inhouse' : 'API')}</h1>
         <table>
           <thead>
             <tr>
-              ${columns.map(col => `<th>${col}</th>`).join('')}
+              ${columns.map(col => `<th>${escapeHtml(col)}</th>`).join('')}
             </tr>
           </thead>
           <tbody>
@@ -214,26 +216,26 @@ const handlePrint = () => {
                 return `
                   <tr>
                     <td>${index+1}</td>
-                    <td>${booking.hotelName}</td>
-                    <td>${booking.checkIn}</td>
-                    <td>${booking.checkOut}</td>
-                    <td>${booking.hotelType}</td>
-                    <td>${booking.roomCategory}</td>
-                    <td>${booking.roomNo}</td>
-                    <td>${booking.customerName}</td>
+                    <td>${escapeHtml(booking.hotelName)}</td>
+                    <td>${escapeHtml(booking.checkIn)}</td>
+                    <td>${escapeHtml(booking.checkOut)}</td>
+                    <td>${escapeHtml(booking.hotelType)}</td>
+                    <td>${escapeHtml(booking.roomCategory)}</td>
+                    <td>${escapeHtml(booking.roomNo)}</td>
+                    <td>${escapeHtml(booking.customerName)}</td>
                   </tr>
                 `;
               } else {
                 return `
                   <tr>
                     <td>${index+1}</td>
-                    <td>${booking.hotelName}</td>
-                    <td>${booking.platform}</td>
-                    <td>${booking.checkIn}</td>
-                    <td>${booking.checkOut}</td>
-                    <td>${booking.hotelType}</td>
-                    <td>${booking.roomNo}</td>
-                    <td>${booking.customerName}</td>
+                    <td>${escapeHtml(booking.hotelName)}</td>
+                    <td>${escapeHtml(booking.platform)}</td>
+                    <td>${escapeHtml(booking.checkIn)}</td>
+                    <td>${escapeHtml(booking.checkOut)}</td>
+                    <td>${escapeHtml(booking.hotelType)}</td>
+                    <td>${escapeHtml(booking.roomNo)}</td>
+                    <td>${escapeHtml(booking.customerName)}</td>
                   </tr>
                 `;
               }
@@ -298,14 +300,8 @@ const handleExcel = () => {
     : ['Sl.No', 'Hotel Name', 'Platform', 'Check In', 'Check Out', 'Hotel Type', 'No of Rooms', 'Customer Name'];
   
   // Create CSV content with proper escaping
-  const escapeCSV = (value) => {
-    if (value === null || value === undefined) return '';
-    const stringValue = String(value);
-    if (stringValue.includes(',') || stringValue.includes('\n') || stringValue.includes('"')) {
-      return `"${stringValue.replace(/"/g, '""')}"`;
-    }
-    return stringValue;
-  };
+  // csvCell neutralises text a spreadsheet would run as a formula.
+  const escapeCSV = (value) => csvCell(value);
   
   const csvContent = [
     headers.map(escapeCSV).join(','),

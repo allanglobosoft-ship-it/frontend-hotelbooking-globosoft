@@ -46,8 +46,10 @@ import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
 import toast from "react-hot-toast";
+import RoomCountSummary from "../../components/RoomCountSummary";
 import "../../styles/HotelBookingListModern.css";
 import DashboardRedirections from "../../components/DashboardRedirections";
+import { getCurrentActiveRole } from "../../utils/authSession";
 
 const PER_PAGE_OPTIONS = [10, 25, 50, 100];
 
@@ -105,6 +107,7 @@ const COLUMN_WIDTHS = {
   referenceCode: "160px",
   bookDate: "90px",
   bookingDetails: "230px",
+  noOfRooms: "120px",
   deadlineDate: "105px",
   paymentMode: "110px",
   paymentStatus: "110px",
@@ -250,7 +253,7 @@ export default function StudentBookingList() {
   const [selectedYear, setSelectedYear] = useState("");
 
   const [role, setRole] = useState(
-    (localStorage.getItem("currentActiveRole") || "").toLowerCase()
+    (sessionStorage.getItem("currentActiveRole") || "").toLowerCase()
   );
 
   const [showCustomersModal, setShowCustomersModal] = useState(false);
@@ -261,10 +264,10 @@ export default function StudentBookingList() {
   };
 
   useEffect(() => {
-    const r = (localStorage.getItem("currentActiveRole") || "").toLowerCase();
+    const r = (sessionStorage.getItem("currentActiveRole") || "").toLowerCase();
     setRole(r);
     if (r === "agent") {
-      const uid = localStorage.getItem("userId");
+      const uid = sessionStorage.getItem("userId");
       if (uid && uid !== "null") setAgentId(uid);
     }
   }, []);
@@ -454,7 +457,8 @@ export default function StudentBookingList() {
   };
 
   // +1 for the Payment Status column.
-  const colSpan = role === "admin" ? 12 : 11;
+  // Includes the No. of Rooms column.
+  const colSpan = role === "admin" ? 14 : 13;
 
   // Notification cell renderer — maps the composite student status onto the
   // shared StatusPill badges so it matches the Hotel/LongStay skin. The page
@@ -527,7 +531,7 @@ export default function StudentBookingList() {
             <div className="mb-3">
               <Button
                 variant="outline-secondary"
-                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
                 className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
               >
                 <FaArrowLeft />
@@ -700,6 +704,7 @@ export default function StudentBookingList() {
                           <th style={thStyle(COLUMN_WIDTHS.referenceCode)}>Reference Code</th>
                           <th style={thStyle(COLUMN_WIDTHS.bookDate, true)}>Book Date</th>
                           <th style={thStyle(COLUMN_WIDTHS.bookingDetails)}>Booking Details</th>
+                          <th style={thStyle(COLUMN_WIDTHS.noOfRooms, true)}>No. of Rooms</th>
                           <th style={thStyle(COLUMN_WIDTHS.deadlineDate, true)}>Deadline Date</th>
                           <th style={thStyle(COLUMN_WIDTHS.paymentMode, true)}>Payment Mode</th>
                           {/* Payment Status — same mapping as
@@ -859,6 +864,9 @@ export default function StudentBookingList() {
                                       </span>
                                     )}
                                   </div>
+                                </td>
+                                <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.noOfRooms }}>
+                                  <RoomCountSummary total={b.totalRooms} lines={b.roomSummary} />
                                 </td>
                                 <td
                                   style={{

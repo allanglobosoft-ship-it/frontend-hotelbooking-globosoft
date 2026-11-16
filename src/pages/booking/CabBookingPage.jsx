@@ -31,6 +31,12 @@ import TopBar from "../../components/TopBar";
 import AgentBalanceDisplay from "../../components/AgentBalanceDisplay";
 import QuotationPdfCard from "../../components/quotation/QuotationPdfCard";
 import "../../styles/HotelBookingPage.css";
+import {
+  isAgentLogin,
+  supplierText,
+  withoutSupplierName,
+} from "../../utils/supplierDisplay";
+import { SUPPLIER_BOOKING_TIMEOUT_MS } from "../../config/apiTimeouts";
 
 const emptyCabPolicies = {
   terms: [],
@@ -182,10 +188,10 @@ const CabBookingPage = () => {
   // (they ARE the agent), so makeYourOwnPackageAgentId is never populated
   // for them. Detect that case here so we can fall back to the logged-in
   // user's own userId — same resolution the search page's build now does.
-  const activeRoleOnLoad = (localStorage.getItem("currentActiveRole") || "")
+  const activeRoleOnLoad = (sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
-  const storedRolesOnLoad = (localStorage.getItem("userRole") || "").toUpperCase();
+  const storedRolesOnLoad = (sessionStorage.getItem("userRole") || "").toUpperCase();
   const isAgentRoleOnLoad = activeRoleOnLoad
     ? activeRoleOnLoad === "AGENT"
     : storedRolesOnLoad.includes("AGENT") && !storedRolesOnLoad.includes("ADMIN");
@@ -194,7 +200,7 @@ const CabBookingPage = () => {
       ? String(searchCriteria.agentId)
       : sessionStorage.getItem("makeYourOwnPackageAgentId") ||
         localStorage.getItem("makeYourOwnPackageAgentId") ||
-        (isAgentRoleOnLoad ? localStorage.getItem("userId") || "" : "") ||
+        (isAgentRoleOnLoad ? sessionStorage.getItem("userId") || "" : "") ||
         "";
 
   // If accessed directly without state, we should probably redirect or show an error
@@ -203,7 +209,11 @@ const CabBookingPage = () => {
   // i'way rows carry no in-house cabId (cab.cabid is a synthetic string like
   // "iway-12345"), so every branch below that assumes a real Cab row needs
   // to check this first.
-  const isIway = cab?.channelType === "iway" || cab?.source === "IWAY";
+  const isIway = cab?.external === true;
+  const hideSupplierNames = isAgentLogin();
+  // The Type badge shows the kind of location; a supplier's tag is not one.
+  const locationTypeLabel = (type) =>
+    hideSupplierNames && /^(IWAY|EXTERNAL)$/i.test(type) ? "LOCATION" : type;
 
   // Airport detection needs both signals because i'way-native airports come
   // back tagged source="IWAY" (not "AIRPORT") from /transport-nodes — only
@@ -228,6 +238,10 @@ const CabBookingPage = () => {
     isIway ? pickupIsAirport : searchCriteria?.pickupType === "AIRPORT";
   const showDropoffFlightField =
     isIway ? dropoffIsAirport : searchCriteria?.dropoffType === "AIRPORT";
+  // A flexible-tariff offer has no Meet & Greet in its price, so it takes no
+  // sign. Unknown (null) counts as included, the same as the backend.
+  const showMeetGreetSign =
+    isIway && pickupIsAirport && cab?.flexibleTariff !== true;
 
   // Client location snapshot for the booking-history audit trail, resolved
   // once on page load and sent on the create payload. Location — browser
@@ -812,8 +826,10 @@ const CabBookingPage = () => {
         const hasIntlPrefix = raw.startsWith("+") || raw.startsWith("00");
         const digits = raw.replace(/[^0-9]/g, "");
         if (!hasIntlPrefix) {
-          errors[`guest_${leadIndex}_contactNumber`] =
-            "Include the country code (e.g. +971501234567) — i'way requires international format.";
+          errors[`guest_${leadIndex}_contactNumber`] = supplierText(
+            "Include the country code (e.g. +971501234567) — i'way requires international format.",
+            "Include the country code (e.g. +971501234567) — international format is required.",
+          );
           hasErrors = true;
         } else if (digits.length < 8 || digits.length > 15) {
           errors[`guest_${leadIndex}_contactNumber`] =
@@ -824,7 +840,10 @@ const CabBookingPage = () => {
       // i'way's passengers[] entries require an email; the in-house flow
       // never collected one, so this only applies to i'way bookings.
       if (isIway && (!lead.emailId || !lead.emailId.trim())) {
-        errors[`guest_${leadIndex}_emailId`] = "Email is required for i'way bookings";
+        errors[`guest_${leadIndex}_emailId`] = supplierText(
+          "Email is required for i'way bookings",
+          "Email is required for this booking",
+        );
         hasErrors = true;
       }
     }
@@ -895,13 +914,14 @@ const CabBookingPage = () => {
     const payload = {
       // i'way offers have no in-house Cab row — cab.cabid is a synthetic
       // "iway-<priceId>" string that would fail Jackson's Long binding on
-      // the backend, so send null and rely on apiType/iwayPriceId instead.
+      // the backend, so send null and rely on external/offerId instead.
       cabId: isIway ? null : cab.cabid,
-      // i'way booking fields — all null for in-house rows, so that payload
-      // is byte-for-byte unchanged from before this change.
-      apiType: isIway ? "IWAY" : null,
-      iwayPriceId: isIway ? (searchCriteria.iwayPriceId ?? null) : null,
-      iwayPriceUid: isIway ? (searchCriteria.iwayPriceUid ?? null) : null,
+      // Outside-offer fields, under neutral names — all null for in-house
+      // rows. The backend reads them as its i'way fields.
+      external: isIway ? true : null,
+      offerId: isIway ? (searchCriteria.offerId ?? null) : null,
+      offerUid: isIway ? (searchCriteria.offerUid ?? null) : null,
+      searchId: isIway ? (searchCriteria.searchId ?? null) : null,
       originLocation: isIway ? (searchCriteria.originLocation ?? null) : null,
       destinationLocation: isIway ? (searchCriteria.destinationLocation ?? null) : null,
       // Vehicle snapshot — captured now so the local voucher (which reads
@@ -909,38 +929,37 @@ const CabBookingPage = () => {
       // in-house rows) can render the same slots for i'way rows without
       // hitting i'way at voucher-generation time. In-house payloads leave
       // these null and continue to render from the Cab entity as before.
-      iwayVehicleName: isIway ? (cab?.cabname ?? null) : null,
-      iwayVehicleImage: isIway ? (cab?.cabpic ?? null) : null,
-      iwayProviderName: isIway ? (cab?.cabProviderName ?? null) : null,
+      vehicleName: isIway ? (cab?.cabname ?? null) : null,
+      vehicleImage: isIway ? (cab?.cabpic ?? null) : null,
+      providerName: isIway ? (cab?.cabProviderName ?? null) : null,
       // flexible_tariff flag of the picked i'way offer (guide §11.6.2).
       // The backend uses this to gate text_tablet on create-order — sent
       // only when M&G is included in the price (flexible_tariff=false).
       // Null on in-house rows.
-      iwayFlexibleTariff: isIway ? (cab?.iwayFlexibleTariff ?? null) : null,
+      flexibleTariff: isIway ? (cab?.flexibleTariff ?? null) : null,
       // AIT §8.5 opt-in — sends the toll_road additional_service ref only
       // when the operator ticks the "Include Toll Road" checkbox above.
       // Null on in-house rows and false on un-ticked i'way rows, both of
       // which the backend treats as "don't add the ref" (payload wire
       // shape unchanged from before this field existed).
-      iwayIncludeTollRoad: isIway ? Boolean(iwayIncludeTollRoad) : null,
+      includeTollRoad: isIway ? Boolean(iwayIncludeTollRoad) : null,
       // allowable_time (seconds) from the picked i'way offer. Forwarded
       // for TripServiceImpl.checkTimeForMeetAndGreet (guide §11.10) so
       // the backend can short-circuit obviously-too-soon pickups before
       // touching the wallet. Prefer the value carried on searchCriteria
       // (set on the search page); fall back to the cab row for older
       // hand-offs that only stamped it there. Null on in-house rows.
-      iwayAllowableTime: isIway
-        ? (searchCriteria.iwayAllowableTime ?? cab?.iwayAllowableTime ?? null)
+      allowableTime: isIway
+        ? (searchCriteria.allowableTime ?? cab?.allowableTime ?? null)
         : null,
       // Guide §11.6.2 Meet & Greet sign text. Only forwarded when the
       // pickup is an airport (backend gates the write on that anyway); a
       // blank value tells the backend to auto-fill with the lead
       // passenger's name — which matches today's behaviour, so bookings
       // whose operator doesn't touch the Greeting Sign input send the
-      // same text_tablet as before. Null on in-house rows and on i'way
-      // rows whose pickup isn't an airport.
-      iwayMeetGreetSign:
-        isIway && pickupIsAirport
+      // same text_tablet as before. Null on in-house rows, on i'way rows
+      // whose pickup isn't an airport, and on flexible-tariff offers.
+      meetGreetSign: showMeetGreetSign
           ? ((pickupDetails.greetingSign || "").trim() || null)
           : null,
       noOfCabs: cab.noOfCabs || 1,
@@ -1108,7 +1127,11 @@ const CabBookingPage = () => {
     if (!pendingPayload) return;
     setIsSubmitting(true);
     try {
-      const response = await axiosInstance.post("/api/cab/book", pendingPayload);
+      // An i'way booking makes several i'way calls in a row (check time,
+      // create, approve, documents), each allowed 180 s.
+      const response = await axiosInstance.post("/api/cab/book", pendingPayload, {
+        timeout: SUPPLIER_BOOKING_TIMEOUT_MS,
+      });
 
       if (response && (response.data?.success !== false && response.status === 200)) {
         if (isIway) {
@@ -1116,7 +1139,10 @@ const CabBookingPage = () => {
           // i'way's side but isn't paid/confirmed there, so say so rather
           // than implying it's fully done.
           toast.success(
+            supplierText(
             "Booking received — pending confirmation with i'way.",
+              "Booking received — pending confirmation.",
+            ),
             { duration: 6000 },
           );
         } else {
@@ -1125,7 +1151,9 @@ const CabBookingPage = () => {
         setShowSummaryModal(false);
         navigate("/booking-details/cab-booking-list");
       } else {
-        toast.error(response.data?.message || "Failed to book cab.");
+        toast.error(
+          withoutSupplierName(response.data?.message) || "Failed to book cab.",
+        );
       }
     } catch (error) {
       console.error("Booking error:", error);
@@ -1133,7 +1161,7 @@ const CabBookingPage = () => {
       // order-creation failure via IwayOrderCreationException) instead of a
       // generic message.
       toast.error(
-        error?.response?.data?.message ||
+        withoutSupplierName(error?.response?.data?.message) ||
           "An error occurred during booking. Please try again.",
       );
     } finally {
@@ -1574,13 +1602,13 @@ const CabBookingPage = () => {
                       {/* Guide §11.6.2 — Meet & Greet Sign text.
                           Shown only for i'way airport-pickup offers whose
                           selected class actually includes M&G in the price
-                          (iwayFlexibleTariff !== true). The useEffect at the
+                          (flexibleTariff !== true). The useEffect at the
                           top of the file pre-seeds greetingSign with the
                           lead passenger's full name, so leaving this input
                           untouched sends today's value; editing it forwards
                           the operator's custom text, and clearing it lets
                           the backend re-fall-back to the lead name. */}
-                      {isIway && pickupIsAirport && cab?.iwayFlexibleTariff !== true && (
+                      {showMeetGreetSign && (
                         <Col md={6}>
                           <Form.Label className="small text-muted fw-semibold mb-1">
                             Meet &amp; Greet Sign{" "}
@@ -1612,7 +1640,7 @@ const CabBookingPage = () => {
                           <div className="d-flex align-items-start gap-2 p-2 border rounded-2 bg-light">
                             <Form.Check
                               type="checkbox"
-                              id="iway-include-toll-road"
+                              id="include-toll-road"
                               className="mt-0"
                               checked={iwayIncludeTollRoad}
                               onChange={(e) =>
@@ -1624,10 +1652,12 @@ const CabBookingPage = () => {
                                     Include Toll Road
                                   </span>
                                   <span className="text-muted small ms-2">
-                                    Adds the route's toll fee to the trip
-                                    total (charged by i'way). Skipped
-                                    automatically if the selected vehicle
-                                    class doesn't offer it on this route.
+                                    {supplierText(
+                                      "Adds the route's toll fee to the trip total (charged by i'way).",
+                                      "Adds the route's toll fee to the trip total (charged by the supplier).",
+                                    )}{" "}
+                                    Skipped automatically if the selected
+                                    vehicle class doesn't offer it on this route.
                                   </span>
                                 </span>
                               }
@@ -1867,7 +1897,7 @@ const CabBookingPage = () => {
                               <FaCar /> {selectedOption.types}
                             </span>
                           </div>
-                          {cab.cabProviderName && (
+                          {!hideSupplierNames && cab.cabProviderName && (
                             <div className="text-muted small mt-1">
                               {cab.cabProviderName}
                             </div>
@@ -2208,7 +2238,7 @@ const CabBookingPage = () => {
                   ? "Private Transfer"
                   : "Shared (SIC)"}
               </Badge>
-              {cab.cabProviderName && (
+              {!hideSupplierNames && cab.cabProviderName && (
                 <span className="text-muted small ms-2">
                   by {cab.cabProviderName}
                 </span>
@@ -2303,7 +2333,7 @@ const CabBookingPage = () => {
                       <td className="fw-semibold">Pickup</td>
                       <td>
                         <Badge bg="success-subtle" text="success">
-                          {searchCriteria.pickupType}
+                          {locationTypeLabel(searchCriteria.pickupType)}
                         </Badge>
                       </td>
                       <td>{searchCriteria.pickupName || "—"}</td>
@@ -2319,7 +2349,7 @@ const CabBookingPage = () => {
                       <td className="fw-semibold">Dropoff</td>
                       <td>
                         <Badge bg="warning-subtle" text="warning">
-                          {searchCriteria.dropoffType}
+                          {locationTypeLabel(searchCriteria.dropoffType)}
                         </Badge>
                       </td>
                       <td>{searchCriteria.dropoffName || "—"}</td>

@@ -23,8 +23,10 @@ import axiosInstance from "../../components/AxiosInstance";
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/TopBar";
 import { toast } from "react-hot-toast";
+import RoomCountSummary, { countRoomTypes } from "../../components/RoomCountSummary";
 import "../../styles/HotelBookingListModern.css";
 import DashboardRedirections from "../../components/DashboardRedirections";
+import { getCurrentActiveRole } from "../../utils/authSession";
 
 const PER_PAGE_OPTIONS = [10, 25, 50, 100];
 
@@ -43,6 +45,7 @@ const COLUMN_WIDTHS = {
   confirmationNo: "130px",
   agent: "130px",
   tourDate: "100px",
+  noOfRooms: "120px",
   total: "110px",
   status: "110px",
   action: "70px",
@@ -105,6 +108,20 @@ const formatShortDate = (dateString) => {
   return `${day}/${month}/${d.getFullYear()}`;
 };
 
+// No. of Rooms column — each `hotels[]` line is one room category with its
+// own `noOfRooms`. A missing count is read as 1 room, the same fallback the
+// package voucher PDF uses.
+const roomsOnLine = (hotel) =>
+  Number(hotel?.noOfRooms) > 0 ? Number(hotel.noOfRooms) : 1;
+
+const getRoomSummary = (booking) => {
+  const hotels = Array.isArray(booking?.hotels) ? booking.hotels : [];
+  return {
+    total: hotels.reduce((sum, h) => sum + (h ? roomsOnLine(h) : 0), 0),
+    lines: countRoomTypes(hotels, (h) => h.roomCategory, roomsOnLine),
+  };
+};
+
 const MakeYourOwnPackageV2BookingList = () => {
   const navigate = useNavigate();
   const [rows, setRows] = useState([]);
@@ -150,11 +167,11 @@ const MakeYourOwnPackageV2BookingList = () => {
     setLoading(true);
     try {
       const role = (
-        localStorage.getItem("currentActiveRole") || ""
+        sessionStorage.getItem("currentActiveRole") || ""
       ).toLowerCase();
       const params = {};
       if (role === "agent") {
-        const agentId = localStorage.getItem("agentId");
+        const agentId = sessionStorage.getItem("agentId");
         if (agentId && agentId !== "null") params.agentId = agentId;
       }
       const res = await axiosInstance.get(
@@ -291,7 +308,7 @@ const MakeYourOwnPackageV2BookingList = () => {
             <div className="mb-3">
               <Button
                 variant="outline-secondary"
-                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
                 className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
               >
                 <FaArrowLeft />
@@ -517,6 +534,15 @@ const MakeYourOwnPackageV2BookingList = () => {
                           <th
                             style={{
                               ...baseHeaderStyle,
+                              textAlign: "center",
+                              width: COLUMN_WIDTHS.noOfRooms,
+                            }}
+                          >
+                            No. of Rooms
+                          </th>
+                          <th
+                            style={{
+                              ...baseHeaderStyle,
                               textAlign: "right",
                               width: COLUMN_WIDTHS.total,
                             }}
@@ -547,7 +573,7 @@ const MakeYourOwnPackageV2BookingList = () => {
                         {pageBookings.length === 0 ? (
                           <tr>
                             <td
-                              colSpan={8}
+                              colSpan={10}
                               className="text-center py-5 text-muted"
                               style={{
                                 border: "1px solid #dee2e6",
@@ -704,6 +730,15 @@ const MakeYourOwnPackageV2BookingList = () => {
                                   }}
                                 >
                                   {formatShortDate(b.tourDate) || "-"}
+                                </td>
+                                <td
+                                  style={{
+                                    ...baseCellStyle,
+                                    textAlign: "center",
+                                    width: COLUMN_WIDTHS.noOfRooms,
+                                  }}
+                                >
+                                  <RoomCountSummary {...getRoomSummary(b)} />
                                 </td>
                                 <td
                                   style={{

@@ -43,6 +43,7 @@ import AgentSelect from "../../components/AgentSelect";
 import axiosInstance from "../../components/AxiosInstance";
 import chevronStyle from "../../components/filters/dropdownChevron";
 import "../../styles/HotelSearch.css";
+import { getCurrentActiveRole, getUserId, getUserName, getUserRole } from "../../utils/authSession";
 
 /**
  * Simplified /promotion page — redesigned for a modern "deals showcase"
@@ -530,15 +531,15 @@ export default function PromotionHotelSearch() {
 
   // Same role logic HotelSearch.jsx uses so agent logins book under
   // themselves and the manual Agent picker is hidden.
-  const activeRole = (localStorage.getItem("currentActiveRole") || "")
+  const activeRole = (getCurrentActiveRole() || "")
     .trim()
     .toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const storedRoles = (getUserRole() || "").toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
     : storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN");
   const selfAgentId =
-    (isAgentRole && localStorage.getItem("userId")) || "";
+    (isAgentRole && getUserId()) || "";
 
   // Fetch the option lists once — the Book Now modal on this page uses
   // the same three endpoints the /new-booking/hotel search form calls.
@@ -847,7 +848,7 @@ export default function PromotionHotelSearch() {
     const pickedAgentObj = (Array.isArray(bookingAgents) ? bookingAgents : [])
       .find((a) => String(a?.id) === agentId);
     const agentName = isAgentRole
-      ? localStorage.getItem("UserName") ||
+      ? getUserName() ||
         sessionStorage.getItem("UserName") ||
         ""
       : pickedAgentObj

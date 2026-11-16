@@ -35,12 +35,12 @@ import {
   FaPen,
   FaCalendarCheck,
   FaSyncAlt,
-  FaChartBar,
   FaPrayingHands,
 } from "react-icons/fa";
 import { MdWifiOff } from "react-icons/md";
 import TopBar from "../components/TopBar";
 import axiosInstance from "../components/AxiosInstance";
+import { isAgentComingSoon, COMING_SOON_TITLE } from "../config/agentComingSoon";
 import {
   dashboardCss,
   DashboardHeader,
@@ -143,7 +143,6 @@ export default function AgentDashboard() {
     const fetchProfile = async () => {
       try {
         const userName =
-          localStorage.getItem("UserName") ||
           sessionStorage.getItem("UserName");
         if (userName) {
           const response = await axiosInstance.get(
@@ -184,6 +183,10 @@ export default function AgentDashboard() {
   // corresponding search/booking page without opening the sidebar. Each tile
   // carries its own accent "tone" (styled in the scoped <style> block below)
   // so the grid reads as a set of distinct shortcuts, not a uniform button row.
+  //
+  // Which flows are "Coming soon" is NOT decided here: the tiles read the
+  // shared AGENT_COMING_SOON_ROUTES set (config/agentComingSoon.js) that the
+  // Sidebar → New Booking submenu uses too, so the two never disagree.
   const bookingActions = [
     { label: "Hotels",              tone: "pink",   icon: <FaHotel />,          to: "/new-booking/hotel" },
     { label: "24 Hours",            tone: "pink",   icon: <FaClock />,          to: "/new-booking/hotel-24hr" },
@@ -203,11 +206,21 @@ export default function AgentDashboard() {
     { label: "Students",            tone: "purple", icon: <FaGraduationCap />,  to: "/new-booking/student" },
     { label: "Senior Citizens",     tone: "orange", icon: <FaUserAlt />,        to: "/new-booking/senior-citizen" },
     { label: "Religious",     tone: "orange", icon: <FaPrayingHands/>,        to: "/new-booking/religious" },
-  ];
+  ]
+    .map((a) => ({ ...a, comingSoon: isAgentComingSoon(a.to) }))
+    // Active tiles first, "Coming soon" tiles last. Stable sort so the
+    // declaration order above is preserved WITHIN each group — the source
+    // array still defines the reading order agents remember (Hotels →
+    // 24 Hours → Last Minutes → …), we're only pulling the disabled ones to
+    // the tail so the grid reads as "everything I can actually use" before
+    // "everything that's not live yet". Nothing else consumes this array's
+    // index, so re-ordering it here has no side effect on comingSoon
+    // gating, click handlers or the shared AGENT_COMING_SOON_ROUTES set.
+    .sort((a, b) => Number(a.comingSoon) - Number(b.comingSoon));
 
   const manageActions = [
     {
-      label: "Accounts",
+      label: "Accounts and Ledgers",
       desc: "Manage your accounts and finances",
       tone: "pink",
       icon: <FaCreditCard />,
@@ -216,7 +229,7 @@ export default function AgentDashboard() {
     {
       label: "Calendar",
       desc: "View & manage calendar events",
-      tone: "teal",
+      tone: "gray",
       icon: <FaCalendarAlt />,
       onClick: () => navigate("/calendar"),
     },
@@ -366,6 +379,51 @@ export default function AgentDashboard() {
         .agent-qa-icon.tone-teal   { background: #E3F7F5; color: #14B8A6; }
         .agent-qa-icon.tone-gray   { background: #F0F1F3; color: #9098A8; }
 
+        /* ── Coming-soon tiles — visible but non-actionable. Suppresses
+              the accent-tone hover so the disabled tile can't look
+              clickable, and reveals a small "Coming soon" ribbon on
+              hover/focus in addition to the native title tooltip. ── */
+        .agent-qa-tile.is-coming-soon {
+          cursor: not-allowed;
+          opacity: 0.55;
+          filter: grayscale(0.35);
+          position: relative;
+          overflow: hidden;
+        }
+        .agent-qa-tile.is-coming-soon:hover,
+        .agent-qa-tile.is-coming-soon:focus {
+          background: #fff;
+          border-color: rgba(0,0,0,.08);
+          box-shadow: none;
+          transform: none;
+        }
+        .agent-qa-tile.is-coming-soon:hover .agent-qa-icon {
+          transform: none;
+        }
+        .agent-qa-coming-badge {
+          position: absolute;
+          left: 50%;
+          top: 6px;
+          transform: translate(-50%, -140%);
+          background: #FF6B00;
+          color: #fff;
+          font-size: 13px;
+          font-weight: 700;
+          letter-spacing: .3px;
+          padding: 2px 8px;
+          border-radius: 999px;
+          white-space: nowrap;
+          pointer-events: none;
+          opacity: 0;
+          box-shadow: 0 2px 8px rgba(255,107,0,.5);
+          transition: transform .15s ease, opacity .15s ease;
+        }
+        .agent-qa-tile.is-coming-soon:hover .agent-qa-coming-badge,
+        .agent-qa-tile.is-coming-soon:focus-visible .agent-qa-coming-badge {
+          transform: translate(-50%, 0);
+          opacity: 1;
+        }
+
         /* ── Manage — compact gradient shortcut cards ── */
         .agent-manage-grid {
           display: grid;
@@ -389,6 +447,7 @@ export default function AgentDashboard() {
         .agent-manage-card.tone-pink   { background: linear-gradient(135deg, #EC0B43 0%, #C90939 100%); }
         .agent-manage-card.tone-purple { background: linear-gradient(135deg, #8B6CF7 0%, #6D4CE0 100%); }
         .agent-manage-card.tone-teal   { background: linear-gradient(135deg, #2DD4BF 0%, #0D9488 100%); }
+        .agent-manage-card.tone-gray   { background: linear-gradient(135deg, #8A93A3 0%, #5B6472 100%); }
         .agent-manage-dots {
           position: absolute; top: 8px; right: 10px; width: 40px; height: 40px;
           background-image: radial-gradient(currentColor 1.2px, transparent 1.2px);
@@ -413,6 +472,7 @@ export default function AgentDashboard() {
         .agent-manage-card.tone-pink .agent-manage-arrow   { color: #EC0B43; }
         .agent-manage-card.tone-purple .agent-manage-arrow { color: #6D4CE0; }
         .agent-manage-card.tone-teal .agent-manage-arrow   { color: #0D9488; }
+        .agent-manage-card.tone-gray .agent-manage-arrow   { color: #5B6472; }
 
         /* ── Credit Overview — highlighted brand-tinted card so the
             limit / used / available figures stand out from the rest of
@@ -491,9 +551,8 @@ export default function AgentDashboard() {
           <Sidebar />
           <main className="dash-main">
 
-            {/* Regional date+time chip — uses the agent's registered
-                country's timezone (resolved server-side via
-                /api/personalProfile, browser-TZ fallback). */}
+            {/* Regional date+time chip — United Arab Emirates time from
+                the server (/api/dashboard/regional-time). */}
             <DashboardHeader title="Agent Dashboard" />
 
             {/* ── Agent identity card — company / location / contact +
@@ -760,11 +819,21 @@ export default function AgentDashboard() {
                     <button
                       key={a.label}
                       type="button"
-                      className={`agent-qa-tile tone-${a.tone}`}
-                      onClick={() => navigate(a.to)}
+                      className={`agent-qa-tile tone-${a.tone}${
+                        a.comingSoon ? " is-coming-soon" : ""
+                      }`}
+                      onClick={a.comingSoon ? undefined : () => navigate(a.to)}
+                      disabled={a.comingSoon}
+                      aria-disabled={a.comingSoon ? "true" : undefined}
+                      title={a.comingSoon ? COMING_SOON_TITLE : undefined}
                     >
                       <span className={`agent-qa-icon tone-${a.tone}`}>{a.icon}</span>
                       <span>{a.label}</span>
+                      {a.comingSoon && (
+                        <span className="agent-qa-coming-badge" aria-hidden="true">
+                          Coming soon
+                        </span>
+                      )}
                     </button>
                   ))}
                 </div>
@@ -814,13 +883,10 @@ export default function AgentDashboard() {
                     {formatNumber(todayBookings)}
                   </span>
                 </div>
-                <div className="agent-overview-card">
-                  <span className="agent-overview-icon tone-pink"><FaChartBar /></span>
-                  <span className="agent-overview-label">Total Revenue</span>
-                  <span className="agent-overview-value">
-                    AED {formatNumber(dashboardStatus.totalRevenue)}
-                  </span>
-                </div>
+                {/* "Total Revenue" removed (audit FA-17): the figure was the
+                    platform's markup on this agent's bookings (selling price
+                    minus supplier cost), which agents must not see. The
+                    backend no longer sends it for agent logins. */}
                 <div className="agent-overview-card">
                   <span className="agent-overview-icon tone-orange"><FaHotel /></span>
                   <span className="agent-overview-label">Hotels Bookings</span>
@@ -840,45 +906,13 @@ export default function AgentDashboard() {
               </div>
             </section>
 
-            {/* ── Analytics — collapsible accordion, same pattern as
-                AdminDashboard.jsx's "Analytics" section ── */}
-            <section>
-              <button
-                type="button"
-                className="agent-analytics-toggle"
-                onClick={() => setAnalyticsOpen((o) => !o)}
-                aria-expanded={analyticsOpen}
-                aria-controls="agent-analytics-panel"
-              >
-                <span className="agent-acc-icon" aria-hidden="true">
-                  <FaChartLine />
-                </span>
-                <span className="agent-acc-text">
-                  <span className="agent-acc-title">Analytics</span>
-                  <span className="agent-acc-sub">Bookings over time &amp; revenue trend</span>
-                </span>
-                <span className="agent-acc-chev" aria-hidden="true">
-                  <FaChevronDown />
-                </span>
-              </button>
-              <Collapse in={analyticsOpen}>
-                <div id="agent-analytics-panel" className="agent-analytics-panel">
-                  <div className="chart-grid">
-                    <ChartCard title="Bookings Over Time" dotColor="var(--color-primary)">
-                      <LineChart labels={bookingsLabels} data={bookingsData} />
-                    </ChartCard>
-                    <ChartCard title="Revenue Trends" dotColor="var(--color-secondary)">
-                      <BarChart labels={bookingsLabels} data={revenueData} />
-                    </ChartCard>
-                  </div>
-                </div>
-              </Collapse>
-            </section>
+            {/* Analytics section hidden by request. Code retained via git
+                history — restore this block to bring it back. */}
 
           </main>
         </div>
 
-        <DashboardFooter label="Agent Dashboard" />
+        <DashboardFooter />
       </div>
     </>
   );

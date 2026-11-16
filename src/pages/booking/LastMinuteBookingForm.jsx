@@ -27,6 +27,14 @@ import axiosInstance from "../../components/AxiosInstance";
 import toast from "react-hot-toast";
 import { toLocalDateTime } from "../../utils/dateUtils";
 import QuotationPdfCard from "../../components/quotation/QuotationPdfCard";
+import RefundBadge from "../../components/RefundBadge";
+import {
+  REFUND_FLEXIBLE,
+  REFUND_NON_REFUNDABLE,
+  refundLabelText,
+  uaeToday,
+} from "../../utils/refundLabel";
+import { orderIdPathSegment } from "../../utils/urlSafety";
 
 /**
  * LastMinuteBookingForm — booking creation page for the Last Minute flow.
@@ -141,9 +149,7 @@ const isRateNonRefundable = (rate, checkInDate) => {
   const deadline = new Date(cin);
   deadline.setDate(deadline.getDate() - Math.max(...days));
   deadline.setHours(0, 0, 0, 0);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return today > deadline;
+  return uaeToday() > deadline;
 };
 
 export default function LastMinuteBookingForm() {
@@ -222,7 +228,7 @@ export default function LastMinuteBookingForm() {
   // render it as "Contact: <value>/<agentName>". The input is ADMIN-only.
   const [bookingDoneFor, setBookingDoneFor] = useState("");
   const isAdmin =
-    String(localStorage.getItem("currentActiveRole") || "").toUpperCase() ===
+    String(sessionStorage.getItem("currentActiveRole") || "").toUpperCase() ===
     "ADMIN";
 
   // Client location snapshot for the booking-history audit trail, resolved
@@ -401,15 +407,19 @@ export default function LastMinuteBookingForm() {
     if (!cinRaw) return null;
     const cin = new Date(cinRaw);
     if (isNaN(cin.getTime())) return null;
+    const days = (ctx?.room?.cancellationPolicies || [])
+      .map((p) => Number(p?.daysBeforeArrival))
+      .filter((n) => Number.isFinite(n));
     const deadline = new Date(cin);
+    if (days.length > 0) {
+      deadline.setDate(deadline.getDate() - Math.max(...days));
+    }
     deadline.setHours(0, 0, 0, 0);
     return deadline;
   })();
   const isOutsideDeadline = (() => {
     if (!cancellationDeadline) return false;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    return today > cancellationDeadline;
+    return uaeToday() > cancellationDeadline;
   })();
   // The voucher-choice flag sent to the backend: forced for the auto cases,
   // otherwise driven by the selected radio.
@@ -556,7 +566,7 @@ export default function LastMinuteBookingForm() {
       try {
         setSubmitting(true);
         const statusResponse = await axiosInstance.get(
-          `/api/payment/ccavenue/status/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/status/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         if (statusResponse.data?.status !== "SUCCESS") {
           toast.error(
@@ -566,7 +576,7 @@ export default function LastMinuteBookingForm() {
           return;
         }
         const res = await axiosInstance.post(
-          `/api/payment/ccavenue/finalize-lastminute/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/finalize-lastminute/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         if (res.data?.success) {
           toast.success(
@@ -809,11 +819,11 @@ export default function LastMinuteBookingForm() {
 
     const agentId =
       (ctx?.agentId && String(ctx.agentId)) ||
-      localStorage.getItem("userId") ||
-      localStorage.getItem("agentId") ||
+      sessionStorage.getItem("userId") ||
+      sessionStorage.getItem("agentId") ||
       "0";
     const createdByRole =
-      localStorage.getItem("currentActiveRole") || "agent";
+      sessionStorage.getItem("currentActiveRole") || "agent";
 
     // Primary Guest Details card is hidden — derive customer from
     // the Lead-marked guest in the Guest Details grid above. Email
@@ -1489,11 +1499,9 @@ export default function LastMinuteBookingForm() {
                             ⭐ {hotel.starRating} Star
                           </Badge>
                         )}
-                        {isNonRefundableRoom ? (
-                          <Badge bg="danger">Non-Refundable</Badge>
-                        ) : (
-                          <Badge bg="success">Flexible</Badge>
-                        )}
+                        <RefundBadge
+                          label={isNonRefundableRoom ? REFUND_NON_REFUNDABLE : REFUND_FLEXIBLE}
+                        />
                         {room.rateCode && (
                           <Badge bg="secondary">{room.rateCode}</Badge>
                         )}
@@ -1956,7 +1964,7 @@ export default function LastMinuteBookingForm() {
                         className="badge bg-danger"
                         style={{ fontSize: "0.7rem" }}
                       >
-                        Non-refundable
+                        {refundLabelText(REFUND_NON_REFUNDABLE)}
                       </span>
                     </p>
                     <p
@@ -1980,7 +1988,7 @@ export default function LastMinuteBookingForm() {
                             month: "short",
                             year: "numeric",
                           })}
-                          , 02:00 PM (UAE)
+                          , 11:59 PM (UAE)
                         </span>
                         {isOutsideDeadline ? (
                           <span

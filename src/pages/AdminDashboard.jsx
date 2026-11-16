@@ -6,7 +6,7 @@ import RegionalClock from '../components/RegionalClock';
 import LineChart from '../components/LineChart';
 import BarChart from '../components/BarChart';
 import axiosInstance from '../components/AxiosInstance';
-import { Icon, formatNumber } from './dashboardSkin';
+import { Icon, formatNumber, DashboardFooter } from './dashboardSkin';
 import { Collapse } from 'react-bootstrap';
 import { FaChartLine, FaChevronDown } from 'react-icons/fa';
 import '../styles/AdminDashboardModern.css';
@@ -107,6 +107,25 @@ export default function AdminDashboard() {
   const navigate = useNavigate();
   const [stat, setStat] = useState(DEFAULT_DASHBOARD);
   const [loading, setLoading] = useState(true);
+  // Revenue visibility gate: per ops request only super-admins may see the
+  // Total Revenue KPI (and its "By location" breakdown). Admin / MyAdmin /
+  // Staff / Sales / any other role must not see it. currentActiveRole is
+  // the same source of truth the TopBar + BookingDetailedView already use.
+  // Multi-role logins that haven't picked an active role fall back to the
+  // list on `userRole`, so a super-admin who also carries other roles is
+  // still recognised. Backend endpoints continue to enforce their own
+  // access rules — this is a display-only gate.
+  const isSuperAdminUser = (() => {
+    const active = (sessionStorage.getItem('currentActiveRole') || '')
+      .trim()
+      .toLowerCase();
+    if (active) return active === 'super_admin';
+    const stored = (sessionStorage.getItem('userRole') || '')
+      .split(',')
+      .map((r) => r.trim().toLowerCase())
+      .filter(Boolean);
+    return stored.includes('super_admin');
+  })();
   // Analytics charts are collapsed by default to save vertical space.
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   // Admin-only Unbooked Opportunities tile — reads the aggregate
@@ -121,7 +140,7 @@ export default function AdminDashboard() {
   useEffect(() => {
     const init = async () => {
       try {
-        const userName = localStorage.getItem('UserName') ?? sessionStorage.getItem('UserName');
+        const userName = sessionStorage.getItem('UserName');
         if (userName) axiosInstance.get(`/api/personalProfile/${userName}`).catch(() => {});
         const res = await axiosInstance.get('/api/dashboard/stats');
         if (res.data && typeof res.data === 'object') setStat((p) => ({ ...p, ...res.data }));
@@ -192,7 +211,7 @@ export default function AdminDashboard() {
     { label: 'Transfer',           icon: 'transfer', to: '/new-booking/cab',                  primary: true },
     { label: 'Tours & Activities', icon: 'tour',     to: '/new-booking/tours-and-activities', primary: true },
     { label: 'Agent Account',      icon: 'account',  to: '/incentive/config',                 primary: true },
-    { label: 'Flight',             icon: 'flight',   to: '/new-booking/flight',               primary: true },
+    // { label: 'Flight',             icon: 'flight',   to: '/new-booking/flight',               primary: true },
   ];
 
   return (
@@ -235,15 +254,26 @@ export default function AdminDashboard() {
             <p className="adm-section-label">Performance</p>
             {loading ? (
               <>
-                <div className="adm-kpis">{[...Array(4)].map((_, i) => <div key={i} className="adm-skel" />)}</div>
+                {/* Match the skeleton count to what will actually render —
+                    non-super-admin loses one card (Total Revenue), so the
+                    shimmer row shows 3 instead of 4 to avoid a visible
+                    jump when data arrives. */}
+                <div className="adm-kpis">{[...Array(isSuperAdminUser ? 4 : 3)].map((_, i) => <div key={i} className="adm-skel" />)}</div>
                 <div className="adm-kpis-wide">{[...Array(2)].map((_, i) => <div key={i} className="adm-skel" />)}</div>
               </>
             ) : (
               <>
-                {/* four uniform KPI cards */}
+                {/* KPI cards. Total Revenue is gated to super-admin only —
+                    the row keeps its 4-column layout at desktop widths; when
+                    the card is hidden the remaining three cards flow to the
+                    left and the trailing grid cell stays empty. Responsive
+                    breakpoints (repeat(2,1fr) at ≤1100px, single column at
+                    ≤480px) continue to apply via the .adm-kpis rules. */}
                 <div className="adm-kpis">
+                  {isSuperAdminUser && (
                   <Kpi icon="account" label="Total Revenue" value={`AED ${formatNumber(stat.totalRevenue)}`}
                        dropdown={<AdmDropdown label="By location" grouped={revenueByLocation} fmt={(v) => `AED ${formatNumber(v)}`} />} />
+                  )}
                   <Kpi icon="agent" label="Active Agents" value={formatNumber(stat.totalActiveAgents)} slate
                        dropdown={<AdmDropdown label="By location" grouped={agentsByLocation} />} />
                   <Kpi icon="booking" label="Today's Bookings" value={formatNumber(stat.todayBookings)} slate />
@@ -294,54 +324,8 @@ export default function AdminDashboard() {
             )}
           </section>
 
-          {/* ── Dashboard area · charts (collapsible "Analytics") ── */}
-          <section>
-            {/* Prominent, full-width clickable accordion header. The whole bar
-                toggles the charts; the circular chevron flips on expand.
-                Collapsed by default to save space. */}
-            <button
-              type="button"
-              className="adm-analytics-toggle"
-              onClick={() => setAnalyticsOpen((o) => !o)}
-              aria-expanded={analyticsOpen}
-              aria-controls="adm-analytics-panel"
-            >
-              <span className="adm-acc-icon" aria-hidden="true">
-                <FaChartLine />
-              </span>
-              <span className="adm-acc-text">
-                <span className="adm-acc-title">Analytics</span>
-                <span className="adm-acc-sub">
-                  Bookings over time &amp; revenue trend
-                </span>
-              </span>
-              <span className="adm-acc-chev" aria-hidden="true">
-                <FaChevronDown />
-              </span>
-            </button>
-            <Collapse in={analyticsOpen}>
-              <div id="adm-analytics-panel" className="adm-analytics-panel">
-                <div className="adm-charts">
-                  <div className="adm-card">
-                    <div className="adm-card-head">
-                      <span className="adm-dot" style={{ background: '#EC0B43' }} />
-                      <h3 className="adm-card-title">Bookings over time</h3>
-                      <span className="adm-badge">Last 5 days</span>
-                    </div>
-                    <LineChart labels={bookingsLabels} data={bookingsData} />
-                  </div>
-                  <div className="adm-card">
-                    <div className="adm-card-head">
-                      <span className="adm-dot" style={{ background: '#2F3E53' }} />
-                      <h3 className="adm-card-title">Revenue trend</h3>
-                      <span className="adm-badge">Last 5 days</span>
-                    </div>
-                    <BarChart labels={bookingsLabels} data={revenueData} />
-                  </div>
-                </div>
-              </div>
-            </Collapse>
-          </section>
+          {/* Analytics section hidden by request. Code retained via git
+              history — restore this block to bring it back. */}
 
           {/* ── Listing section · agents table ── */}
           <section>
@@ -386,10 +370,11 @@ export default function AdminDashboard() {
         </main>
       </div>
 
-      <footer className="adm-foot">
-        <span>© {new Date().getFullYear()} <strong>Globosoft</strong>. All rights reserved.</span>
-        <span>Admin Dashboard</span>
-      </footer>
+      {/* tone="brand": this band is the orange #EC0B43, so both marks use
+          their white cuts — the red wordmark would barely read on it. */}
+      {/* Shared with every other dashboard — see DashboardFooter. className
+          keeps this shell's own orange band. */}
+      <DashboardFooter className="adm-foot" />
     </div>
   );
 }

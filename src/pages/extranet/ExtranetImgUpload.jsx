@@ -35,7 +35,7 @@ const ExtranetImgUpload = () => {
 
   const fetchHotelId = useCallback(async () => {
     try {
-      const userName = localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+      const userName = sessionStorage.getItem("UserName");
       if (userName) {
         const response = await axiosInstance.get(`/api/personalProfile/${userName}`);
         if (response.data && response.data.id) {

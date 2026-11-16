@@ -27,8 +27,10 @@ import axiosInstance from "../../components/AxiosInstance";
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/TopBar";
 import { toast } from "react-hot-toast";
+import RoomCountSummary, { countRoomTypes } from "../../components/RoomCountSummary";
 import "../../styles/HotelBookingListModern.css";
 import DashboardRedirections from "../../components/DashboardRedirections";
+import { getCurrentActiveRole } from "../../utils/authSession";
 
 const PER_PAGE_OPTIONS = [10, 25, 50, 100];
 
@@ -53,6 +55,7 @@ const COLUMN_WIDTHS = {
   // Slightly trimmed to fund the wider Payment Status + Notification
   // columns below. Hotel names still wrap cleanly at word boundary.
   bookingDetails: "210px",
+  noOfRooms: "120px",
   deadlineDate: "105px",
   paymentMode: "110px",
   // Widened so "Payment Pending" stays on one line.
@@ -206,6 +209,16 @@ const getGuestNames = (booking) => {
   return names;
 };
 
+// No. of Rooms column — one `rooms[]` entry per booked room, grouped by
+// category. Falls back to the stored `noOfRooms` when no room rows exist.
+const getRoomSummary = (booking) => {
+  const rooms = Array.isArray(booking?.rooms) ? booking.rooms : [];
+  return {
+    total: rooms.length || booking?.noOfRooms || 0,
+    lines: countRoomTypes(rooms, (r) => r.roomCategory),
+  };
+};
+
 // "dd/mm/yyyy" — same shape HotelBookingList uses in the table cells.
 const formatShortDate = (dateString) => {
   if (!dateString) return "";
@@ -234,14 +247,14 @@ export default function DayStayBookingList() {
   // Reads currentActiveRole first (multi-role logins), then falls back to
   // userRole (single-role logins).
   const [role, setRole] = useState(() => {
-    return localStorage.getItem("currentActiveRole")?.toLowerCase() || null;
+    return sessionStorage.getItem("currentActiveRole")?.toLowerCase() || null;
   });
   useEffect(() => {
-    const storedRole = localStorage.getItem("currentActiveRole")?.toLowerCase();
+    const storedRole = sessionStorage.getItem("currentActiveRole")?.toLowerCase();
     if (storedRole && storedRole !== role) {
       setRole(storedRole);
     } else if (!storedRole) {
-      const userRoles = (localStorage.getItem("userRole") || "")
+      const userRoles = (sessionStorage.getItem("userRole") || "")
         .toLowerCase()
         .split(",");
       if (userRoles.includes("agent")) setRole("agent");
@@ -306,7 +319,28 @@ export default function DayStayBookingList() {
     try {
       setLoading(true);
       const res = await axiosInstance.get("/api/day-stay-booking");
-      setBookings(Array.isArray(res.data) ? res.data : []);
+      const dayStayRows = Array.isArray(res.data) ? res.data : [];
+      // Supplier hotels booked from the Day Stay page live in hotel_booking, so
+      // they come from their own endpoint (empty unless that feature is on).
+      // If that call fails the day-stay bookings still show, exactly as before.
+      let supplierRows = [];
+      try {
+        const supplierRes = await axiosInstance.get(
+          "/api/day-stay-booking/supplier-bookings",
+        );
+        if (Array.isArray(supplierRes.data)) supplierRows = supplierRes.data;
+      } catch (err) {
+        console.warn("Could not load Day Stay supplier bookings.", err);
+      }
+      setBookings(
+        supplierRows.length === 0
+          ? dayStayRows
+          : [...dayStayRows, ...supplierRows].sort(
+              (a, b) =>
+                new Date(b.createdAt || b.bookingDate || 0) -
+                new Date(a.createdAt || a.bookingDate || 0),
+            ),
+      );
     } catch {
       toast.error("Failed to load Day Stay bookings");
       setBookings([]);
@@ -318,6 +352,18 @@ export default function DayStayBookingList() {
   useEffect(() => {
     fetchBookings();
   }, []);
+
+  // A supplier booking opens the standard hotel booking page, which cancels with
+  // the supplier. A day-stay booking opens its own page, as always.
+  const openBookingDetails = (b) => {
+    if (b.source === "API") {
+      navigate(`/booking-details/hotel-booking/${b.hotelBookingId}`);
+      return;
+    }
+    navigate(`/booking-details/day-stay-booking/${b.id}`, {
+      state: { booking: b },
+    });
+  };
 
   // Apply search + status + time-period + check-in-date filters in one pass.
   const filteredBookings = useMemo(() => {
@@ -451,7 +497,7 @@ export default function DayStayBookingList() {
             <div className="mb-3">
               <Button
                 variant="outline-secondary"
-                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
                 className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
               >
                 <FaArrowLeft />
@@ -716,6 +762,15 @@ export default function DayStayBookingList() {
                             style={{
                               ...baseHeaderStyle,
                               textAlign: "center",
+                              width: COLUMN_WIDTHS.noOfRooms,
+                            }}
+                          >
+                            No. of Rooms
+                          </th>
+                          <th
+                            style={{
+                              ...baseHeaderStyle,
+                              textAlign: "center",
                               width: COLUMN_WIDTHS.deadlineDate,
                             }}
                           >
@@ -766,7 +821,7 @@ export default function DayStayBookingList() {
                         {pageBookings.length === 0 ? (
                           <tr>
                             <td
-                              colSpan={role === "admin" ? 11 : 10}
+                              colSpan={role === "admin" ? 13 : 12}
                               className="text-center py-5 text-muted"
                               style={{
                                 border: "1px solid #dee2e6",
@@ -989,6 +1044,15 @@ export default function DayStayBookingList() {
                                   </div>
                                 </td>
                                 <td
+                                  style={{
+                                    ...baseCellStyle,
+                                    textAlign: "center",
+                                    width: COLUMN_WIDTHS.noOfRooms,
+                                  }}
+                                >
+                                  <RoomCountSummary {...getRoomSummary(b)} />
+                                </td>
+                                <td
                                   className="text-muted"
                                   style={{
                                     ...baseCellStyle,
@@ -1154,22 +1218,14 @@ export default function DayStayBookingList() {
                                         color: "#007bff",
                                         cursor: "pointer",
                                       }}
-                                      onClick={() =>
-                                        navigate(
-                                          `/booking-details/day-stay-booking/${b.id}`,
-                                          { state: { booking: b } },
-                                        )
-                                      }
+                                      onClick={() => openBookingDetails(b)}
                                       onKeyDown={(e) => {
                                         if (
                                           e.key === "Enter" ||
                                           e.key === " "
                                         ) {
                                           e.preventDefault();
-                                          navigate(
-                                            `/booking-details/day-stay-booking/${b.id}`,
-                                            { state: { booking: b } },
-                                          );
+                                          openBookingDetails(b);
                                         }
                                       }}
                                     />

@@ -85,7 +85,6 @@ export default function SchefferDriverBookingNotesPage() {
     try {
       setSaving(true);
       const createdBy =
-        localStorage.getItem("UserName") ||
         sessionStorage.getItem("UserName") ||
         "unknown";
       const res = await axiosInstance.post(`/api/scheffer/${id}/notes`, {

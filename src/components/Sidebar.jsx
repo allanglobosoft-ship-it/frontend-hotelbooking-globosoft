@@ -32,8 +32,10 @@ import axiosInstance from "./AxiosInstance";
 // import, the three blocks marked "Booking-code search (hidden)" below, and
 // the matching block at the end of Sidebar.css.
 // import BookingCodeSearch from "./BookingCodeSearch";
+import { isAgentComingSoon, COMING_SOON_TITLE } from "../config/agentComingSoon";
 import { isPartnerRole } from "../config/partnerFeatures";
 import PartnerSidebar from "./PartnerSidebar";
+import { getUserRole, getCurrentActiveRole, setCurrentActiveRole, getUserName } from "../utils/authSession";
 
 
 let labelForDashboard = " ";
@@ -41,9 +43,11 @@ let labelForDashboard = " ";
 /**
  * Menus whose flyout opens UPWARDS (`.submenu-up` — bottom anchored to the top
  * of the row) because they sit low enough in the sidebar that a downward panel
- * would run off the bottom of the screen. "Report" belongs here rather than in
- * the `submenu-center` group: near the foot of the admin menu its tall panel
- * was being cut off by the viewport.
+ * would run off the bottom of the screen.
+ *
+ * "Report" belongs here rather than in the `submenu-center` group: that variant
+ * anchors the panel at `top: 0` of its row, and with Report near the foot of
+ * the admin menu its 22rem panel was being cut off by the viewport.
  */
 const SUBMENU_UP = new Set([
   "Inhouse Accounts",
@@ -51,6 +55,58 @@ const SUBMENU_UP = new Set([
   "Marketing",
   "Report",
 ]);
+
+/**
+ * A New Booking submenu entry whose flow is not open to agents yet.
+ *
+ * Mirrors the AgentDashboard quick-action tile for the same route: greyed and
+ * non-clickable, "Coming soon…" tooltip, orange "Coming soon" pill (styles in
+ * custom.scss next to .submenu-link). Renders a span, not a Link, so there is
+ * nothing to navigate to — the unfinished page is never opened.
+ */
+function ComingSoonSubmenuItem({ label, color }) {
+  return (
+    <span
+      className="nav-link submenu-link is-coming-soon"
+      role="link"
+      aria-disabled="true"
+      title={COMING_SOON_TITLE}
+      onClick={(e) => e.preventDefault()}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+        padding: "8px 12px",
+        color,
+        textDecoration: "none",
+        cursor: "not-allowed",
+        fontWeight: 450,
+      }}
+    >
+      <span className="submenu-coming-label">{label}</span>
+      <span className="submenu-coming-badge" aria-hidden="true">
+        Coming soon
+      </span>
+    </span>
+  );
+}
+
+/**
+ * Pending-approval pill for an Approvals submenu entry (Hotel / Agent /
+ * Supplier / DMC). Styled by .submenu-pending-badge in custom.scss.
+ */
+function SubmenuPendingBadge({ count }) {
+  if (!count) return null;
+  return (
+    <span
+      className="ms-2 badge rounded-pill submenu-pending-badge"
+      title={`${count} pending approval${count === 1 ? "" : "s"}`}
+    >
+      {count}
+    </span>
+  );
+}
 
 export default function Sidebar() {
   const [show, setShow] = useState(false);
@@ -69,11 +125,18 @@ export default function Sidebar() {
    */
   const [hiddenCodes, setHiddenCodes] = useState(() => new Set());
   /**
-   * Combined count of PENDING hotel + agent self-registration requests.
-   * Shown as a red pill next to the Approvals menu label so admins see
-   * there's queue work without opening the menu. Only admins fetch it.
+   * PENDING self-registration counts per Approvals submenu entry, keyed by
+   * the child's menu code. The Approvals label shows their sum so admins
+   * see there's queue work without opening the menu; once expanded, each
+   * entry (Hotel / Agent / Supplier / DMC) shows its own share. Only admins
+   * fetch it.
    */
-  const [approvalsPendingCount, setApprovalsPendingCount] = useState(0);
+  const [approvalsPendingByCode, setApprovalsPendingByCode] = useState({});
+  // Entries hidden by super_admin are left out so the total always equals
+  // the sum of the counts visible in the expanded submenu.
+  const approvalsPendingCount = Object.entries(approvalsPendingByCode)
+    .filter(([code]) => !hiddenCodes.has(code))
+    .reduce((sum, [, n]) => sum + n, 0);
 
   // Desktop sidebar collapse (remembered across reloads). When collapsed the
   // <aside> is removed so the page content reclaims the space, and a small
@@ -89,7 +152,7 @@ export default function Sidebar() {
     });
   };
 
-  const storedRoles = (localStorage.getItem("userRole") || "")
+  const storedRoles = getUserRole()
     .split(",")
     .map((role) => role.trim().toLowerCase());
 
@@ -115,11 +178,20 @@ export default function Sidebar() {
     "/supplierDashboard": "supplier",
     "/dmcDashboard": "dmc",
   };
-  const pathRole = dashboardRoleByPath[pathname];
+  // Honour the dashboard's role only when this login actually holds it, so
+  // typing /adminDashboard cannot switch an agent into the admin menu.
+  // Super admin may still open the admin dashboard (it inherits admin).
+  const requestedPathRole = dashboardRoleByPath[pathname];
+  const pathRole =
+    requestedPathRole &&
+    (storedRoles.includes(requestedPathRole) ||
+      (requestedPathRole === "admin" && storedRoles.includes("super_admin")))
+      ? requestedPathRole
+      : undefined;
 
   const currentRole =
     pathRole ||
-    localStorage.getItem("currentActiveRole")?.toLowerCase() ||
+    getCurrentActiveRole().toLowerCase() ||
     storedRoles[0] ||
     "";
 
@@ -129,26 +201,28 @@ export default function Sidebar() {
   // not see the agent "Registration" menu — they can't create their own
   // sub-users / sub-agents. Only affects agent-role logins; every other role
   // is unchanged.
-  const loginUserName =
-    localStorage.getItem("UserName") || sessionStorage.getItem("UserName") || "";
+  const loginUserName = getUserName();
   const isSubAccountAgent =
     currentRole === "agent" && loginUserName.includes(".");
+
+  // New Booking flows that are "Coming soon" for AGENT logins (same set the
+  // AgentDashboard quick actions use — config/agentComingSoon.js). Admin,
+  // super_admin, staff and extranet keep the normal links.
+  const isComingSoonForRole = (child) =>
+    currentRole === "agent" && !!child?.to && isAgentComingSoon(child.to);
 
   // Re-sync the stored active role with the dashboard context so the
   // role-guarded routes (PrivateRoute roles=[...]) agree with the menu.
   useEffect(() => {
-    if (
-      pathRole &&
-      localStorage.getItem("currentActiveRole")?.toLowerCase() !== pathRole
-    ) {
-      localStorage.setItem("currentActiveRole", pathRole);
+    if (pathRole && getCurrentActiveRole().toLowerCase() !== pathRole) {
+      setCurrentActiveRole(pathRole);
     }
   }, [pathRole]);
 
   useEffect(() => {
     const fetchHotelId = async () => {
       try {
-        const userName = localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+        const userName = getUserName();
         if (userName && currentRole === "extranet") {
           const response = await axiosInstance.get(`/api/personalProfile/${userName}`);
           if (response.data && response.data.id) {
@@ -168,7 +242,7 @@ export default function Sidebar() {
   // also refreshes whenever this component remounts (route changes).
   useEffect(() => {
     if (currentRole !== "admin") {
-      setApprovalsPendingCount(0);
+      setApprovalsPendingByCode({});
       return;
     }
     let cancelled = false;
@@ -187,12 +261,13 @@ export default function Sidebar() {
             .catch(() => null),
         ]);
         if (cancelled) return;
-        const h = Number(hotelRes?.data?.count) || 0;
-        const a = Number(agentRes?.data?.count) || 0;
-        const p = Number(partnerRes?.data?.count) || 0;
-        setApprovalsPendingCount(h + a + p);
+        setApprovalsPendingByCode({
+          appr_hotel: Number(hotelRes?.data?.count) || 0,
+          appr_agent: Number(agentRes?.data?.count) || 0,
+          appr_partner: Number(partnerRes?.data?.count) || 0,
+        });
       } catch (_) {
-        if (!cancelled) setApprovalsPendingCount(0);
+        if (!cancelled) setApprovalsPendingByCode({});
       }
     })();
     return () => {
@@ -204,13 +279,15 @@ export default function Sidebar() {
   // change. Fail-open — any error keeps the full hardcoded menu visible,
   // so a network hiccup can never blank the sidebar. Applied via
   // roleAllows below (returns false when the item's code is in the set).
+  // Also re-fetched when the Assign Menu screen saves or resets a role
+  // ("sidebarHiddenMenusChanged"), so the change shows without a reload.
   useEffect(() => {
     if (!currentRole) {
       setHiddenCodes(new Set());
       return undefined;
     }
     let cancelled = false;
-    (async () => {
+    const loadHiddenCodes = async () => {
       try {
         const res = await axiosInstance.get("/api/sidebar/hidden-menus", {
           params: { role: currentRole },
@@ -221,9 +298,12 @@ export default function Sidebar() {
       } catch (_) {
         if (!cancelled) setHiddenCodes(new Set());
       }
-    })();
+    };
+    loadHiddenCodes();
+    window.addEventListener("sidebarHiddenMenusChanged", loadHiddenCodes);
     return () => {
       cancelled = true;
+      window.removeEventListener("sidebarHiddenMenusChanged", loadHiddenCodes);
     };
   }, [currentRole]);
 
@@ -319,7 +399,35 @@ export default function Sidebar() {
     labelForDashboard = "Hotel Dashboard";
   }
 
-  const items = [
+  const items = buildSidebarItems({ currentRole, hotelId, dashboardPath });
+
+  return renderSidebar({
+    items,
+    currentRole,
+    hiddenCodes,
+    isSubAccountAgent,
+    isComingSoonForRole,
+    openGroups,
+    setOpenGroups,
+    collapsed,
+    toggleCollapsed,
+    show,
+    handleClose,
+    sidebarRef,
+    offcanvasRef,
+    approvalsPendingByCode,
+    approvalsPendingCount,
+  });
+}
+
+/**
+ * The full, unfiltered sidebar menu. Kept outside the component so the
+ * Assign Menu screen reads the very same entries and role rules the sidebar
+ * renders (see sidebarMenuCodesForRole) instead of a copy that drifts.
+ * Add, rename or re-role menu entries here exactly as before.
+ */
+export function buildSidebarItems({ currentRole, hotelId, dashboardPath }) {
+  return [
     {
       code: "top_dashboard",
       label: labelForDashboard,
@@ -329,17 +437,22 @@ export default function Sidebar() {
     {
       // super_admin-only sidebar group that surfaces the identity-and-access
       // tools together: Roles (master), Login Logs (audit trail), Role
-      // Assign (attach roles to users). Kept above Manage Masters so it's
-      // the first stop after the dashboard.
+      // Assign (attach roles to users), Admin Management (CRUD on ADMIN
+      // logins and their company binding). Kept above Manage Masters so
+      // it's the first stop after the dashboard.
+      //
+      // "Admin Management" also appears under the "Access Control" group
+      // further down for discoverability from the API-access side. Both
+      // entries link to the same route (/super-admin/admins) — kept dual
+      // so the pre-existing Access Control layout is untouched.
       code: "top_user_management",
       label: "User Management",
       roles: ["super_admin"],
       children: [
         { label: "Roles",            to: "/masters/user-roles" },
         { label: "Login Logs",       to: "/user-management/login-logs" },
+        { label: "Activity Logs",    to: "/user-management/activity-logs" },
         { label: "Role Assign",      to: "/user-management/role-assign" },
-        // Same route as the "Access Control" entry further down; listed here
-        // too so admin logins can be managed from the identity group.
         { label: "Admin Management", to: "/super-admin/admins" },
       ],
     },
@@ -368,6 +481,10 @@ export default function Sidebar() {
         {
           label: "Location settings",
           children: [
+            // Country → City → Location manager: add a city under a chosen
+            // country, a location under a chosen city, and (soft) delete any
+            // of them. Feeds the Country / City / Location registration dropdowns.
+            { label: "Country / City / Location", to: "/masters/location-hierarchy" },
             { label: "Market Type", to: "/masters/market-type" },
             { label: "Region", to: "/masters/region" },
             { label: "Countries", to: "/masters/countries" },
@@ -507,6 +624,12 @@ export default function Sidebar() {
       code: "top_registration",
       label: "Registration",
       roles: ["admin"],
+      // Hidden from super_admin — the SUPER_ADMIN dashboard is a
+      // config/identity surface, not a place to onboard hotels / agents.
+      // Admin, staff and others still see this group unchanged. Applied
+      // via excludeRoles because roleAllows() otherwise inherits every
+      // admin-scoped menu for super_admin (see line 907).
+      excludeRoles: ["super_admin"],
       // "Agent Management" is an inline nested accordion (has its own
       // children[]) — the render code detects this and renders it as an
       // in-line accordion at this exact position, so it sits right after
@@ -532,7 +655,7 @@ export default function Sidebar() {
         { code: "reg_restaurants",   label: "Restaurants",                    to: "/restaurant/list" },
         { code: "reg_honeymoon",     label: "Honeymoon Packages",             to: "/honeymoon/list" },
         { code: "reg_ayurveda",      label: "Ayurveda",                       to: "/registration/ayurveda" },
-        { code: "reg_scheffer",      label: "Chauffer Driver and Limousine",  to: "/registration/schefferDriver" },
+        { code: "reg_scheffer",      label: "Chauffeur Driver and Limousine", to: "/registration/schefferDriver" },
         { code: "reg_package_addons", label: "Build Your Own Package Add-Ons", to: "/registration/package-addons" },
       ],
     },
@@ -552,6 +675,9 @@ export default function Sidebar() {
       code: "top_new_booking",
       label: "New Booking",
       roles: ["admin", "agent"],
+      // Hidden from super_admin — booking creation is an operational
+      // action, not a config surface. Admin and agent views unchanged.
+      excludeRoles: ["super_admin"],
       children: [
         { code: "nb_hotel",         label: "Hotel", to: "/new-booking/hotel" },
         { code: "nb_24hr",          label: "24 Hour", to: "/new-booking/hotel-24hr" },
@@ -584,11 +710,13 @@ export default function Sidebar() {
           to: "/new-booking/student",
         },
         {
+          code: "nb_senior_citizen",
          label: "Senior Citizen",
          to: "/new-booking/senior-citizen",
         },
         // Religious flow — same HotelSearch, destination locked to Mecca/Medina.
         {
+          code: "nb_religious",
           label: "Religious",
           to: "/new-booking/religious",
         },
@@ -610,6 +738,9 @@ export default function Sidebar() {
       code: "top_ai_insights",
       label: "AI Insights",
       roles: ["admin"],
+      // Hidden from super_admin — the AI dashboard is admin-facing
+      // operational analytics; SUPER_ADMIN uses config/access screens.
+      excludeRoles: ["super_admin"],
       children: [
         { label: "Overview", to: "/ai" },
         { label: "Demand & ADR Forecast", to: "/ai/demand-forecast" },
@@ -625,6 +756,9 @@ export default function Sidebar() {
       code: "top_booking_list",
       label: "Booking List",
       roles: ["admin", "agent", "staff"],
+      // Hidden from super_admin — booking browsing/editing is an
+      // operational task. Admin / agent / staff views unchanged.
+      excludeRoles: ["super_admin"],
       children: [
         // Unified list combining all booking types below into one view
         // (new, additive page — every other entry here is unchanged).
@@ -659,36 +793,44 @@ export default function Sidebar() {
         //   to: "/booking-details/quotation-list-list",
         // },
         {
+          code: "bl_offline",
           label: "Offline",
           to: "/booking-details/offline-booking-list",
           roles: ["admin", "agent"],
         },
         {
+          code: "bl_restaurant",
           label: "Restaurants",
           to: "/booking-details/restaurant-booking-list",
         },
         {
+          code: "bl_honeymoon",
           label: "Honeymoon Packages",
           to: "/booking-details/honeymoon-booking-list",
         },
         // Meet & Space booking list — view + cancel from this page
         {
+          code: "bl_meet_space",
           label: "Meet & Space",
           to: "/booking-details/meet-and-space-booking-list",
         },
         {
+          code: "bl_gov",
           label: "Govt / Airlines",
           to: "/booking-details/gov-employee-booking-list",
         },
         {
+          code: "bl_ayurveda",
           label: "Ayurveda",
           to: "/booking-details/ayurveda-booking-list",
         },
         {
+          code: "bl_student",
           label: "Student",
           to: "/booking-details/student-booking-list",
         },
         {
+          code: "bl_senior_citizen",
           label: "Senior Citizen",
           to: "/booking-details/senior-citizen-booking-list",
         },
@@ -699,6 +841,9 @@ export default function Sidebar() {
       label: "Invoice",
       to: "/invoice",
       roles: ["admin", "agent"],
+      // Hidden from super_admin — invoice generation belongs to the
+      // admin/agent finance flow. Admin and agent views unchanged.
+      excludeRoles: ["super_admin"],
     },
     {
       code: "top_inhouse_accounts",
@@ -711,10 +856,16 @@ export default function Sidebar() {
         },
         {
           // Statement of every credit movement — bookings debit, cancellations
-          // and payments credit. Inherits the parent's roles; an agent login is
-          // scoped to its own account server-side.
+          // and payments credit. Inherits the parent's ["admin", "agent"]
+          // roles; an agent login is scoped to its own account server-side.
           label: "Ledger",
           to: "/inhouse-accounts/ledger",
+        },
+        {
+          // Unlike the two above, admin only: the list covers every agent.
+          label: "Credit Exceptions",
+          to: "/inhouse-accounts/booking-credit-exceptions",
+          roles: ["admin"],
         },
         // {
         //   label: "Payment Gateway Transactions",
@@ -728,6 +879,23 @@ export default function Sidebar() {
         //   label: "Statement of Accounts offline",
         //   to: "/inhouse-accounts/statement-of-accounts-offline",
         // },
+      ],
+    },
+    {
+      // Finance's daily list of cancelled bookings whose refund is made by
+      // hand (today: hotel bookings paid by card through CC Avenue); resolve
+      // each within 2 working days. Staff only; super_admin inherits the
+      // admin entry. Both codes are seeded in the backend (MenuItemSeeder),
+      // so super_admin can hide them per role in Assign Menu.
+      code: "top_finance",
+      label: "Finance",
+      roles: ["admin", "staff"],
+      children: [
+        {
+          code: "fin_refund_review",
+          label: "Refund Review",
+          to: "/finance/refund-review",
+        },
       ],
     },
     // {
@@ -752,14 +920,24 @@ export default function Sidebar() {
       label: "Report",
       to: "/report",
       roles: ["admin", "agent"],
+      // Hidden from super_admin — operational reporting is admin-facing.
+      // Admin and agent views unchanged; the notes below about agent
+      // scoping apply to the admin path only.
+      excludeRoles: ["super_admin"],
+      // Agents see ONLY the three daily-sales reports here. Everything else is
+      // marked admin-only rather than the menu being split in two, so the list
+      // stays one definition — and roleAllows() lets super_admin through any
+      // roles:["admin"] entry, so their Report menu is unchanged.
       children: [
         {
           label: "Booking",
           to: "/report/booking",
+          roles: ["admin"],
         },
         {
           label: "Cancellation",
           to: "/report/cancellation",
+          roles: ["admin"],
         },
         // {
         //   label: "Inventory",
@@ -768,58 +946,73 @@ export default function Sidebar() {
         {
           label: "Hotel Wise",
           to: "/report/hotel-wise",
+          roles: ["admin"],
         },
         {
           label: "Accounts",
           to: "/report/accounts",
+          roles: ["admin"],
         },
         {
           label: "Day Wise",
           to: "/report/day-wise",
+          roles: ["admin"],
         },
         {
           label: "Monthly Wise",
           to: "/report/monthly-wise",
+          roles: ["admin"],
         },
         {
           label: "Comparison",
           to: "/report/comparison",
+          roles: ["admin"],
         },
         {
           label: "Agent Wise",
           to: "/report/agent-wise",
+          roles: ["admin"],
         },
         {
           label: "Contract Expiry",
           to: "/report/contract-expiry",
+          roles: ["admin"],
         },
         {
           label: "Contract Rate",
           to: "/report/contract-rate",
+          roles: ["admin"],
         },
         {
           label: "User Report",
           to: "/report/user-report",
+          roles: ["admin"],
         },
         {
           label: "Stop Sale",
           to: "/report/stop-sale",
+          roles: ["admin"],
         },
         {
           label: "User Logins",
           to: "/report/user-logins",
+          roles: ["admin"],
         },
+        // ── Daily sales reports (shared: admin + agent) ──
         {
           label: "Offline Daily Sales",
           to: "/report/offline-daily-sales",
+          roles: ["admin", "agent"],
         },
         {
           label: "Online Daily Sales",
           to: "/report/online-daily-sales",
+          roles: ["admin", "agent"],
         },
         {
           label: "Time Limit Daily Sales",
           to: "/report/time-limit-daily-sales",
+          roles: ["admin", "agent"],
         },
         {
           label: "Hotel Booking History",
@@ -900,8 +1093,8 @@ export default function Sidebar() {
 
 
   ];
+}
 
-  // Filter menu based on allowed roles
   // Filter menu based on allowed roles. Child items (and items inside
   // groups) may also carry a `roles` key — those without one stay visible
   // to every role that can see the parent.
@@ -914,6 +1107,66 @@ export default function Sidebar() {
   // screens where admin's context (their own company) makes sense but
   // super_admin's "sees everything" model doesn't (e.g., the per-company
   // API access page super_admin governs via a different super_admin screen).
+export function sidebarEntryAllowed(entry, role) {
+  if (!entry.roles) return true;
+  if (Array.isArray(entry.excludeRoles) && entry.excludeRoles.includes(role)) return false;
+  if (entry.roles.includes(role)) return true;
+  if (role === "super_admin" && entry.roles.includes("admin")) return true;
+  return false;
+}
+
+const hasEntries = (entry) =>
+  (Array.isArray(entry.children) && entry.children.length > 0) ||
+  (Array.isArray(entry.groups) && entry.groups.length > 0);
+
+/**
+ * Codes of the menu entries `role` sees before any super_admin override —
+ * the entries the Assign Menu screen offers for that role. Walks the same
+ * items with the same rules as the rendered sidebar (role filter, and a
+ * group left with nothing to open is not shown). Per-login rules such as
+ * the sub-account Registration rule are ignored: the screen assigns per
+ * role, not per user.
+ */
+export function sidebarMenuCodesForRole(role) {
+  const codes = new Set();
+  const visit = (entries) => {
+    (entries || []).forEach((entry) => {
+      if (!sidebarEntryAllowed(entry, role)) return;
+      const kids = [
+        ...(Array.isArray(entry.children) ? entry.children : []),
+        ...(Array.isArray(entry.groups)
+          ? entry.groups.flatMap((group) => group.children || [])
+          : []),
+      ];
+      const allowedKids = kids.filter((kid) => sidebarEntryAllowed(kid, role));
+      if (hasEntries(entry) && allowedKids.length === 0 && !entry.to) return;
+      if (entry.code) codes.add(entry.code);
+      visit(allowedKids);
+    });
+  };
+  visit(buildSidebarItems({ currentRole: role, hotelId: null, dashboardPath: "/" }));
+  return codes;
+}
+
+// Second half of <Sidebar />: filters the menu for the active role and
+// renders it. A plain function (no hooks) called from Sidebar's render.
+function renderSidebar({
+  items,
+  currentRole,
+  hiddenCodes,
+  isSubAccountAgent,
+  isComingSoonForRole,
+  openGroups,
+  setOpenGroups,
+  collapsed,
+  toggleCollapsed,
+  show,
+  handleClose,
+  sidebarRef,
+  offcanvasRef,
+  approvalsPendingByCode,
+  approvalsPendingCount,
+}) {
   const roleAllows = (entry) => {
     // Super_admin's per-role visibility overlay — an entry whose stable
     // {@code code} appears in the hidden-set is dropped no matter what
@@ -921,11 +1174,7 @@ export default function Sidebar() {
     // eligible for hiding; sub-menu leaves without a code stay visible
     // as before (they're gated only by their parent's visibility today).
     if (entry.code && hiddenCodes.has(entry.code)) return false;
-    if (!entry.roles) return true;
-    if (Array.isArray(entry.excludeRoles) && entry.excludeRoles.includes(currentRole)) return false;
-    if (entry.roles.includes(currentRole)) return true;
-    if (currentRole === "super_admin" && entry.roles.includes("admin")) return true;
-    return false;
+    return sidebarEntryAllowed(entry, currentRole);
   };
 
   const filteredItems = items
@@ -950,8 +1199,13 @@ export default function Sidebar() {
             !Array.isArray(group.children) || group.children.length > 0,
         );
     }
+    // A group whose every entry was filtered out (e.g. super_admin hid all
+    // of Approvals' children on Assign Menu) has nothing left to open and
+    // no page of its own — without this it rendered as a dead "#" link.
+    if (hasEntries(item) && !hasEntries(next) && !item.to) return null;
     return next;
-  });
+  })
+    .filter(Boolean);
 
   // Booking-code search (hidden) — pinned above the menu. Same audience as
   // Booking List (super_admin inherits it via roleAllows) and hideable per
@@ -1071,10 +1325,14 @@ export default function Sidebar() {
 
   return (
     <>
-      {/* Sidebar for large screens */}
+      {/* Sidebar for large screens.
+          d-lg-flex, not d-lg-block: Bootstrap's display utilities carry
+          !important, so d-lg-block was silently beating the `display: flex`
+          that .sidebar has always declared. The column layout is what lets the
+          menu take the scrolling and the Globosoft mark stay pinned below it. */}
       {!collapsed && (
       <aside
-        className="sidebar d-none d-lg-block"
+        className="sidebar d-none d-lg-flex"
         ref={sidebarRef}
         style={{
           position: "sticky",
@@ -1130,7 +1388,25 @@ export default function Sidebar() {
             />
           </div>
         )} */}
-        <Nav className="flex-column" style={{ paddingTop: 6 }}>
+        {/* Two constraints here, both learned the hard way:
+
+            1. NO `overflow` value. The submenus are flyout panels
+               (`position: absolute; left: 100%`, see
+               .nav-item-has-children .submenu) that sit entirely outside this
+               element's right edge; any overflow but `visible` turns this into
+               a clipping container and cuts them off on click.
+            2. `flex: 0 0 auto` + `nowrap`, never `1 1 auto`. Bootstrap's .nav
+               is `flex-wrap: wrap`, so the moment this box is allowed to
+               shrink below its content the last menu items WRAP INTO A SECOND
+               COLUMN beside the sidebar and float over the page. Letting the
+               box keep its content height is what keeps the menu one column.
+
+            .sidebar-globo below still pins to the bottom via margin-top:auto
+            whenever the menu leaves room for it. */}
+        <Nav
+          className="flex-column"
+          style={{ paddingTop: 6, flex: "0 0 auto", flexWrap: "nowrap" }}
+        >
           {filteredItems.map((item) => {
             const hasChildren =
               Array.isArray(item.children) && item.children.length > 0;
@@ -1206,7 +1482,24 @@ export default function Sidebar() {
                     }}
                   >
                     {hasChildren &&
-                      item.children.map((child) => {
+                      // Sort the "New Booking" submenu so active flows show
+                      // above "Coming soon" ones for agent logins — matches
+                      // the AgentDashboard Quick Actions ordering the agent
+                      // now sees. Stable sort preserves the declared order
+                      // WITHIN each group (Hotel → 24 Hour → Last Minute …
+                      // among active, then Long Stay → Day Stay → … among
+                      // coming-soon). Gated on label + agent role so every
+                      // other menu (Booking List, Manage Masters, etc.) and
+                      // every non-agent role keeps its original order — no
+                      // impact on existing flows.
+                      (item.label === "New Booking" && currentRole === "agent"
+                        ? [...item.children].sort(
+                            (a, b) =>
+                              Number(isComingSoonForRole(a)) -
+                              Number(isComingSoonForRole(b))
+                          )
+                        : item.children
+                      ).map((child) => {
                         // Inline nested group: a child with its own children[]
                         // renders as an in-line accordion so it can sit at any
                         // position in the flat list (e.g. "Agent Management"
@@ -1250,6 +1543,15 @@ export default function Sidebar() {
                             </div>
                           );
                         }
+                        if (isComingSoonForRole(child)) {
+                          return (
+                            <ComingSoonSubmenuItem
+                              key={`${item.label}-${child.label}`}
+                              label={child.label}
+                              color="var(--color-secondary, #111827)"
+                            />
+                          );
+                        }
                         return (
                           <Nav.Link
                             as={Link}
@@ -1266,6 +1568,9 @@ export default function Sidebar() {
                             }}
                           >
                             {child.label}
+                            <SubmenuPendingBadge
+                              count={approvalsPendingByCode[child.code]}
+                            />
                           </Nav.Link>
                         );
                       })}
@@ -1362,6 +1667,15 @@ export default function Sidebar() {
             );
           })}
         </Nav>
+
+        {/* Pinned to the foot of the sidebar. Red cut, because this column is
+            white — the white lockups would disappear here. */}
+        <div className="sidebar-globo">
+          <img
+            src={`${process.env.PUBLIC_URL}/images/globo-red-logo-with-text.png`}
+            alt="Globosoft"
+          />
+        </div>
       </aside>
       )}
 
@@ -1481,6 +1795,15 @@ export default function Sidebar() {
                               </div>
                             );
                           }
+                          if (isComingSoonForRole(child)) {
+                            return (
+                              <ComingSoonSubmenuItem
+                                key={`${item.label}-mobile-${child.label}`}
+                                label={child.label}
+                                color="#111827"
+                              />
+                            );
+                          }
                           return (
                             <Nav.Link
                               as={Link}
@@ -1497,6 +1820,9 @@ export default function Sidebar() {
                               }}
                             >
                               {child.label}
+                              <SubmenuPendingBadge
+                                count={approvalsPendingByCode[child.code]}
+                              />
                             </Nav.Link>
                           );
                         })}

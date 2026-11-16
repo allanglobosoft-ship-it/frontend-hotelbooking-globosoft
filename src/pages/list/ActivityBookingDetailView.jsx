@@ -353,7 +353,6 @@ export default function ActivityBookingDetailView() {
     try {
       setSavingRemark(true);
       const createdBy =
-        localStorage.getItem("UserName") ||
         sessionStorage.getItem("UserName") ||
         "user";
       const response = await axiosInstance.post(

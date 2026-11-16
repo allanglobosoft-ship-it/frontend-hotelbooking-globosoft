@@ -38,10 +38,10 @@ const FlightBookingList = () => {
   const navigate = useNavigate();
 
   const [role] = useState(() =>
-    localStorage.getItem("currentActiveRole")?.toLowerCase() || null,
+    sessionStorage.getItem("currentActiveRole")?.toLowerCase() || null,
   );
   const [userId] = useState(() => {
-    const stored = localStorage.getItem("userId");
+    const stored = sessionStorage.getItem("userId");
     return stored && stored !== "null" ? stored : null;
   });
 

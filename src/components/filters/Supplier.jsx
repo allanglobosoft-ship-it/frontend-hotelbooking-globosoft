@@ -2,18 +2,23 @@ import React, { useEffect, useState } from "react";
 import axiosInstance from "../AxiosInstance";
 import { Form } from "react-bootstrap";
 import chevronStyle from "./dropdownChevron";
+import { isAgentLogin } from "../../utils/supplierDisplay";
 
 export default function Supplier({ value, onChange }) {
   const [suppliers, setSuppliers] = useState([]);
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
+  // Agents (and their sub-agents / sub-users) never see supplier names, so
+  // the filter neither loads the supplier list nor renders for them.
+  const hidden = isAgentLogin();
 
   useEffect(() => {
+    if (hidden) return;
     axiosInstance
       .get("/api/external-apis/list")
       .then((res) => setSuppliers(res.data || []))
       .catch((err) => console.error("Failed to fetch suppliers:", err));
-  }, []);
+  }, [hidden]);
 
   const selectedOption = suppliers.find(
     (opt) => String(opt.id) === String(value)
@@ -24,6 +29,8 @@ export default function Supplier({ value, onChange }) {
         s.apiCode?.toLowerCase().includes(searchTerm.toLowerCase())
       )
     : suppliers;
+
+  if (hidden) return null;
 
   return (
     <Form.Group>

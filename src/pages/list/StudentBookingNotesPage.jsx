@@ -81,7 +81,6 @@ export default function StudentBookingNotesPage() {
     try {
       setSaving(true);
       const createdBy =
-        localStorage.getItem("UserName") ||
         sessionStorage.getItem("UserName") ||
         "unknown";
       const res = await axiosInstance.post(`/api/student-booking/${id}/notes`, {

@@ -93,8 +93,7 @@ export default function AdminList() {
   // a button they cannot use. Falls back to sessionStorage the same way
   // Sidebar.jsx does, so the check works after a hard refresh too.
   const selfUsername = useMemo(() => (
-    (localStorage.getItem("UserName") ||
-      sessionStorage.getItem("UserName") ||
+    (sessionStorage.getItem("UserName") ||
       "").trim().toLowerCase()
   ), []);
   const isSelfRow = (row) =>
@@ -256,7 +255,7 @@ export default function AdminList() {
 
   const confirmDelete = (row) => {
     Swal.fire({
-      title: `Delete admin '${row.username}'?`,
+      titleText: `Delete admin '${row.username}'?`,
       html:
         "This removes the login and its company assignment. " +
         "Any agents this admin already created will keep working.",
@@ -425,7 +424,7 @@ export default function AdminList() {
       return;
     }
     Swal.fire({
-      title: `${nextLabel} '${row.username}'?`,
+      titleText: `${nextLabel} '${row.username}'?`,
       html: nextActive
         ? "Restores this admin's access to every /api endpoint. They will need to log in again."
         : "Immediately blocks this admin from every /api endpoint on their next request. Any agents they already created keep working.",

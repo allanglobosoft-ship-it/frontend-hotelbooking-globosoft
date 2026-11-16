@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Card,
@@ -17,14 +17,57 @@ import Topbar from "../../components/TopBar";
 import Select from "react-select";
 import AsyncSelect from "react-select/async";
 import "../../styles/CityMapping.css";
+import "../../styles/AutomatedHotelMapping.css";
 import BackButton from "../../components/BackButton";
+import useAutoMappingStatus from "./automap/useAutoMappingStatus";
+import { statusMeta } from "./automap/automapFormat";
+import { getCurrentActiveRole, getUserRole } from "../../utils/authSession";
+
+// The Automated Hotel Mapping screen (pages/master/automap/
+// AutomatedHotelMappingPage.jsx). Opened in a NEW TAB from the pill below.
+const AUTOMATED_MAPPING_PATH = "/masters/hotel-mapping/automated";
 
 const HotelMapping = () => {
   const navigate = useNavigate();
-  const [loading, setLoading] = useState(false);
+  const [loading] = useState(false);
+
+  // "Automated Mapping" pill (background engine state + review badge). The
+  // screen itself lives at AUTOMATED_MAPPING_PATH. The backend restricts
+  // /api/hotel-mapping/auto/** to ADMIN / SUPER_ADMIN, so the pill is only
+  // rendered for those roles.
+  const isAdminUser = useMemo(() => {
+    const active = (getCurrentActiveRole() || "").trim().toLowerCase();
+    const roles = (getUserRole() || "")
+      .split(",")
+      .map((r) => r.trim().toLowerCase())
+      .filter(Boolean);
+    const role = active || roles[0] || "";
+    return role === "admin" || role === "super_admin";
+  }, []);
+  // 15 s keeps the pill's state dot and review badge current; the screen
+  // itself polls every 5 s in its own tab.
+  const autoStatus = useAutoMappingStatus({
+    enabled: isAdminUser,
+    intervalMs: 15000,
+  });
+  const autoMeta = statusMeta(autoStatus.status?.status || (autoStatus.error ? "ERROR" : "IDLE"));
+  const autoRunning = autoStatus.status?.status === "RUNNING";
+  // Deliberately no "noopener": a tab opened by window.open inherits a clone
+  // of this tab's sessionStorage, i.e. the per-tab auth session
+  // (utils/authSession.js), so the new tab is already logged in. This is
+  // the same hand-off the search → booking pages use.
+  const openAutomatedMapping = () => {
+    window.open(AUTOMATED_MAPPING_PATH, "_blank");
+  };
   const [selectedCountryOption, setSelectedCountryOption] = useState(null);
   const [selectedCityOption, setSelectedCityOption] = useState(null);
 
+  // Supplier codes surfaced in the Base Supplier + Target Supplier
+  // dropdowns. Must stay in sync with the backend Supplier enum at
+  // hotelmapping/entity/Supplier.java — any code the backend accepts
+  // MUST appear here or admins can't select it. GRN + GOGLOBAL were
+  // missing which is why the two suppliers didn't show in the
+  // dropdown even though the backend already accepted them.
   const [platforms] = useState([
     "IWTX",
     "DARINA",
@@ -32,6 +75,8 @@ const HotelMapping = () => {
     "X3",
     "RATEHAWK",
     "ATHARVA",
+    "GRN",
+    "GOGLOBAL",
   ]);
 
   const platformOptions = platforms.map((p) => ({ value: p, label: p }));
@@ -48,7 +93,7 @@ const HotelMapping = () => {
   const [searching, setSearching] = useState(false);
   const [errors, setErrors] = useState({});
   const [mappingId, setMappingId] = useState(null); // to track which group is being mapped
-  const [bulkMapping, setBulkMapping] = useState(false); // global bulk loading
+  const [bulkMapping] = useState(false); // global bulk loading
   const [resultsFilter, setResultsFilter] = useState("");
 
   // Generic form input handler
@@ -129,6 +174,7 @@ const HotelMapping = () => {
   };
 
   // Save mapping (kept for reference, but search is primary now)
+  // eslint-disable-next-line no-unused-vars
   const handleAddMapping = async () => {
     toast.error(
       "Add mapping functionality needs to be updated for new structure.",
@@ -162,9 +208,27 @@ const HotelMapping = () => {
       );
 
       if (response.status === 200) {
+        // The bulk endpoint answers 200 with one result per group: a group
+        // can fail (success=false) and targets already mapped to another
+        // master hotel are listed in `skipped` — both used to be ignored
+        // and the whole group was shown as mapped.
+        const results = Array.isArray(response.data) ? response.data : [];
+        const failed = results.filter((r) => r && r.success === false);
+        if (failed.length > 0) {
+          toast.error(failed.map((r) => r.message).filter(Boolean).join(" | ") || "Failed to map hotels.");
+          return;
+        }
+        const skipped = results.flatMap((r) => (Array.isArray(r?.skipped) ? r.skipped : []));
+        const isSkipped = (h) =>
+          skipped.some((s) => s.startsWith(`${h.supplier} ${h.supplierHotelId}`));
+        if (skipped.length > 0) {
+          toast(results.map((r) => r.message).filter(Boolean).join(" "), {
+            icon: "⚠️",
+            duration: 10000,
+          });
+        } else {
         toast.success("Hotels mapped successfully!");
-        // Optional: remove mapped group from results
-        // setSearchResults((prev) => prev.filter((_, i) => i !== index));
+        }
 
         setSearchResults((prev) =>
           prev.map((group, i) => {
@@ -173,7 +237,7 @@ const HotelMapping = () => {
                 ...group,
                 hotels: group.hotels.map((h) => ({
                   ...h,
-                  mappingStatus: true,
+                  mappingStatus: isSkipped(h) ? h.mappingStatus : true,
                 })),
               };
             }
@@ -277,9 +341,28 @@ const HotelMapping = () => {
       <div className="d-flex flex-grow-1">
         <Sidebar />
         <main className="flex-grow-1 p-4">
-          <span className="d-flex align-items-center gap-2 mb-3">
+          <span className="d-flex align-items-center gap-2 mb-3 flex-wrap">
             <BackButton fallback="/adminDashboard" />
             <h3 className="mb-0">Hotel Mapping</h3>
+            {isAdminUser && (
+              <button
+                type="button"
+                className="ahm-pill ms-auto"
+                onClick={openAutomatedMapping}
+                title="Open the Automated Hotel Mapping screen in a new tab"
+              >
+                <span className={`ahm-dot tone-${autoMeta.tone}${autoRunning ? " pulse" : ""}`}></span>
+                <span className="ahm-pill-text">Automated Mapping</span>
+                <span className="text-muted fw-normal">· {autoMeta.label}</span>
+                {autoRunning && <Spinner animation="border" size="sm" role="presentation" />}
+                {autoStatus.status?.manualReviewCount > 0 && (
+                  <Badge bg="warning" text="dark" pill title="Hotels waiting for manual review">
+                    {autoStatus.status.manualReviewCount}
+                  </Badge>
+                )}
+                <i className="fas fa-external-link-alt text-muted small" aria-hidden="true"></i>
+              </button>
+            )}
           </span>
           <p className="text-muted">
             Map same hotels across countries & cities.
@@ -713,6 +796,7 @@ const HotelMapping = () => {
               </div>
             </>
           )}
+
         </main>
       </div>
     </div>

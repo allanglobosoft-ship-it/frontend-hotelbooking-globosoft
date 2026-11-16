@@ -24,6 +24,7 @@ import {
 } from "react-icons/fa";
 import Select from "react-select";
 import DashboardRedirections from "../../components/DashboardRedirections";
+import { getCurrentActiveRole } from "../../utils/authSession";
 
 const ActivityProviderReg = () => {
   const navigate = useNavigate();
@@ -277,7 +278,7 @@ const ActivityProviderReg = () => {
 
   const handleDelete = (item) => {
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.providerName}`,
+      titleText: `Are you sure? You want to delete ${item.providerName}`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",
@@ -449,7 +450,7 @@ const ActivityProviderReg = () => {
           <div className="mb-3">
             <Button
               variant="outline-secondary"
-              onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+              onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
               className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
             >
               <FaArrowLeft />

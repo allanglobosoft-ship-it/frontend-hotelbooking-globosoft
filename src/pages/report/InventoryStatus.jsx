@@ -425,7 +425,7 @@ export default function InventoryStatus() {
       
       if (error.response?.status === 403) {
         // 403 Forbidden - Permission issue
-        const userRole = localStorage.getItem("currentActiveRole") || localStorage.getItem("userRole") || "Unknown";
+        const userRole = sessionStorage.getItem("currentActiveRole") || sessionStorage.getItem("userRole") || "Unknown";
         console.warn("403 Forbidden - Current user role:", userRole);
         console.warn("This endpoint may require specific permissions. Please check:");
         console.warn("1. Your user role has access to inventory reports");

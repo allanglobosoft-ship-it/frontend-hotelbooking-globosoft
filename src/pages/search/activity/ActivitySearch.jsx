@@ -23,6 +23,8 @@ import TopBar from "../../../components/TopBar";
 import AgentBalanceDisplay from "../../../components/AgentBalanceDisplay";
 import AdvertisementCarousel from "../../../components/AdvertisementCarousel";
 import AgentCreditBalance from "../../../components/AgentCreditBalance";
+import { sanitizeRichHtml } from "../../../utils/safeHtml";
+import { isAgentLogin } from "../../../utils/supplierDisplay";
 
 function LazyImage({ src, alt, className }) {
   const containerRef = useRef(null);
@@ -149,10 +151,10 @@ const ActivitySearch = () => {
   // agent-required validation is skipped. currentActiveRole isn't set for
   // single-role logins, so fall back to userRole; admin/super-admin/staff
   // keep the picker exactly as before.
-  const activeRole = (localStorage.getItem("currentActiveRole") || "")
+  const activeRole = (sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
     : storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN");
@@ -1532,9 +1534,10 @@ const ActivitySearch = () => {
                                       className="text-secondary small mb-2"
                                       style={{ lineHeight: 1.5 }}
                                       dangerouslySetInnerHTML={{
-                                        __html:
+                                        __html: sanitizeRichHtml(
                                           activity.activityDetails.substring(0, 220) +
                                           (activity.activityDetails.length > 220 ? "…" : ""),
+                                        ),
                                       }}
                                     />
                                   )}
@@ -1770,7 +1773,7 @@ const ActivitySearch = () => {
                     ) : (
                       <Badge bg="success">Private</Badge>
                     )}
-                    {selectedActivity.apiType && (
+                    {selectedActivity.apiType && !isAgentLogin() && (
                       <Badge bg="dark">{selectedActivity.apiType}</Badge>
                     )}
                   </div>
@@ -1843,7 +1846,7 @@ const ActivitySearch = () => {
                         className="text-secondary small"
                         style={{ lineHeight: 1.6 }}
                         dangerouslySetInnerHTML={{
-                          __html: selectedActivity.activityDetails,
+                          __html: sanitizeRichHtml(selectedActivity.activityDetails),
                         }}
                       />
                     </div>

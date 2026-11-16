@@ -15,10 +15,12 @@ import axiosInstance from "../../components/AxiosInstance";
 import axios from "axios";
 import { toast } from "react-hot-toast";
 import Swal from "sweetalert2";
+import { useNavigate } from "react-router-dom";
 import {
   FaEdit,
   FaTrash,
   FaEye,
+  FaArrowLeft,
 } from "react-icons/fa";
 
 // SearchableSelect Component
@@ -171,6 +173,7 @@ const SearchableSelect = ({
 };
 
 const SupplierReg = () => {
+  const navigate = useNavigate();
   const [items, setItems] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -485,7 +488,7 @@ const SupplierReg = () => {
 
   const handleDelete = (item) => {
     Swal.fire({
-    title: `Are you sure? You want to delete ${item.name}`,
+    titleText: `Are you sure? You want to delete ${item.name}`,
 
       icon: "warning",
       showCancelButton: true,
@@ -537,6 +540,18 @@ const SupplierReg = () => {
       <div className="d-flex flex-grow-1">
         <Sidebar />
         <main className="flex-grow-1 p-4">
+          {/* Back to Admin Dashboard — top-left, above the page card */}
+          <div className="mb-3">
+            <Button
+              variant="outline-secondary"
+              onClick={() => navigate("/adminDashboard")}
+              className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
+            >
+              <FaArrowLeft />
+              Back
+            </Button>
+          </div>
+
           <Card className="shadow-sm rounded-xl">
             <Card.Header className="d-flex justify-content-between align-items-center">
               <span className="fw-semibold">Supplier</span>
@@ -585,6 +600,7 @@ const SupplierReg = () => {
                 <thead>
                   <tr>
                     <th style={{ width: 100 }}>S/N</th>
+                    <th>Supplier ID</th>
                     <th>Name</th>
                     <th>Email</th>
                     <th>Phone Number</th>

@@ -26,6 +26,9 @@ import { useLocation, useNavigate } from "react-router-dom";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
+import { SUPPLIER_SEARCH_TIMEOUT_MS } from "../../config/apiTimeouts";
+import RefundBadge from "../../components/RefundBadge";
+import { chargeNowText, labelOfRate, refundFilterMatches } from "../../utils/refundLabel";
 import { formatFlexibleDate } from "../../utils/dateUtils";
 import "../../styles/RoomList.css";
 
@@ -82,7 +85,7 @@ export default function SeniorCitizenRoomList() {
   const [error, setError] = useState(null);
   const [agentBalance, setAgentBalance] = useState(null);
   const [activePromotion, setActivePromotion] = useState(null);
-  const [viewMode, setViewMode] = useState("grid");
+  const [viewMode, setViewMode] = useState("list");
   const [activeAccordion, setActiveAccordion] = useState("0");
 
   // ── Filter sidebar state ─────────────────────────────────────
@@ -91,7 +94,7 @@ export default function SeniorCitizenRoomList() {
   // section. Rooms whose rates don't match are pruned out of the
   // accordion.
   const [refundFilter, setRefundFilter] = useState({
-    refundable: false, nonRefundable: false,
+    refundable: false, partial: false, nonRefundable: false,
   });
   const [roomTypeOptions, setRoomTypeOptions] = useState([]);
   const [selectedRoomTypes, setSelectedRoomTypes] = useState([]);
@@ -217,12 +220,7 @@ export default function SeniorCitizenRoomList() {
     );
 
   const matchesFilters = (rate) => {
-    const isNonRefundable = String(rate.nonRefundable).toLowerCase() === "true";
-    if (refundFilter.refundable && refundFilter.nonRefundable) {
-      // both checked → no narrowing
-    } else if (refundFilter.refundable && isNonRefundable) {
-      return false;
-    } else if (refundFilter.nonRefundable && !isNonRefundable) {
+    if (!refundFilterMatches(refundFilter, labelOfRate(rate))) {
       return false;
     }
     if (selectedRoomTypes.length > 0) {
@@ -278,12 +276,6 @@ export default function SeniorCitizenRoomList() {
       case "full board": return <FaUtensils className="text-success" />;
       default: return <FaUtensils className="text-primary" />;
     }
-  };
-  const getRefundStatusBadge = (nonRefundable) => {
-    const v = String(nonRefundable).toLowerCase();
-    if (v === "false") return <Badge bg="success">Flexible</Badge>;
-    if (v === "true") return <Badge bg="danger">Non-Refundable</Badge>;
-    return <Badge bg="secondary">{String(nonRefundable)}</Badge>;
   };
 
   // Room availability status from POST /api/hotel-rooms/search. Drives the
@@ -357,7 +349,7 @@ export default function SeniorCitizenRoomList() {
           apiId: Number(ctx.apiId || 1),
           rooms: roomsList,
         };
-        const { data } = await axiosInstance.post("/api/hotel-rooms/search", payload);
+        const { data } = await axiosInstance.post("/api/hotel-rooms/search", payload, { timeout: SUPPLIER_SEARCH_TIMEOUT_MS });
         if (!data || data.success === false) {
           setError(data?.message || "No rooms available for the selected hotel / dates.");
           return;
@@ -405,6 +397,7 @@ export default function SeniorCitizenRoomList() {
       roomTypeCode: rate.roomTypeCode,
       contractLabel: rate.contractLabel,
       nonRefundable: rate.nonRefundable,
+      refundTerms: rate.refundTerms,
       rateBeforeDiscount: base,
       rate: after,
       rateWithoutMarkup: after,
@@ -546,6 +539,7 @@ export default function SeniorCitizenRoomList() {
         roomTypeCode: primary.roomTypeCode,
         contractLabel: primary.contractLabel,
         nonRefundable: primary.nonRefundable,
+        refundTerms: primary.refundTerms,
         rateBeforeDiscount: sumBefore,
         rate: sumAfter,
         rateWithoutMarkup: sumAfter,
@@ -571,6 +565,7 @@ export default function SeniorCitizenRoomList() {
             roomTypeCode: r.selectedRate?.roomTypeCode,
             contractLabel: r.selectedRate?.contractLabel,
             nonRefundable: !!r.selectedRate?.nonRefundable,
+            refundTerms: r.selectedRate?.refundTerms,
             rate: after,
             rateWithoutMarkup: after,
             rateBeforeDiscount: base,
@@ -802,10 +797,14 @@ export default function SeniorCitizenRoomList() {
 
                       <div className="filter-group mb-3">
                         <div className="filter-group-label">Refund Policy</div>
-                        <Form.Check type="checkbox" id="sc-filter-refundable" label="Refundable"
+                        <Form.Check type="checkbox" id="sc-filter-refundable" label="Flexible"
                           checked={refundFilter.refundable}
                           onChange={(e) =>
                             setRefundFilter((p) => ({ ...p, refundable: e.target.checked }))} />
+                        <Form.Check type="checkbox" id="sc-filter-partial" label="Flexible - Partial"
+                          checked={refundFilter.partial}
+                          onChange={(e) =>
+                            setRefundFilter((p) => ({ ...p, partial: e.target.checked }))} />
                         <Form.Check type="checkbox" id="sc-filter-nonrefundable" label="Non Refundable"
                           checked={refundFilter.nonRefundable}
                           onChange={(e) =>
@@ -829,11 +828,11 @@ export default function SeniorCitizenRoomList() {
                         )}
                       </div>
 
-                      {(refundFilter.refundable || refundFilter.nonRefundable ||
+                      {(refundFilter.refundable || refundFilter.partial || refundFilter.nonRefundable ||
                         selectedRoomTypes.length > 0) && (
                         <Button variant="link" size="sm" className="p-0 mt-2"
                           onClick={() => {
-                            setRefundFilter({ refundable: false, nonRefundable: false });
+                            setRefundFilter({ refundable: false, partial: false, nonRefundable: false });
                             setSelectedRoomTypes([]);
                           }}>
                           Clear filters
@@ -990,8 +989,13 @@ export default function SeniorCitizenRoomList() {
                                                 {getRoomStatusBadge(rate.roomStatus)}
                                               </div>
                                             </div>
-                                            {getRefundStatusBadge(rate.nonRefundable)}
+                                            <RefundBadge rate={rate} />
                                           </div>
+                                          {chargeNowText(rate) && (
+                                            <div className="small fw-semibold" style={{ color: "#997404" }}>
+                                              {chargeNowText(rate)}
+                                            </div>
+                                          )}
                                           <div className="rate-pricing text-center py-2">
                                             {/* Single-room: bulk total (per-room × N).
                                                 Multi-room: per-room rate; "× N rooms"
@@ -1085,7 +1089,7 @@ export default function SeniorCitizenRoomList() {
                                                 </span>
                                               </div>
                                               <div className="d-flex align-items-center gap-2 flex-shrink-0">
-                                                {getRefundStatusBadge(rate.nonRefundable)}
+                                                <RefundBadge rate={rate} />
                                                 {getRoomStatusBadge(rate.roomStatus)}
                                               </div>
                                             </div>
@@ -1093,6 +1097,11 @@ export default function SeniorCitizenRoomList() {
                                               className="rate-features small text-muted d-flex flex-wrap gap-3"
                                               style={{ minWidth: 0 }}
                                             >
+                                              {chargeNowText(rate) && (
+                                                <div className="feature-item d-flex align-items-center fw-semibold" style={{ color: "#997404" }}>
+                                                  {chargeNowText(rate)}
+                                                </div>
+                                              )}
                                               <div className="feature-item d-flex align-items-center text-truncate">
                                                 <FaInfoCircle className="me-2 flex-shrink-0" />
                                                 <span className="text-truncate">{rate.contractLabel}</span>
@@ -1185,7 +1194,7 @@ export default function SeniorCitizenRoomList() {
                       (c) => (c.availableRates || []).filter(matchesFilters).length === 0
                     ) && (
                       <Alert variant="info" className="mb-0">
-                        No rates match the selected filters.
+                        No rates match the selected filters, please check other filters.
                       </Alert>
                     )}
                   </Accordion>

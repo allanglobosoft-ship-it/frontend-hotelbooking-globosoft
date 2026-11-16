@@ -179,7 +179,7 @@ export default function Airport() {
 
   const handleDelete = (item) => {
     Swal.fire({
-      title: `Delete "${item.airportName}"?`,
+      titleText: `Delete "${item.airportName}"?`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

@@ -483,7 +483,7 @@ export default function DayActivities() {
 
   const handleDelete = (item) => {
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.activityName} Day Activity`,
+      titleText: `Are you sure? You want to delete ${item.activityName} Day Activity`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

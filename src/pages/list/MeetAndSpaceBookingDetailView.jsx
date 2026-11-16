@@ -436,7 +436,6 @@ export default function MeetAndSpaceBookingDetailView() {
     try {
       setNoteSaving(true);
       const createdBy =
-        localStorage.getItem("UserName") ||
         sessionStorage.getItem("UserName") ||
         "unknown";
       const res = await axiosInstance.post(

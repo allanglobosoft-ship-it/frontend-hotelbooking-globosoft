@@ -3,23 +3,20 @@ import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { Card, Form, Button, Spinner, Alert } from "react-bootstrap";
 import { FaUtensils, FaSignInAlt } from "react-icons/fa";
+import { getRestaurantExtranetToken, setRestaurantExtranetSession } from "../../utils/authSession";
 
 /**
  * Restaurant-side extranet login page.
  *
  * Separate from the agent / admin login (`/login`). The two flows store
- * their JWTs under different localStorage keys (`authToken` for admin /
- * agent, `restaurantExtranetToken` for this portal) so logging into one
- * does not invalidate the other.
+ * their JWTs under different keys (`authToken` for admin / agent,
+ * `restaurantExtranetToken` for this portal) so logging into one does not
+ * invalidate the other. Both live in this tab's sessionStorage (see
+ * utils/authSession.js), never localStorage.
  *
  * On success → store token + restaurant info → navigate to
  * `/restaurant-extranet/dashboard`.
  */
-const STORAGE_TOKEN = "restaurantExtranetToken";
-const STORAGE_RESTAURANT_ID = "restaurantExtranetRestaurantId";
-const STORAGE_RESTAURANT_NAME = "restaurantExtranetRestaurantName";
-const STORAGE_EMAIL = "restaurantExtranetEmail";
-
 const RestaurantExtranetLogin = () => {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
@@ -30,7 +27,7 @@ const RestaurantExtranetLogin = () => {
   // If already logged in, jump straight to the dashboard. Keeps the
   // page out of the way when an extranet user accidentally lands here.
   useEffect(() => {
-    if (localStorage.getItem(STORAGE_TOKEN)) {
+    if (getRestaurantExtranetToken()) {
       navigate("/restaurant-extranet/dashboard", { replace: true });
     }
   }, [navigate]);
@@ -52,16 +49,12 @@ const RestaurantExtranetLogin = () => {
       );
       const data = res?.data || {};
       if (data.status === "SUCCESS" && data.token) {
-        localStorage.setItem(STORAGE_TOKEN, data.token);
-        if (data.restaurantId != null) {
-          localStorage.setItem(STORAGE_RESTAURANT_ID, String(data.restaurantId));
-        }
-        if (data.restaurantName) {
-          localStorage.setItem(STORAGE_RESTAURANT_NAME, data.restaurantName);
-        }
-        if (data.email) {
-          localStorage.setItem(STORAGE_EMAIL, data.email);
-        }
+        setRestaurantExtranetSession({
+          token: data.token,
+          restaurantId: data.restaurantId,
+          restaurantName: data.restaurantName,
+          email: data.email,
+        });
         navigate("/restaurant-extranet/dashboard", { replace: true });
       } else {
         setError(data.message || "Invalid email or password.");

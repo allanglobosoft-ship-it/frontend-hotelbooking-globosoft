@@ -950,6 +950,17 @@ const handleAmenityChange = (e) => {
         i === index ? { ...bank, [field]: value } : bank
       ),
     }));
+    // Clear this field's error once it has a value again, so the red
+    // message goes away as soon as the user fixes it.
+    const errorKey = `bank_${index}_${field}`;
+    if (String(value ?? "").trim()) {
+      setValidationErrors((prev) => {
+        if (!prev[errorKey]) return prev;
+        const next = { ...prev };
+        delete next[errorKey];
+        return next;
+      });
+    }
   };
 
   // Room Category and Types Management
@@ -1596,8 +1607,8 @@ const handleAmenityChange = (e) => {
         // after a successful update send them back to their dashboard. Admin
         // behavior is unchanged (still returns to the registration list).
         const activeRole = (
-          localStorage.getItem("currentActiveRole") ||
-          localStorage.getItem("userRole") ||
+          sessionStorage.getItem("currentActiveRole") ||
+          sessionStorage.getItem("userRole") ||
           ""
         ).toLowerCase();
         if (isEditMode && activeRole.includes("extranet")) {
@@ -2590,7 +2601,7 @@ const handleAmenityChange = (e) => {
                                   </Col>
                                   <Col md={6}>
                                     <Form.Group className="mb-3">
-                                      <Form.Label>Account Number</Form.Label>
+                                      <Form.Label>Account Number <span className="text-danger">*</span></Form.Label>
                                       <Form.Control
                                         type="text"
                                         value={bank.accountNo}
@@ -2602,7 +2613,19 @@ const handleAmenityChange = (e) => {
                                           )
                                         }
                                         placeholder="Enter account number"
+                                        isInvalid={
+                                          !!validationErrors[
+                                            `bank_${index}_accountNo`
+                                          ]
+                                        }
                                       />
+                                      <Form.Control.Feedback type="invalid">
+                                        {
+                                          validationErrors[
+                                            `bank_${index}_accountNo`
+                                          ]
+                                        }
+                                      </Form.Control.Feedback>
                                     </Form.Group>
                                   </Col>
                                 </Row>
@@ -2645,7 +2668,7 @@ const handleAmenityChange = (e) => {
                                 <Form.Group className="mb-3">
                                   <Form.Label>
                                     Bank Address{" "}
-                                    <span className="text-danger">*</span>
+                                    {/* <span className="text-danger">*</span> */}
                                   </Form.Label>
                                   <Form.Control
                                     as="textarea"

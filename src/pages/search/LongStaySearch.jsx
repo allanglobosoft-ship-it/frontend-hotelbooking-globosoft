@@ -7,6 +7,7 @@ import {
   Form,
   Pagination,
   Spinner,
+  Badge,
 } from "react-bootstrap";
 import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
@@ -20,13 +21,66 @@ import AgentCreditBalance from "../../components/AgentCreditBalance";
 import DateInput from "../../components/DateInput";
 import { FaSearch, FaStar } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
+import { toast } from "react-hot-toast";
+import {
+  buildApiSearchPayload,
+  searchApiHotels,
+  apiIdForApiType,
+  fetchChannelOptions,
+} from "../../utils/lastMinuteApiHotels";
+import {
+  fetchLongStayApiHotelsEnabled,
+  toLongStayHotelRow,
+  isSupplierHotel,
+} from "../../utils/longStayApiHotels";
+import { isAgentLogin } from "../../utils/supplierDisplay";
+import PriceRangeSlider from "../../components/PriceRangeSlider";
+import useRefundFlags from "../../hooks/useRefundFlags";
+import {
+  NO_REFUND_POLICY,
+  isRefundPolicyActive,
+  refundPolicyMatches,
+  supplierRefundFlags,
+  fetchLongStayRefundFlags,
+} from "../../utils/refundPolicyFilter";
 import "../../styles/HotelSearch.css";
+
+// Largest number of long-stay hotels fetched in one go while supplier hotels are
+// on, when this page merges, filters and pages the two sources itself.
+const INHOUSE_FETCH_ALL_SIZE = 1000;
+
+const INHOUSE_PROGRESS_CHANNELS = ["inhouse"];
+
+// Bars in the Budget price chart — the same count Last Minute uses and
+// HotelSearchController.PRICE_HISTOGRAM_BARS sends to /new-booking/hotel.
+const PRICE_HISTOGRAM_BARS = 40;
+
+// Budget filter: inclusive AED bounds on hotel.price (the stay total each card
+// shows); an open (null) end sets no limit on that side. While a bound is set,
+// hotels without a price ("Price on request") are hidden — they can't be in any
+// budget. Same rule as /new-booking/hotel and Last Minute.
+function withinBudget(hotel, priceSlider) {
+  const minPrice = priceSlider?.[0] ?? null;
+  const maxPrice = priceSlider?.[1] ?? null;
+  if (minPrice === null && maxPrice === null) return true;
+  const p = hotel?.price == null ? NaN : Number(hotel.price);
+  return (
+    Number.isFinite(p) &&
+    p > 0 &&
+    (minPrice === null || p >= minPrice) &&
+    (maxPrice === null || p <= maxPrice)
+  );
+}
 
 // ─────────────────────────────────────────────
 // Search Progress Bar
 // ─────────────────────────────────────────────
-function SearchProgressBar({ pollStatus, completedChannels }) {
-  const channels = ["inhouse"];
+function SearchProgressBar({
+  pollStatus,
+  completedChannels,
+  channels = INHOUSE_PROGRESS_CHANNELS,
+  label = "Searching long stay contracts...",
+}) {
   const [progress, setProgress] = useState(0);
   const [visible, setVisible] = useState(false);
 
@@ -45,13 +99,13 @@ function SearchProgressBar({ pollStatus, completedChannels }) {
       setVisible(false);
       setProgress(0);
     }
-  }, [pollStatus, completedChannels]);
+  }, [pollStatus, completedChannels, channels.length]);
 
   if (!visible) return null;
   return (
     <div className="search-progress-bar-wrap">
       <div className="d-flex justify-content-between align-items-center mb-2">
-        <span className="search-progress-label">Searching long stay contracts...</span>
+        <span className="search-progress-label">{label}</span>
         <span className="search-progress-percent">{Math.round(progress)}%</span>
       </div>
       <div className="search-progress-track">
@@ -276,10 +330,10 @@ export default function LongStaySearch() {
   // Agent picker is hidden and the agent-required validation is skipped.
   // currentActiveRole isn't set for single-role logins, so fall back to
   // userRole; admin/super-admin/staff keep the picker exactly as before.
-  const activeRole = (localStorage.getItem("currentActiveRole") || "")
+  const activeRole = (sessionStorage.getItem("currentActiveRole") || "")
     .trim()
     .toUpperCase();
-  const storedRoles = (localStorage.getItem("userRole") || "").toUpperCase();
+  const storedRoles = (sessionStorage.getItem("userRole") || "").toUpperCase();
   const isAgentRole = activeRole
     ? activeRole === "AGENT"
     : storedRoles.includes("AGENT") && !storedRoles.includes("ADMIN");
@@ -288,7 +342,6 @@ export default function LongStaySearch() {
   // agent themselves, so the "Booking Done By Employee" picker is hidden and
   // this name is shown instead. Empty for admin/staff.
   const loggedInAgentName =
-    localStorage.getItem("UserName") ||
     sessionStorage.getItem("UserName") ||
     "";
 
@@ -336,6 +389,12 @@ export default function LongStaySearch() {
   const [channelType, setChannelType] = useState([]);
   const [sortBy, setSortBy] = useState("priceAsc");
   const [hotelSearchTerm, setHotelSearchTerm] = useState("");
+  // Budget slider — [lo, hi] in AED; an end left at its edge is null ("no
+  // limit"), and null as a whole means the full range (no filtering).
+  const [priceSlider, setPriceSlider] = useState(null);
+  // Refund Policy — the same three boxes as /new-booking/hotel; ticking one
+  // clears the others (utils/refundPolicyFilter.js).
+  const [refundPolicy, setRefundPolicy] = useState(NO_REFUND_POLICY);
   const [errors, setErrors] = useState({});
   const [clickedHotelIds, setClickedHotelIds] = useState([]);
 
@@ -349,8 +408,8 @@ export default function LongStaySearch() {
   const [isLoading, setIsLoading] = useState(false);
   const [pageIndex, setPageIndex] = useState(0);
   const [pageSize] = useState(10);
-  const [totalElements, setTotalElements] = useState(0);
-  const [totalPages, setTotalPages] = useState(1);
+  const [serverTotalElements, setTotalElements] = useState(0);
+  const [serverTotalPages, setTotalPages] = useState(1);
   const [hasSearchResult, setHasSearchResult] = useState(false);
   const [pollStatus, setPollStatus] = useState("IDLE");
   const completedChannelsRef = useRef(new Set());
@@ -359,6 +418,35 @@ export default function LongStaySearch() {
   const [isDestinationLoading, setIsDestinationLoading] = useState(false);
   const resultsRef = useRef(null);
   const [isNationalityLoading, setIsNationalityLoading] = useState(false);
+
+  // ── Supplier API hotels ─────────────────────────────────────────────────
+  // Driven by hbs.long-stay.api-hotels.enabled on the backend. While false
+  // (also the state until the check returns, and if it fails) nothing below
+  // runs and this page works exactly as it did before suppliers were added.
+  const [apiHotelsEnabled, setApiHotelsEnabled] = useState(false);
+  // Channel rows: the channels the company has enabled on /admin/api-access.
+  const [allowedChannelOptions, setAllowedChannelOptions] = useState(null);
+  const [apiHotels, setApiHotels] = useState([]);
+  const [apiPollStatus, setApiPollStatus] = useState("IDLE");
+  const [apiChannels, setApiChannels] = useState([]);
+  const [apiCompletedChannels, setApiCompletedChannels] = useState(new Set());
+  // Bumped on every search, so a slow supplier reply from an older search is
+  // dropped instead of landing in the newer results.
+  const apiSearchSeqRef = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchLongStayApiHotelsEnabled().then((enabled) => {
+      if (cancelled || !enabled) return;
+      setApiHotelsEnabled(true);
+      fetchChannelOptions().then((options) => {
+        if (!cancelled) setAllowedChannelOptions(options);
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const starOptions = [
     { value: 5, label: "5 Stars" },
@@ -466,6 +554,63 @@ export default function LongStaySearch() {
     }
   };
 
+  // Budget slider + price chart — the same control /new-booking/hotel and Last
+  // Minute have. Worked out here in the browser, the same way Last Minute does:
+  // over the whole result set on screen (before any other filter),
+  // PRICE_HISTOGRAM_BARS equal-width bars across [floor(cheapest),
+  // ceil(dearest)], at least 1 wide. With supplier hotels off the server sends
+  // one page at a time, so — like Hotel Type and Channel there — it covers the
+  // page on screen. Null (section hidden) until a hotel has a price.
+  const priceBounds = useMemo(() => {
+    const source = apiHotelsEnabled ? [...allResults, ...apiHotels] : allResults;
+    const rates = source
+      .map((h) => Number(h.price))
+      .filter((r) => Number.isFinite(r) && r > 0);
+    if (rates.length === 0) return null;
+    let min = rates[0];
+    let max = rates[0];
+    rates.forEach((r) => {
+      if (r < min) min = r;
+      if (r > max) max = r;
+    });
+    const lo = Math.floor(min);
+    const hi = Math.max(Math.ceil(max), lo + 1);
+    const width = (hi - lo) / PRICE_HISTOGRAM_BARS;
+    const histogram = new Array(PRICE_HISTOGRAM_BARS).fill(0);
+    rates.forEach((r) => {
+      const i = Math.floor((r - lo) / width);
+      histogram[Math.max(0, Math.min(PRICE_HISTOGRAM_BARS - 1, i))] += 1;
+    });
+    return { min: lo, max: hi, histogram };
+  }, [apiHotelsEnabled, allResults, apiHotels]);
+  const budgetMin = priceBounds ? priceBounds.min : 0;
+  const budgetMax = priceBounds ? priceBounds.max : 0;
+
+  // Refund Policy flags. Long-stay contract hotels are looked up the way
+  // /long-stay-room-list reads them (the hotel's live contracts covering the
+  // stay), only while a box is ticked; supplier hotels use the flags the hotel
+  // search sent. The key carries the dates, so other dates are looked up anew.
+  const refundFlagKey = (h) => `${h.hotelCode}|${checkIn}|${checkOut}`;
+  const refundLookups = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    allResults.forEach((h) => {
+      if (isSupplierHotel(h) || !h.hotelCode) return;
+      const key = `${h.hotelCode}|${checkIn}|${checkOut}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push({
+        key,
+        fetchFlags: () =>
+          fetchLongStayRefundFlags(Number(h.hotelCode), checkIn, checkOut),
+      });
+    });
+    return out;
+  }, [allResults, checkIn, checkOut]);
+  const refundActive = isRefundPolicyActive(refundPolicy);
+  const { flags: refundFlagsByKey, loading: refundFlagsLoading } =
+    useRefundFlags(refundActive, refundLookups);
+
   const filteredResults = useMemo(() => {
     let results = allResults;
     if (starRating) {
@@ -481,10 +626,100 @@ export default function LongStaySearch() {
       const ch = channelType.map((c) => c.value);
       results = results.filter((h) => ch.includes(h.channelType));
     }
+    if (priceSlider) {
+      results = results.filter((h) => withinBudget(h, priceSlider));
+    }
+    if (refundActive) {
+      results = results.filter((h) =>
+        refundPolicyMatches(
+          refundPolicy,
+          isSupplierHotel(h) ? supplierRefundFlags(h) : refundFlagsByKey[refundFlagKey(h)]
+        )
+      );
+    }
     return results;
-  }, [allResults, starRating, hotelType, channelType]);
+    // refundFlagKey reads checkIn / checkOut, which are listed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allResults, starRating, hotelType, channelType, priceSlider, refundActive, refundPolicy, refundFlagsByKey, checkIn, checkOut]);
+
+  // With supplier hotels on, long-stay contracts and supplier hotels are one
+  // list, which this page filters, sorts and pages itself because suppliers only
+  // reply here in the browser. Null while off: everything below then uses the
+  // original server-paged values.
+  const mergedResults = useMemo(() => {
+    if (!apiHotelsEnabled) return null;
+    let results = [...allResults, ...apiHotels];
+    if (starRating) {
+      results = results.filter(
+        (h) => Number(h.rating) === Number(starRating.value)
+      );
+    }
+    if (hotelType.length > 0) {
+      const types = hotelType.map((t) => t.value);
+      results = results.filter((h) => types.includes(h.hotelType));
+    }
+    if (channelType.length > 0) {
+      const ch = channelType.map((c) => c.value);
+      results = results.filter((h) => ch.includes(h.channelType));
+    }
+    const needle = finalHotelSearchTerm.trim().toLowerCase();
+    if (needle) {
+      results = results.filter((h) =>
+        String(h.name || "").toLowerCase().includes(needle)
+      );
+    }
+    if (priceSlider) {
+      results = results.filter((h) => withinBudget(h, priceSlider));
+    }
+    if (refundActive) {
+      results = results.filter((h) =>
+        refundPolicyMatches(
+          refundPolicy,
+          isSupplierHotel(h) ? supplierRefundFlags(h) : refundFlagsByKey[refundFlagKey(h)]
+        )
+      );
+    }
+    // Priced hotels first in either direction; those without a rate go last.
+    return results.sort((a, b) => {
+      const priceA = Number(a.price) || 0;
+      const priceB = Number(b.price) || 0;
+      if (!priceA || !priceB) return (priceB ? 1 : 0) - (priceA ? 1 : 0);
+      return sortBy === "priceDesc" ? priceB - priceA : priceA - priceB;
+    });
+    // refundFlagKey reads checkIn / checkOut, which are listed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiHotelsEnabled, allResults, apiHotels, starRating, hotelType, channelType, finalHotelSearchTerm, sortBy, priceSlider, refundActive, refundPolicy, refundFlagsByKey, checkIn, checkOut]);
+
+  const totalElements = mergedResults ? mergedResults.length : serverTotalElements;
+  const totalPages = mergedResults
+    ? Math.ceil(mergedResults.length / pageSize)
+    : serverTotalPages;
+  const pageHotels = mergedResults
+    ? mergedResults.slice(pageIndex * pageSize, (pageIndex + 1) * pageSize)
+    : filteredResults;
+
+  // Channels with at least one hotel in the results: the LIVE / OFF badge, with
+  // the same meaning it has on the Last Minute and hotel pages.
+  const channelsWithResults = useMemo(
+    () => new Set([...allResults, ...apiHotels].map((h) => h.channelType)),
+    [allResults, apiHotels]
+  );
+  const channelRows = apiHotelsEnabled
+    ? allowedChannelOptions || channelTypeOptions
+    : channelTypeOptions;
 
   const effectiveTotalPages = useMemo(() => Math.max(1, totalPages), [totalPages]);
+
+  // Supplier results can shrink between polls, so never stay past the last page.
+  useEffect(() => {
+    if (mergedResults && pageIndex >= effectiveTotalPages) setPageIndex(0);
+  }, [mergedResults, pageIndex, effectiveTotalPages]);
+
+  // Name search only goes to the server while supplier hotels are off.
+  useEffect(() => {
+    if (apiHotelsEnabled) setPageIndex(0);
+  }, [apiHotelsEnabled, finalHotelSearchTerm]);
+
   const startEntry = totalElements === 0 ? 0 : pageIndex * pageSize + 1;
   const endEntry = Math.min((pageIndex + 1) * pageSize, totalElements);
   const pageNumbers = useMemo(() => {
@@ -622,10 +857,10 @@ export default function LongStaySearch() {
 
   useEffect(() => {
     if (!isAgentRole) return;
-    const cached = localStorage.getItem("userId");
+    const cached = sessionStorage.getItem("userId");
     if (cached) { setSelfAgentId(cached); return; }
     const userName =
-      localStorage.getItem("UserName") || sessionStorage.getItem("UserName");
+      sessionStorage.getItem("UserName");
     if (!userName) return;
     let cancelled = false;
     axiosInstance
@@ -633,7 +868,7 @@ export default function LongStaySearch() {
       .then((res) => {
         if (!cancelled && res?.data?.id != null) {
           const idv = String(res.data.id);
-          localStorage.setItem("userId", idv);
+          sessionStorage.setItem("userId", idv);
           setSelfAgentId(idv);
         }
       })
@@ -858,6 +1093,97 @@ export default function LongStaySearch() {
     });
   };
 
+  // Supplier search: runs alongside the long-stay one, not awaited, because
+  // suppliers can take a minute or more. searchApiHotels never throws, and rows
+  // appear as each supplier replies.
+  const startSupplierSearch = (apiPayload) => {
+    const seq = ++apiSearchSeqRef.current;
+    const isCurrent = () => seq === apiSearchSeqRef.current;
+    setApiHotels([]);
+    setApiChannels([]);
+    setApiCompletedChannels(new Set());
+    setApiPollStatus("IN_PROGRESS");
+
+    searchApiHotels(
+      apiPayload,
+      (rows) => {
+        if (!isCurrent()) return;
+        setApiHotels(rows.map(toLongStayHotelRow));
+        if (rows.length > 0) setHasSearchResult(true);
+      },
+      {
+        isCancelled: () => !isCurrent(),
+        onStatus: (statuses) => {
+          if (!isCurrent()) return;
+          const keys = Object.keys(statuses);
+          setApiChannels(keys);
+          setApiCompletedChannels(
+            new Set(keys.filter((k) => statuses[k] === "COMPLETED"))
+          );
+        },
+      }
+    ).then((result) => {
+      if (isCurrent()) {
+        setApiPollStatus(result?.completed ? "COMPLETED" : "TIMEOUT");
+      }
+    });
+  };
+
+  // "View Rooms" on a supplier hotel opens the normal supplier room list, with
+  // longStayBooking added so the booking is tagged and listed as Long Stay.
+  const openSupplierRooms = (hotel) => {
+    const apiId = apiIdForApiType(hotel.apiType);
+    if (!apiId) {
+      toast.error(
+        isAgentLogin()
+          ? "Unable to open rooms for this hotel."
+          : `Unknown supplier "${hotel.apiType || ""}" — cannot open rooms.`
+      );
+      return;
+    }
+    const payload = {
+      checkInDate: checkIn,
+      checkOutDate: checkOut,
+      hotelCode: hotel.hotelCode || "",
+      nationality:
+        (selectedNationality?.code || "").length === 2
+          ? selectedNationality.code
+          : " ",
+      agentId: String((isAgentRole ? selfAgentId : agent) || ""),
+      agentName: loggedInAgentName,
+      destinationLabel: selectedDestination?.label || "",
+      nationalityLabel: selectedNationality?.label || "",
+      employeeName: null,
+      nightsCount: Number(nights) || 0,
+      apiId,
+      rooms: rooms.map((r) => ({
+        adults: r.adults || 1,
+        children: r.children || 0,
+        childAges: r.childAges || [],
+        adultAges: Array.from({ length: r.adults || 1 }, () => 30),
+      })),
+      parentBookingCode: null,
+      employeeId: selectedEmployee?.value || null,
+      longStayBooking: true,
+    };
+    const meta = {
+      hotelName: hotel.name,
+      address: hotel.address || hotel.city,
+      starRating: hotel.rating || 0,
+      phone: hotel.contactNumber || "",
+      hotelImage: hotel.image,
+    };
+    try {
+      sessionStorage.setItem(
+        "roomListPayload",
+        JSON.stringify({ payload, meta, currency: displayCurrency })
+      );
+    } catch (e) {
+      console.error("Failed to write sessionStorage:", e);
+    }
+    window.open("/api-room-list", "_blank");
+  };
+
   const handleSearchSubmit = async (e) => {
     e.preventDefault();
     const formErrors = validateForm();
@@ -872,6 +1198,9 @@ export default function LongStaySearch() {
     setIsEditingSearch(false);
     setHasSearchResult(false);
     setAllResults([]);
+    // A new search has its own price range, so the Budget starts from the full
+    // range again (as on /new-booking/hotel).
+    setPriceSlider(null);
     setPollStatus("IDLE");
     setPageIndex(0);
     setTotalElements(0);
@@ -922,6 +1251,21 @@ export default function LongStaySearch() {
         source: "long-stay",
       });
 
+      if (apiHotelsEnabled) {
+        startSupplierSearch(
+          buildApiSearchPayload({
+            nationalityId,
+            nationalityCode,
+            destinationCityId,
+            destinationCountryId,
+            checkIn,
+            checkOut,
+            rooms,
+            agentId: (isAgentRole ? selfAgentId : agent) || 1,
+          })
+        );
+      }
+
       const searchKeyRes = await axiosInstance.post(
         "/api/long-stay-search/search",
         payload
@@ -944,6 +1288,16 @@ export default function LongStaySearch() {
         apiType:
           channelType.map((c) => c.value.toUpperCase()).join(",") || undefined,
       };
+      // Supplier hotels on: fetch every long-stay hotel once, unfiltered. The
+      // page filters and pages the merged list itself, and a supplier channel
+      // sent as apiType would otherwise remove all the long-stay hotels.
+      if (apiHotelsEnabled) {
+        params.size = INHOUSE_FETCH_ALL_SIZE;
+        params.sortBy = "baseRate";
+        params.sortOrder = "asc";
+        delete params.starRating;
+        delete params.apiType;
+      }
 
       await pollUntilComplete(
         `/api/long-stay-search/results/${newSearchId}`,
@@ -988,7 +1342,12 @@ export default function LongStaySearch() {
       );
     } catch (err) {
       console.error("Search failed", err);
+      // A long-stay failure must not hide supplier hotels still coming in.
+      if (apiHotelsEnabled) {
+        setHasSearchResult(true);
+      } else {
       setHasSearched(false);
+      }
       setPollStatus("ERROR");
     } finally {
       setIsLoading(false);
@@ -996,6 +1355,8 @@ export default function LongStaySearch() {
   };
 
   useEffect(() => {
+    // Supplier hotels on: the merged list is handled here in the browser.
+    if (apiHotelsEnabled) return;
     if (!searchId || !hasSearched) return;
     if (pollStatus === "IN_PROGRESS") return;
     setIsLoading(true);
@@ -1009,6 +1370,30 @@ export default function LongStaySearch() {
   // sticky summary strip then, unless the user chose to modify the search.
   const hasResultsView = hasSearchResult || allResults.length > 0;
   const collapseSearch = hasResultsView && !isEditingSearch;
+
+  // One progress bar for the whole search. With supplier hotels on it counts the
+  // long-stay search plus every supplier, and stays up until all have finished.
+  // If a supplier never finishes it is hidden instead (apiPollStatus TIMEOUT),
+  // like the Last Minute page.
+  const progressStatus = !apiHotelsEnabled
+    ? pollStatus
+    : pollStatus === "IN_PROGRESS" || apiPollStatus === "IN_PROGRESS"
+      ? "IN_PROGRESS"
+      : apiPollStatus;
+  const progressChannels = useMemo(
+    () =>
+      apiHotelsEnabled
+        ? [...INHOUSE_PROGRESS_CHANNELS, ...apiChannels]
+        : INHOUSE_PROGRESS_CHANNELS,
+    [apiHotelsEnabled, apiChannels]
+  );
+  const progressCompleted = useMemo(
+    () =>
+      apiHotelsEnabled
+        ? new Set([...completedChannels, ...apiCompletedChannels])
+        : completedChannels,
+    [apiHotelsEnabled, completedChannels, apiCompletedChannels]
+  );
 
   return (
     <div className="min-vh-100 bg-light d-flex flex-column">
@@ -1501,7 +1886,12 @@ export default function LongStaySearch() {
           </div>
           )}
 
-          <SearchProgressBar pollStatus={pollStatus} completedChannels={completedChannels} />
+          <SearchProgressBar
+            pollStatus={progressStatus}
+            completedChannels={progressCompleted}
+            channels={progressChannels}
+            label={apiHotelsEnabled ? "Searching hotels..." : undefined}
+          />
 
           {!hasSearched && !hasSearchResult && (
             <Card className="shadow-sm rounded-xl">
@@ -1525,18 +1915,9 @@ export default function LongStaySearch() {
                             <img src="/images/map.jpg" alt="Map preview" className="map-preview-img" />
                             <button className="map-overlay-btn">EXPLORE ON MAP 📍</button>
                           </div>
-                          <Form.Control
-                            type="text"
-                            placeholder={placeholder}
-                            className="ps-3 mb-2"
-                            value={hotelSearchTerm}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              setHotelSearchTerm(val);
-                              setPageIndex(0);
-                              debouncedSetFinalTerm(val);
-                            }}
-                          />
+                          {/* Hotel-name search moved to the top filter row,
+                              next to Clear — same placement as
+                              /new-booking/hotel. Same state and handlers. */}
                           {/* Currency — converts the AED rates shown below.
                               Hidden for AGENT logins (their currency is
                               auto-locked to the agent's configured
@@ -1573,6 +1954,94 @@ export default function LongStaySearch() {
                             </>
                           )}
 
+                          {/* Budget — a bar chart of how many hotels sit at
+                              each price, with a two-handle slider under it to
+                              narrow the list. Same control and placement as
+                              /new-booking/hotel. Values are AED stay totals;
+                              labels are in the display currency. Shown once
+                              any hotel has a price. */}
+                          {priceBounds && (
+                            <>
+                              <Form.Group className="mb-2">
+                                <Form.Label className="fw-semibold small">Budget</Form.Label>
+                                <PriceRangeSlider
+                                  min={budgetMin}
+                                  max={budgetMax}
+                                  value={[
+                                    priceSlider?.[0] ?? budgetMin,
+                                    priceSlider?.[1] ?? budgetMax,
+                                  ]}
+                                  // An end dragged back to its edge means
+                                  // "no limit" on that side — stored as null.
+                                  onChange={([lo, hi]) => {
+                                    setPriceSlider(
+                                      lo <= budgetMin && hi >= budgetMax
+                                        ? null
+                                        : [lo <= budgetMin ? null : lo, hi >= budgetMax ? null : hi]
+                                    );
+                                    setPageIndex(0);
+                                  }}
+                                  histogram={priceBounds.histogram}
+                                  format={(aed) =>
+                                    `${displayCurrencyCode} ${Math.round(
+                                      convertFromAed(aed)
+                                    ).toLocaleString()}`
+                                  }
+                                  ariaLabel="Budget"
+                                />
+                              </Form.Group>
+
+                              <hr />
+                            </>
+                          )}
+
+                          {/* Refund Policy — same boxes and placement as
+                              /new-booking/hotel. The boxes are mutually
+                              exclusive: ticking one clears the others, and
+                              unticking shows every hotel again. */}
+                          <Form.Group className="mb-2">
+                            <Form.Label className="fw-semibold small">
+                              Refund Policy
+                              {refundActive && refundFlagsLoading && (
+                                <span className="text-muted fw-normal ms-2">Checking…</span>
+                              )}
+                            </Form.Label>
+                            <div className="filter-checkbox-list">
+                              <Form.Check
+                                type="checkbox"
+                                id="refund-policy-refundable"
+                                label="Flexible"
+                                checked={refundPolicy.refundable}
+                                onChange={(e) => {
+                                  setRefundPolicy({ ...NO_REFUND_POLICY, refundable: e.target.checked });
+                                  setPageIndex(0);
+                                }}
+                              />
+                              <Form.Check
+                                type="checkbox"
+                                id="refund-policy-partial"
+                                label="Flexible - Partial"
+                                checked={refundPolicy.partial}
+                                onChange={(e) => {
+                                  setRefundPolicy({ ...NO_REFUND_POLICY, partial: e.target.checked });
+                                  setPageIndex(0);
+                                }}
+                              />
+                              <Form.Check
+                                type="checkbox"
+                                id="refund-policy-non-refundable"
+                                label="Non Refundable"
+                                checked={refundPolicy.nonRefundable}
+                                onChange={(e) => {
+                                  setRefundPolicy({ ...NO_REFUND_POLICY, nonRefundable: e.target.checked });
+                                  setPageIndex(0);
+                                }}
+                              />
+                            </div>
+                          </Form.Group>
+
+                          <hr />
+
                           <Form.Group className="mb-2">
                             <Form.Label className="fw-semibold small">Hotel Type</Form.Label>
                             <div className="filter-checkbox-list">
@@ -1595,15 +2064,18 @@ export default function LongStaySearch() {
                               Hidden for AGENT logins (agents book only
                               through their contracted channel and the
                               backend already scopes results). */}
-                          {!isAgentRole && (
+                          {!isAgentLogin() && (
                             <>
                               <hr />
                               <Form.Group>
                                 <Form.Label className="fw-semibold small">Channel</Form.Label>
                                 <div className="filter-checkbox-list">
-                                  {channelTypeOptions.map((item) => (
-                                    <Form.Check
+                                  {channelRows.map((item) => (
+                                    <div
                                       key={item.value}
+                                      className="d-flex align-items-center justify-content-between gap-2"
+                                    >
+                                      <Form.Check
                                       type="checkbox"
                                       id={`channel-${item.value}`}
                                       label={item.label}
@@ -1613,6 +2085,20 @@ export default function LongStaySearch() {
                                         else setChannelType(channelType.filter((c) => c.value !== item.value));
                                       }}
                                     />
+                                      {/* Only meaningful once there are several channels. */}
+                                      {apiHotelsEnabled && (
+                                        <Badge
+                                          bg={channelsWithResults.has(item.value) ? "success" : "danger"}
+                                          title={
+                                            channelsWithResults.has(item.value)
+                                              ? "Hotels from this channel are in the results"
+                                              : "No hotels from this channel in the results"
+                                          }
+                                        >
+                                          {channelsWithResults.has(item.value) ? "LIVE" : "OFF"}
+                                        </Badge>
+                                      )}
+                                    </div>
                                   ))}
                                 </div>
                               </Form.Group>
@@ -1673,12 +2159,34 @@ export default function LongStaySearch() {
                               setStarRating(null);
                               setHotelType([]);
                               setChannelType([]);
+                              setPriceSlider(null);
+                              setRefundPolicy(NO_REFUND_POLICY);
                               setSortBy("priceAsc");
                               setHotelSearchTerm("");
                             }}
                           >
                             Clear
                           </Button>
+
+                          {/* Hotel-name search — moved here from the left
+                              sidebar, same spot and size as on
+                              /new-booking/hotel. Same state and handlers
+                              (500 ms debounce, page reset). ms-auto keeps it
+                              at the right edge; on narrow screens it wraps
+                              below the sort pills. */}
+                          <Form.Control
+                            type="text"
+                            placeholder={placeholder}
+                            value={hotelSearchTerm}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setHotelSearchTerm(val);
+                              setPageIndex(0);
+                              debouncedSetFinalTerm(val);
+                            }}
+                            className="ms-auto ps-3"
+                            style={{ height: "36px", maxWidth: "260px", minWidth: "180px" }}
+                          />
                         </div>
                       </Card.Body>
                     </Card>
@@ -1699,8 +2207,8 @@ export default function LongStaySearch() {
                     )}
 
                     <Row className="g-4">
-                      {filteredResults.length > 0 ? (
-                        filteredResults.map((hotel) => (
+                      {pageHotels.length > 0 ? (
+                        pageHotels.map((hotel) => (
                           <Col xs={12} key={hotel.id}>
                             <div
                               style={{
@@ -1732,14 +2240,13 @@ export default function LongStaySearch() {
                                     >
                                       <FaStar className="text-warning" />
                                       {hotel.rating}
-                                      {/* Channel chip — same gray pill the
-                                          Last Minute results use. Long Stay
-                                          only surfaces in-house contracts
-                                          (see channelTypeOptions above), so
-                                          this is always "INHOUSE". Kept
-                                          static to match LM instead of
-                                          driving from hotel.channelType so
-                                          the two pages read as one system. */}
+                                      {/* Channel chip — the same grey pill as the
+                                          /new-booking/hotel result card (INHOUSE
+                                          for a long-stay contract, the supplier
+                                          name for a supplier hotel), and like that
+                                          page it is hidden for every agent-side
+                                          login. */}
+                                      {!isAgentLogin() && (
                                       <span
                                         style={{
                                           marginLeft: "5px",
@@ -1748,8 +2255,11 @@ export default function LongStaySearch() {
                                           borderRadius: "10px",
                                         }}
                                       >
-                                        INHOUSE
+                                          {isSupplierHotel(hotel)
+                                            ? String(hotel.apiType || "API").toUpperCase()
+                                            : "INHOUSE"}
                                       </span>
+                                      )}
                                     </div>
                                   </div>
                                 </Col>
@@ -1833,6 +2343,10 @@ export default function LongStaySearch() {
                                         }
                                         onClick={() => {
                                           setClickedHotelIds((prev) => [...prev, hotel.id]);
+                                          if (isSupplierHotel(hotel)) {
+                                            openSupplierRooms(hotel);
+                                            return;
+                                          }
                                           const nationalityCode =
                                             (selectedNationality?.code || "").length === 2
                                               ? selectedNationality.code
@@ -1907,18 +2421,27 @@ export default function LongStaySearch() {
                         <Col xs={12}>
                           <Card className="shadow-sm rounded-xl">
                             <Card.Body className="text-center text-muted py-5">
+                              {apiHotelsEnabled && apiPollStatus === "IN_PROGRESS" ? (
+                                <>
+                                  <Spinner animation="border" variant="primary" />
+                                  <p className="mt-2 mb-0">Searching supplier hotels…</p>
+                                </>
+                              ) : (
+                                <>
                               <FaSearch className="display-4 text-muted mb-3" />
-                              <h5>No long stay contracts found</h5>
+                                  <h5>{apiHotelsEnabled ? "No hotels found" : "No long stay contracts found"}</h5>
                               <p>Try adjusting your filters or search criteria.</p>
+                                </>
+                              )}
                             </Card.Body>
                           </Card>
                         </Col>
                       )}
                     </Row>
 
-                    {filteredResults.length > 0 &&
+                    {pageHotels.length > 0 &&
                       totalElements > 0 &&
-                      !(hotelSearchTerm || hotelType.length > 0) && (
+                      (mergedResults || !(hotelSearchTerm || hotelType.length > 0)) && (
                         <div className="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4 mt-3">
                           <small className="text-muted fw-semibold"></small>
                           <Pagination className="mb-0 pagination-modern">

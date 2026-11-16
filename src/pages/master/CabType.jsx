@@ -149,7 +149,7 @@ export default function CabType() {
 
   const handleDelete = (item) => {
     Swal.fire({
-      title: `Delete cab type "${item.name}"?`,
+      titleText: `Delete cab type "${item.name}"?`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

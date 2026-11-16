@@ -44,8 +44,10 @@ import Sidebar from "../../components/Sidebar";
 import TopBar from "../../components/TopBar";
 import axiosInstance from "../../components/AxiosInstance";
 import toast from "react-hot-toast";
+import RoomCountSummary from "../../components/RoomCountSummary";
 import "../../styles/HotelBookingListModern.css";
 import DashboardRedirections from "../../components/DashboardRedirections";
+import { getCurrentActiveRole } from "../../utils/authSession";
 
 const PER_PAGE_OPTIONS = [10, 25, 50, 100];
 
@@ -64,6 +66,7 @@ const COLUMN_WIDTHS = {
   referenceCode: "160px",
   bookDate: "90px",
   bookingDetails: "230px",
+  noOfRooms: "120px",
   deadlineDate: "105px",
   paymentMode: "110px",
   paymentStatus: "110px",
@@ -251,7 +254,7 @@ export default function SeniorCitizenBookingList() {
   const [selectedYear, setSelectedYear] = useState("");
 
   const [role, setRole] = useState(
-    (localStorage.getItem("currentActiveRole") || "").toLowerCase()
+    (sessionStorage.getItem("currentActiveRole") || "").toLowerCase()
   );
 
   const [showCustomersModal, setShowCustomersModal] = useState(false);
@@ -262,10 +265,10 @@ export default function SeniorCitizenBookingList() {
   };
 
   useEffect(() => {
-    const r = (localStorage.getItem("currentActiveRole") || "").toLowerCase();
+    const r = (sessionStorage.getItem("currentActiveRole") || "").toLowerCase();
     setRole(r);
     if (r === "agent") {
-      const uid = localStorage.getItem("userId");
+      const uid = sessionStorage.getItem("userId");
       if (uid && uid !== "null") setAgentId(uid);
     }
   }, []);
@@ -454,7 +457,8 @@ export default function SeniorCitizenBookingList() {
   };
 
   // +1 for the Payment Status column.
-  const colSpan = role === "admin" ? 12 : 11;
+  // Includes the No. of Rooms column.
+  const colSpan = role === "admin" ? 14 : 13;
 
   const baseCellStyle = {
     padding: "0.5rem 0.6rem",
@@ -491,7 +495,7 @@ export default function SeniorCitizenBookingList() {
             <div className="mb-3">
               <Button
                 variant="outline-secondary"
-                onClick={() => DashboardRedirections((localStorage.getItem("currentActiveRole") || "").trim().toUpperCase(), navigate)}
+                onClick={() => DashboardRedirections((getCurrentActiveRole() || "").trim().toUpperCase(), navigate)}
                 className="d-inline-flex align-items-center gap-2 rounded-pill px-3 py-2"
               >
                 <FaArrowLeft />
@@ -680,6 +684,9 @@ export default function SeniorCitizenBookingList() {
                           <th style={{ ...baseHeaderStyle, width: COLUMN_WIDTHS.bookingDetails }}>
                             Booking Details
                           </th>
+                          <th style={{ ...baseHeaderStyle, textAlign: "center", width: COLUMN_WIDTHS.noOfRooms }}>
+                            No. of Rooms
+                          </th>
                           <th style={{ ...baseHeaderStyle, textAlign: "center", width: COLUMN_WIDTHS.deadlineDate }}>
                             Deadline Date
                           </th>
@@ -848,6 +855,9 @@ export default function SeniorCitizenBookingList() {
                                       </span>
                                     )}
                                   </div>
+                                </td>
+                                <td style={{ ...baseCellStyle, textAlign: "center", width: COLUMN_WIDTHS.noOfRooms }}>
+                                  <RoomCountSummary total={b.totalRooms} lines={b.roomSummary} />
                                 </td>
                                 <td
                                   style={{

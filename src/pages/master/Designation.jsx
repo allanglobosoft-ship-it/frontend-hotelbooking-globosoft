@@ -217,7 +217,7 @@ export default function Designations() {
 
   const handleDelete = (item) => {
     Swal.fire({
-      title: `Are you sure? You want to delete id ${item.name}`,
+      titleText: `Are you sure? You want to delete id ${item.name}`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

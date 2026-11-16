@@ -49,6 +49,19 @@ const AutoGrowTextarea = ({ value, style, ...rest }) => {
   );
 };
 
+// Refundable / Non Refundable is chosen per room category. The choice is kept
+// on its own (refundableByCategory), so the radios work for a category with
+// no rate rows yet; without a choice it follows the category's rate rows
+// (what was saved).
+const isCategoryRefundable = (data, roomCategoryId) => {
+  const key = String(roomCategoryId);
+  const chosen = data.refundableByCategory?.[key];
+  if (chosen !== undefined) return chosen;
+  return (data.rooms || []).some(
+    (r) => r.hotelRoomCategoryId === key && r.refundable
+  );
+};
+
 export default function EditLongStayContract() {
   const navigate = useNavigate();
   const { id, contractId } = useParams(); // hotel id, long stay contract id
@@ -198,7 +211,8 @@ export default function EditLongStayContract() {
             field === "adultRate" || field === "childRate"
               ? Number(value) > 0
               : false,
-          refundable: false,
+          // A rate typed for a refundable category is refundable too.
+          refundable: isCategoryRefundable(prev, roomCategoryId),
         });
       }
       return { ...prev, rooms: updated };
@@ -212,7 +226,16 @@ export default function EditLongStayContract() {
           ? { ...r, refundable }
           : r
       );
-      return { ...prev, rooms: updated };
+      return {
+        ...prev,
+        rooms: updated,
+        // Remember the choice even when the category has no rate rows yet,
+        // so the radio switches straight away.
+        refundableByCategory: {
+          ...(prev.refundableByCategory || {}),
+          [String(roomCategoryId)]: refundable,
+        },
+      };
     });
   };
 
@@ -478,13 +501,11 @@ export default function EditLongStayContract() {
                       <h6 className="fw-bold mb-0">{room.roomCategory}</h6>
                       {(() => {
                         // Refundable / Non Refundable as a radio pair (was a
-                        // single "Is Refundable" checkbox). The category is
-                        // refundable when any of its rate rows carries
-                        // refundable=true; otherwise it's non-refundable.
-                        const isCatRefundable = formData.rooms.some(
-                          (r) =>
-                            r.hotelRoomCategoryId ===
-                              String(room.hotelRoomcategoryId) && r.refundable
+                        // single "Is Refundable" checkbox): the category's
+                        // own choice, else what its rate rows carry.
+                        const isCatRefundable = isCategoryRefundable(
+                          formData,
+                          room.hotelRoomcategoryId
                         );
                         return (
                           <div className="d-flex align-items-center gap-3">

@@ -29,11 +29,11 @@ const uuid = () =>
   `psh-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
 const isAgentSession = () => {
-  const stored = (localStorage.getItem("userRole") || "")
+  const stored = (sessionStorage.getItem("userRole") || "")
     .split(",")
     .map((r) => r.trim().toLowerCase());
   const role =
-    localStorage.getItem("currentActiveRole")?.toLowerCase() ||
+    sessionStorage.getItem("currentActiveRole")?.toLowerCase() ||
     stored[0] ||
     "";
   return role === "agent";

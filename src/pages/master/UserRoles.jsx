@@ -139,7 +139,7 @@ export default function UserRoles() {
 
   const handleDelete = (item) => {
     Swal.fire({
-      title: `Are you sure? You want to delete ${item.roleName}`,
+      titleText: `Are you sure? You want to delete ${item.roleName}`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

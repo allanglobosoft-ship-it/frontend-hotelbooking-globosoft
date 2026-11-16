@@ -19,6 +19,8 @@ import autoTable from 'jspdf-autotable';
 import Agent from "../../components/filters/Agent";
 import Supplier from "../../components/filters/Supplier";
 import DestinationCity from "../../components/filters/DestinationCity";
+import { escapeHtml } from "../../utils/safeHtml";
+import { csvCell } from "../../utils/csvSafe";
 
 export default function Accounts() {
 
@@ -198,11 +200,11 @@ export default function Accounts() {
               ${currentBookings.map((a, index) => `
                 <tr>
                   <td>${index + 1}</td>
-                  <td>${a.companyName}</td>
-                  <td>${formatDate(a.paymentDate)}</td>
-                  <td>${a.creditLimit}</td>
-                  <td>${a.amountPaid}</td>
-                  <td>${a.remarks || ''}</td>
+                  <td>${escapeHtml(a.companyName)}</td>
+                  <td>${escapeHtml(formatDate(a.paymentDate))}</td>
+                  <td>${escapeHtml(a.creditLimit)}</td>
+                  <td>${escapeHtml(a.amountPaid)}</td>
+                  <td>${escapeHtml(a.remarks || '')}</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -242,15 +244,8 @@ export default function Accounts() {
     const headers = ['Sl.No', 'Company Name', 'Payment Date', 'Credit Limit', 'Amount Paid', 'Remarks'];
 
     // Create CSV content with proper escaping
-    const escapeCSV = (value) => {
-      if (value === null || value === undefined) return '';
-      const stringValue = String(value);
-      // If value contains comma, newline, or quote, wrap it in quotes and escape quotes
-      if (stringValue.includes(',') || stringValue.includes('\n') || stringValue.includes('"')) {
-        return `"${stringValue.replace(/"/g, '""')}"`;
-      }
-      return stringValue;
-    };
+    // csvCell neutralises text a spreadsheet would run as a formula.
+    const escapeCSV = (value) => csvCell(value);
 
     const csvContent = [
       headers.map(escapeCSV).join(','),

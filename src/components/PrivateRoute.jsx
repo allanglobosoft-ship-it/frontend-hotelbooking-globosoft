@@ -2,10 +2,16 @@ import React, { useEffect } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import PartnerRouteGuard from "./PartnerRouteGuard";
 import { isPartnerRole, PARTNER_DASHBOARD_BY_ROLE } from "../config/partnerFeatures";
+import { getAuthToken, getUserRole, getCurrentActiveRole } from "../utils/authSession";
 
 const PrivateRoute = ({ children, roles }) => {
   const location = useLocation();
-  const token = localStorage.getItem("authToken");
+  // This tab's own token only (sessionStorage — see utils/authSession.js).
+  // Reading from localStorage here was the mechanism behind "a page may
+  // render using stale authentication state": a login or logout in ANOTHER
+  // tab rewrote the shared localStorage key, and this tab's very next
+  // render (route change, focus, etc.) picked that up as if it were its own.
+  const token = getAuthToken();
 
   // Check if token exists and is not empty
   const isAuthenticated = token && token.trim() !== "" && token !== "null" && token !== "undefined";
@@ -25,11 +31,18 @@ const PrivateRoute = ({ children, roles }) => {
   // Optional role restriction: when a `roles` list is given, the current
   // active role must be in it — otherwise send the user to their dashboard.
   if (Array.isArray(roles) && roles.length > 0) {
-    const storedRoles = (localStorage.getItem("userRole") || "")
+    const storedRoles = getUserRole()
       .split(",")
       .map((role) => role.trim().toLowerCase());
+    // The active role counts only if the user really holds it (an edited
+    // "currentActiveRole" must not open admin pages). Super admin holds
+    // admin too — the Sidebar switches it to "admin" on /adminDashboard.
+    const activeCandidate = getCurrentActiveRole().toLowerCase();
+    const holdsActiveRole =
+      storedRoles.includes(activeCandidate) ||
+      (activeCandidate === "admin" && storedRoles.includes("super_admin"));
     const currentRole =
-      localStorage.getItem("currentActiveRole")?.toLowerCase() ||
+      (holdsActiveRole ? activeCandidate : "") ||
       storedRoles[0] ||
       "";
 
@@ -55,8 +68,8 @@ const PrivateRoute = ({ children, roles }) => {
   // unlocked by one of the account's approved features (see
   // PartnerRouteGuard). Every other role returns exactly as before.
   const activeRole =
-    localStorage.getItem("currentActiveRole")?.toLowerCase() ||
-    (localStorage.getItem("userRole") || "").split(",")[0].trim().toLowerCase();
+    getCurrentActiveRole().toLowerCase() ||
+    getUserRole().split(",")[0].trim().toLowerCase();
   if (isPartnerRole(activeRole)) {
     return <PartnerRouteGuard role={activeRole}>{children}</PartnerRouteGuard>;
   }

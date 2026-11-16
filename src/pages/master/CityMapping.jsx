@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Card,
   Form,
@@ -8,7 +8,9 @@ import {
   Spinner,
   Row,
   Col,
+  Alert,
 } from "react-bootstrap";
+import { useLocation } from "react-router-dom";
 import toast from "react-hot-toast";
 import axiosInstance from "../../components/AxiosInstance";
 import Sidebar from "../../components/Sidebar";
@@ -16,6 +18,7 @@ import Topbar from "../../components/TopBar";
 import AsyncSelect from "react-select/async";
 import BackButton from "../../components/BackButton";
 import "../../styles/CityMapping.css";
+import AutomatedCityMappingButton from "./autocitymap/AutomatedCityMappingButton";
 
 const CityMapping = () => {
   const [loading, setLoading] = useState(false);
@@ -41,6 +44,17 @@ const CityMapping = () => {
   // Row-wise selections and status per platform in the overview table
   const [rowState, setRowState] = useState({});
 
+  // Bulk (Auto) Mapping ▸ "Map manually" jump hook. When the user arrived
+  // here from /masters/city-mapping-bulk we get a { masterCityId, apiProvider }
+  // in the route state and pre-populate the top Country / City selects for
+  // the master city, and highlight the platform row the operator was told to
+  // fix — so they land ready to pick the supplier city and Save without
+  // hunting for the master row first.
+  const location = useLocation();
+  const [prefillBanner, setPrefillBanner] = useState(null);
+  const [highlightedPlatform, setHighlightedPlatform] = useState(null);
+  const platformRowRefs = useRef({});
+
   useEffect(() => {
     // Initialize per-platform state
     const initial = {};
@@ -54,6 +68,70 @@ const CityMapping = () => {
     });
     setRowState(initial);
   }, []);
+
+  // Prefill from Bulk (Auto) Mapping. Runs once when the route state arrives —
+  // fetches the master city record so its country + city dropdowns show real
+  // labels (not just an ID), then highlights the target platform row.
+  // Silently no-ops when the endpoint fails so the manual page still works.
+  useEffect(() => {
+    const prefill = location.state?.prefill;
+    if (!prefill?.masterCityId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await axiosInstance.get(
+          `/api/province/${prefill.masterCityId}`,
+        );
+        if (cancelled) return;
+        const d = res?.data || {};
+        const countryLabel = d.Country || d.country || "";
+        const cityLabel = d.stateName || d.name || "";
+        if (d.countryId && countryLabel) {
+          const countryOpt = { value: d.countryId, label: countryLabel };
+          setSelectedCountryOption(countryOpt);
+          setFormData((prev) => ({
+            ...prev,
+            masterCountryId: d.countryId,
+            masterCityId: d.id,
+          }));
+        }
+        if (d.id && cityLabel) {
+          setSelectedCityOption({
+            value: d.id,
+            label: `${cityLabel}${countryLabel ? `, ${countryLabel}` : ""}`,
+          });
+        }
+        setPrefillBanner({
+          masterCityId: prefill.masterCityId,
+          masterCityLabel: cityLabel || `#${prefill.masterCityId}`,
+          apiProvider: prefill.apiProvider,
+        });
+        if (prefill.apiProvider) {
+          setHighlightedPlatform(prefill.apiProvider);
+          // Give the row a tick to mount, then scroll.
+          setTimeout(() => {
+            const el = platformRowRefs.current[prefill.apiProvider];
+            if (el && typeof el.scrollIntoView === "function") {
+              el.scrollIntoView({ behavior: "smooth", block: "center" });
+            }
+          }, 100);
+        }
+      } catch (e) {
+        // Endpoint mismatch or an ID that no longer exists — leave the page
+        // in its blank state and show a plain banner with what we know.
+        setPrefillBanner({
+          masterCityId: prefill.masterCityId,
+          masterCityLabel: `#${prefill.masterCityId}`,
+          apiProvider: prefill.apiProvider,
+          error: true,
+        });
+        if (prefill.apiProvider) setHighlightedPlatform(prefill.apiProvider);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [location.state]);
 
   const [formData, setFormData] = useState({
     masterCountryId: "",
@@ -223,7 +301,13 @@ const CityMapping = () => {
       return response.data.map((c) => ({
         // stateName is set by /api/province/getByCountryId (MasterStateDTO);
         // every other supplier response already lands via cityName or name.
-        value: c.cityId || c.id,
+        // Atharva's list carries both our local row id (cityId) and Atharva's
+        // own city id (atharvaCityCode); the mapping must store Atharva's.
+        // cityId used to be sent, so Dubai was saved as "Little Hartley, NSW".
+        value:
+          platform === "Atharva" && c.atharvaCityCode != null
+            ? c.atharvaCityCode
+            : c.cityId || c.id,
         label: c.cityName || c.name || c.stateName,
       }));
     } catch (error) {
@@ -359,6 +443,12 @@ const CityMapping = () => {
       toast.error("⚠ Please fill all required fields");
       return;
     }
+    // Without the supplier's own country / city the server used to store
+    // our in-house ids as supplier ids (now it refuses with a 400).
+    if (!formData.apiCountryId || !formData.apiCityId) {
+      toast.error("⚠ Please select the platform country and city to map to");
+      return;
+    }
 
     try {
       const res = await axiosInstance.post("/api/cityMapping/save", formData);
@@ -376,7 +466,10 @@ const CityMapping = () => {
       setSelectedCountryOption(null);
       setSelectedCityOption(null);
     } catch (err) {
-      toast.error("Failed to save mapping ❌");
+      // The backend refuses a second mapping for an already-mapped city
+      // (409 with a message naming the city) — show that instead of the
+      // generic text so the user knows to unmap the existing row first.
+      toast.error(err?.response?.data?.message || "Failed to save mapping ❌");
       console.error(err);
     }
   };
@@ -406,13 +499,34 @@ const CityMapping = () => {
       <div className="d-flex flex-grow-1">
         <Sidebar />
         <main className="flex-grow-1 p-4">
-          <span className="d-flex align-items-center gap-2 mb-3">
+          <span className="d-flex align-items-center gap-2 mb-3 flex-wrap">
             <BackButton fallback="/adminDashboard" />
             <h3 className="mb-0">City Mapping</h3>
+            <AutomatedCityMappingButton className="ms-auto" />
           </span>
           <p className="text-muted">
             Map master countries & cities to external API platforms.
           </p>
+
+          {prefillBanner && (
+            <Alert variant="info" className="py-2 small">
+              <strong>From Bulk (Auto) Mapping:</strong>{" "}
+              please map{" "}
+              <strong>{prefillBanner.masterCityLabel}</strong>{" "}
+              (id {prefillBanner.masterCityId})
+              {prefillBanner.apiProvider ? (
+                <>
+                  {" "}
+                  for supplier{" "}
+                  <Badge bg="dark">{prefillBanner.apiProvider}</Badge>
+                </>
+              ) : null}
+              .{" "}
+              {prefillBanner.error
+                ? "The master city couldn't be pre-loaded — pick it manually above."
+                : "The country and city are already selected; pick the supplier city in the highlighted row below and click Search."}
+            </Alert>
+          )}
 
           {loading ? (
             <div className="d-flex justify-content-center my-5">
@@ -644,9 +758,16 @@ const CityMapping = () => {
                     <tbody>
                       {platforms.map((p, idx) => {
                         const state = rowState[p] || {};
+                        const isHighlighted = highlightedPlatform === p;
 
                         return (
-                          <tr key={idx}>
+                          <tr
+                            key={idx}
+                            ref={(el) => (platformRowRefs.current[p] = el)}
+                            className={
+                              isHighlighted ? "table-warning" : undefined
+                            }
+                          >
                             <td>{p}</td>
 
                             {/* Dropdown for Platform Country */}

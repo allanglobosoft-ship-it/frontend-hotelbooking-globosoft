@@ -6,7 +6,7 @@
  * Long-Stay and Day-Stay flows).
  *
  * It mirrors the exact behaviour first implemented inline in RoomList.jsx:
- *   - Refund Policy: "Refundable" / "Non Refundable" checkboxes.
+ *   - Refund Policy: "Flexible" / "Flexible - Partial" / "Non Refundable" checkboxes.
  *   - Room Type:     checkboxes built from GET /api/roomType (meal-plan style
  *                    names: "Room Only", "Room with BreakFast", ...).
  *
@@ -22,10 +22,16 @@
  */
 import { useState, useEffect, useCallback } from "react";
 import axiosInstance from "../components/AxiosInstance";
+import {
+  REFUND_FLEXIBLE,
+  REFUND_NON_REFUNDABLE,
+  refundFilterMatches,
+} from "../utils/refundLabel";
 
 export default function useRoomFilters() {
   const [refundFilter, setRefundFilter] = useState({
     refundable: false,
+    partial: false,
     nonRefundable: false,
   });
   const [roomTypeOptions, setRoomTypeOptions] = useState([]);
@@ -60,30 +66,30 @@ export default function useRoomFilters() {
   }, []);
 
   const clearFilters = useCallback(() => {
-    setRefundFilter({ refundable: false, nonRefundable: false });
+    setRefundFilter({ refundable: false, partial: false, nonRefundable: false });
     setSelectedRoomTypes([]);
   }, []);
 
   const hasActiveFilters =
     refundFilter.refundable ||
+    refundFilter.partial ||
     refundFilter.nonRefundable ||
     selectedRoomTypes.length > 0;
 
   /**
    * Pure predicate — pass the normalised values from the current rate/room.
    * @param {Object} arg
-   * @param {boolean} [arg.isNonRefundable] true if the rate is non-refundable
+   * @param {string}  [arg.label] the rate's refund label code (see utils/refundLabel)
+   * @param {boolean} [arg.isNonRefundable] used when the page has no label: true if non-refundable
    * @param {string}  [arg.mealPlan] the meal-plan / room-type label to match
    * @returns {boolean} whether the rate passes the active filters
    */
   const rateMatches = useCallback(
-    ({ isNonRefundable, mealPlan } = {}) => {
+    ({ label, isNonRefundable, mealPlan } = {}) => {
       // ── Refund Policy ──
-      if (refundFilter.refundable && refundFilter.nonRefundable) {
-        // both checked → no narrowing on refundability
-      } else if (refundFilter.refundable && isNonRefundable === true) {
-        return false;
-      } else if (refundFilter.nonRefundable && isNonRefundable === false) {
+      const code =
+        label || (isNonRefundable === true ? REFUND_NON_REFUNDABLE : REFUND_FLEXIBLE);
+      if (!refundFilterMatches(refundFilter, code)) {
         return false;
       }
 

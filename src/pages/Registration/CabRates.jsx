@@ -768,7 +768,7 @@ const CabRates = () => {
   const handleDelete = (rate) => {
 
      Swal.fire({
-      title: `Are you sure? You want to delete rate: ${rate.rateCode}`,
+      titleText: `Are you sure? You want to delete rate: ${rate.rateCode}`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

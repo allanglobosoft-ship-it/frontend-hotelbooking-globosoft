@@ -13,6 +13,7 @@ import {
   FaToggleOn,
   FaToggleOff,
 } from "react-icons/fa";
+import { safeHttpUrl } from "../utils/urlSafety";
 
 // ── Styling tokens, adopted from PackageDetailedView so this page has the
 //    same look-and-feel as the other "view" screens. ──────────────────
@@ -163,7 +164,7 @@ export default function AdvertisementDetailedView() {
   // Delete → confirm, then go back to the list.
   const handleDelete = () => {
     Swal.fire({
-      title: `Are you sure? You want to delete "${ad.title}"`,
+      titleText: `Are you sure? You want to delete "${ad.title}"`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",
@@ -288,13 +289,19 @@ export default function AdvertisementDetailedView() {
                           label="Target URL"
                           value={
                             ad.targetUrl ? (
+                              // Non-web links (javascript:, data:) are shown
+                              // as text, never as a clickable link.
+                              safeHttpUrl(ad.targetUrl) ? (
                               <a
-                                href={ad.targetUrl}
+                                  href={safeHttpUrl(ad.targetUrl)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                               >
                                 {ad.targetUrl}
                               </a>
+                              ) : (
+                                <span>{ad.targetUrl}</span>
+                              )
                             ) : (
                               "-"
                             )

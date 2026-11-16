@@ -1,0 +1,55 @@
+/* ============================================================================
+   GLOBOSOFT FOOTER MARKS
+   A lockup for one end of a footer, optionally prefixed with a label
+   ("Powered by"). See GloboFooterMarks.jsx for why there are two colourways.
+
+   The sizes below are THE sizes — every footer in the system (login, role
+   picker, all five dashboards) uses this one pair so the "Powered by" lockup
+   is identical everywhere. A host only overrides --gfm-h / --gfm-label-size if
+   it genuinely needs to differ, and none currently does.
+
+   Width is always auto because the two assets have very different aspect
+   ratios (827x185 vs 1093x141) — matching on height is what makes them look
+   the same weight.
+   ============================================================================ */
+
+.gfm {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  /* vh-based so the pair grows with the viewport rather than sitting tiny on a
+     large screen; the label runs a little larger than most footer body text so
+     it pairs with the mark rather than the text beside it. */
+  --gfm-h: clamp(24px, 3.4vh, 32px);
+  --gfm-label-size: clamp(11px, 1.5vh, 13px);
+}
+
+.gfm img {
+  display: block;
+  width: auto;
+  height: var(--gfm-h);
+}
+
+/* Inherits the footer's colour so it reads on the white and orange bands
+   alike; only the size is fixed here. */
+.gfm-label {
+  font-weight: 600;
+  font-size: var(--gfm-label-size);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* Dark ground for the white-only artwork on a light band. Without it the mark
+   is not faint, it is gone. Wraps the image only, never the label. */
+.gfm-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 7px;
+  background: #20262f;
+}
+
+.gfm-chip img {
+  height: calc(var(--gfm-h) - 2px);
+}

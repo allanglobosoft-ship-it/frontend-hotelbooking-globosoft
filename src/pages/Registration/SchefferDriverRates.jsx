@@ -520,7 +520,7 @@ const SchefferDriverRates = () => {
 
   const handleDelete = (rate) => {
     Swal.fire({
-      title: `Delete rental rate: ${rate.rateCode}?`,
+      titleText: `Delete rental rate: ${rate.rateCode}?`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",
@@ -696,7 +696,7 @@ const SchefferDriverRates = () => {
 
   const deleteIntercity = (c) => {
     Swal.fire({
-      title: `Delete intercity charge ${c.fromCityName} → ${c.toCityName}?`,
+      titleText: `Delete intercity charge ${c.fromCityName} → ${c.toCityName}?`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

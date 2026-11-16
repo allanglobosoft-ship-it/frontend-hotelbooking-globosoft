@@ -555,7 +555,7 @@ export default function MeetingSpaceManage() {
 
   const handleDelete = async (row) => {
     const result = await Swal.fire({
-      title: `Delete "${row.spaceName}"?`,
+      titleText: `Delete "${row.spaceName}"?`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonText: "Delete",

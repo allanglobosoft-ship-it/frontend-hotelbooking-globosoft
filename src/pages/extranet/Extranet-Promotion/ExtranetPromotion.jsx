@@ -117,7 +117,7 @@ const ExtranetPromotion = () => {
   // ✅ Delete promotion
   const handleDelete = (promo) => {
     Swal.fire({
-      title: `Are you sure? You want to delete ${promo.promotionType} for ${promo.promotionCode}?`,
+      titleText: `Are you sure? You want to delete ${promo.promotionType} for ${promo.promotionCode}?`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

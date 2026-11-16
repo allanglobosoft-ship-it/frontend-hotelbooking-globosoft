@@ -29,6 +29,14 @@ import toast from "react-hot-toast";
 import { formatDateTime } from "../../../utils/dateUtils";
 import { createAmendmentLink } from "../../../utils/amendmentLink";
 import QuotationPdfCard from "../../../components/quotation/QuotationPdfCard";
+import RefundBadge from "../../../components/RefundBadge";
+import {
+  REFUND_FLEXIBLE,
+  REFUND_NON_REFUNDABLE,
+  refundLabelText,
+} from "../../../utils/refundLabel";
+import { sanitizeRichHtml } from "../../../utils/safeHtml";
+import { orderIdPathSegment } from "../../../utils/urlSafety";
 
 // Mirrors HotelBookingPage — the sole online-payment gateway surfaced when
 // the agent's available credit falls short of the booking amount. CCAvenue
@@ -116,7 +124,7 @@ const SPECIAL_REQUEST_OPTIONS = [
 export default function DayStayBookingPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const activeUserRole = localStorage.getItem("currentActiveRole");
+  const activeUserRole = sessionStorage.getItem("currentActiveRole");
 
   // ── Source of truth ───────────────────────────────────────────────
   // `payload` is the flattened DayStay handoff object written by
@@ -454,7 +462,7 @@ export default function DayStayBookingPage() {
         setIsFinalizingPayment(true);
         setIsSubmitting(true);
         const response = await axiosInstance.post(
-          `/api/payment/ccavenue/finalize-daystay/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/finalize-daystay/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         const bookingResponse = response.data;
         const responseId = Number(bookingResponse?.id);
@@ -515,7 +523,7 @@ export default function DayStayBookingPage() {
       }
       try {
         const statusResponse = await axiosInstance.get(
-          `/api/payment/ccavenue/status/${ccavenueOrderId}`,
+          `/api/payment/ccavenue/status/${orderIdPathSegment(ccavenueOrderId)}`,
         );
         if (statusResponse.data?.status !== "SUCCESS") {
           toast.error(
@@ -590,18 +598,6 @@ export default function DayStayBookingPage() {
       setVoucherChoiceError(false);
     }
   }, [payload, bookingConfirmation, showVoucherChoice, voucherChoiceMade]);
-
-  // Refund status badge — same as HotelBookingPage.
-  const getRefundStatusBadge = (refundStatus) => {
-    switch (refundStatus) {
-      case "FLEXIBLE":
-        return <Badge bg="success">Flexible</Badge>;
-      case "NON REFUNDABLE":
-        return <Badge bg="danger">Non-Refundable</Badge>;
-      default:
-        return <Badge bg="secondary">{refundStatus}</Badge>;
-    }
-  };
 
   // ── Data load — sessionStorage.dayStayBookingPayload ───────────────
   useEffect(() => {
@@ -1549,7 +1545,7 @@ export default function DayStayBookingPage() {
                                     month: "short",
                                     year: "numeric",
                                   },
-                                )}, 02:00 PM (UAE)`
+                                )}, 11:59 PM (UAE)`
                               : null;
                           return (
                           <Accordion.Item
@@ -1898,11 +1894,9 @@ export default function DayStayBookingPage() {
                               </span>
                             ) : null}
                             <Badge bg="info">Day Stay</Badge>
-                            {getRefundStatusBadge(
-                              isNonRefundableRate
-                                ? "NON REFUNDABLE"
-                                : "FLEXIBLE",
-                            )}
+                            <RefundBadge
+                              label={isNonRefundableRate ? REFUND_NON_REFUNDABLE : REFUND_FLEXIBLE}
+                            />
                             {isOnRequestRate && (
                               <Badge bg="warning" text="dark">
                                 On Request
@@ -2158,7 +2152,7 @@ export default function DayStayBookingPage() {
                               className="policy-text fw-bold"
                               style={{ color: "#dc2626" }}
                             >
-                              Non-refundable
+                              {refundLabelText(REFUND_NON_REFUNDABLE)}
                             </div>
                             <div className="policy-text">
                               No refund will be provided if this booking is
@@ -2268,7 +2262,7 @@ export default function DayStayBookingPage() {
                           <div
                             className="terms-content"
                             dangerouslySetInnerHTML={{
-                              __html: hotelTermsAndConditions,
+                              __html: sanitizeRichHtml(hotelTermsAndConditions),
                             }}
                           />
                         ) : (
@@ -2448,7 +2442,7 @@ export default function DayStayBookingPage() {
                                 className="badge bg-danger"
                                 style={{ fontSize: "0.7rem" }}
                               >
-                                Non-refundable
+                                {refundLabelText(REFUND_NON_REFUNDABLE)}
                               </span>
                             </p>
                             <p
@@ -2475,7 +2469,7 @@ export default function DayStayBookingPage() {
                                       year: "numeric",
                                     },
                                   )}
-                                  , 02:00 PM (UAE)
+                                  , 11:59 PM (UAE)
                                 </span>
                                 {isOutsideDeadline ? (
                                   <span

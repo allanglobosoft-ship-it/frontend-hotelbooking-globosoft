@@ -160,7 +160,7 @@ export default function SubLocation() {
 
   const handleDelete = (item) => {
     Swal.fire({
-      title: `Are you sure you want to delete "${item.name}"?`,
+      titleText: `Are you sure you want to delete "${item.name}"?`,
       icon: "warning",
       showCancelButton: true,
       confirmButtonColor: "#d33",

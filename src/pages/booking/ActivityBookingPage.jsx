@@ -359,7 +359,7 @@ const ActivityBookingPage = () => {
                    || localStorage.getItem("makeYourOwnPackageAgentId")
                    || "1";
 
-      const userId = sessionStorage.getItem("userId") || localStorage.getItem("userId") || "1";
+      const userId = sessionStorage.getItem("userId") || "1";
 
       // Build customerDTO from the chosen lead passenger row. Contact,
       // email, passport and LPO were dropped from the UI per spec, so

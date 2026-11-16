@@ -30,6 +30,12 @@
 //
 // Meal plan, cab and activity ARE separate line items (their own rate rows in
 // PackageRates / the cab + activity masters) and stack on top.
+//
+// ── Live supplier hotels are the exception ──
+// A supplier hotel is not PackageRates money: it is a live price from an outside
+// supplier. So picking one does NOT replace the package rate. Its whole-stay
+// price is added on top, and only once it has been picked. Own hotels are
+// unaffected: they never carry a `supplier` field.
 
 const num = (value) => {
   const n = Number(value);
@@ -65,11 +71,13 @@ export const resolvePackageBaseRate = (searchRate, packageData, resolvedRate) =>
 /**
  * Breakdown + grand total for a package booking.
  *
- * @param {object} selections  bookingData.selections — hotelPrice,
- *                             mealPlanPrice, cabPrice, activityPrice.
+ * @param {object} selections  bookingData.selections — selectedHotels,
+ *                             hotelPrice, mealPlanPrice, cabPrice, activityPrice.
  * @param {number} baseRate    from resolvePackageBaseRate().
- * @returns {{accommodation:number, hotelSelected:boolean, mealPlan:number,
- *            cab:number, activity:number, total:number}}
+ * @returns {{accommodation:number, hotelSelected:boolean,
+ *            supplierHotelSelected:boolean, packageRate:number,
+ *            supplierHotel:number, mealPlan:number, cab:number, activity:number,
+ *            total:number}}
  */
 export const computePackageTotal = (selections, baseRate) => {
   const hotel = num(selections?.hotelPrice);
@@ -77,13 +85,21 @@ export const computePackageTotal = (selections, baseRate) => {
   const cab = num(selections?.cabPrice);
   const activity = num(selections?.activityPrice);
 
-  // Hotel replaces the base "from" rate — see the note at the top of the file.
+  const packageRate = num(baseRate);
+  // Hotel replaces the base "from" rate — see the note at the top of the file —
+  // except a live supplier hotel, which is charged on top of it.
   const hotelSelected = hotel > 0;
-  const accommodation = hotelSelected ? hotel : num(baseRate);
+  const supplierHotelSelected =
+    hotelSelected && Boolean(selections?.selectedHotels?.[0]?.supplier);
+  let accommodation = hotelSelected ? hotel : packageRate;
+  if (supplierHotelSelected) accommodation = packageRate + hotel;
 
   return {
     accommodation,
     hotelSelected,
+    supplierHotelSelected,
+    packageRate,
+    supplierHotel: supplierHotelSelected ? hotel : 0,
     mealPlan,
     cab,
     activity,

@@ -1,0 +1,139 @@
+/* ============================================================
+   TravellersPicker — one "Passengers" field with a − / + popover.
+   Every class is `tp-` prefixed so it can't collide with page CSS.
+   Brand orange: #EC0B43
+   ============================================================ */
+
+/* Trigger — a form-control-looking button so it inherits each page's
+   field chrome; height pinned to the 46px the neighbouring fields use. */
+.tp-trigger.form-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 46px !important;
+  text-align: left;
+  cursor: pointer;
+}
+.tp-trigger-icon {
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+.tp-trigger-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tp-trigger-caret {
+  color: #9ca3af;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+}
+
+/* Popover */
+.tp-popover {
+  width: 300px;
+  max-width: calc(100vw - 32px);
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.15);
+}
+.tp-popover .popover-arrow {
+  display: none;
+}
+.tp-popover .popover-body {
+  padding: 14px 16px;
+}
+
+.tp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+}
+.tp-row + .tp-row {
+  border-top: 1px solid #eef0f2;
+}
+.tp-row-label {
+  font-weight: 600;
+  color: #15171c;
+}
+.tp-row-hint {
+  font-size: 0.78rem;
+  color: #6b7280;
+}
+
+.tp-stepper {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.tp-step-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1.5px solid #ec0b43;
+  background: #fff;
+  color: #ec0b43;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.tp-step-btn:hover:not(:disabled) {
+  background: #ec0b43;
+  color: #fff;
+}
+.tp-step-btn:disabled {
+  border-color: #d1d5db;
+  color: #d1d5db;
+  cursor: not-allowed;
+}
+.tp-count {
+  min-width: 18px;
+  text-align: center;
+  font-weight: 600;
+}
+
+.tp-ages {
+  margin-top: 4px;
+  padding: 10px 12px;
+  background: #fafaf8;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tp-age-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.tp-age-row label {
+  font-size: 0.85rem;
+  color: #374151;
+  margin: 0;
+}
+.tp-age-row .form-select {
+  width: 120px;
+}
+
+.tp-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.tp-done.btn {
+  background: #ec0b43;
+  border-color: #ec0b43;
+  padding: 4px 18px;
+  font-weight: 600;
+}
+.tp-done.btn:hover,
+.tp-done.btn:focus {
+  background: #e05500;
+  border-color: #e05500;
+}
